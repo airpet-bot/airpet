@@ -2558,6 +2558,9 @@ class ProjectManager:
         """
         Processes an uploaded STEP file using options, imports the geometry,
         and merges it into the current project.
+
+        Returns:
+            (success: bool, error_msg: Optional[str], import_report: Optional[dict])
         """
         # Save the stream to a temporary file to be read by the STEP parser
         with tempfile.NamedTemporaryFile(delete=False, suffix=".step") as temp_f:
@@ -2573,11 +2576,13 @@ class ProjectManager:
             self.changed_object_ids['solids'].update(newly_created_solid_names)
             print(f"Changed solids {self.changed_object_ids['solids']}")
             
+            import_report = getattr(imported_state, 'smart_import_report', None)
+
             # The merge_from_state function already handles placements and grouping
             success, error_msg = self.merge_from_state(imported_state)
             
             if not success:
-                return False, f"Failed to merge STEP geometry: {error_msg}"
+                return False, f"Failed to merge STEP geometry: {error_msg}", None
             
             # Recalculate is handled inside merge_from_state, but an extra one ensures consistency.
             self.recalculate_geometry_state()
@@ -2585,7 +2590,7 @@ class ProjectManager:
             # Capture this entire import as a single history event
             self._capture_history_state(f"Imported STEP file '{options.get('groupingName')}'")
 
-            return True, None
+            return True, None, import_report
             
         except Exception as e:
             # Ensure we raise the error to be caught by the app route

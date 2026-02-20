@@ -87,6 +87,9 @@ def test_summary_counts_and_ratio():
     assert summary["primitive_count"] == 2
     assert summary["tessellated_count"] == 1
     assert summary["primitive_ratio"] == 2 / 3
+    assert summary["selected_mode_counts"]["primitive"] == 0
+    assert summary["selected_mode_counts"]["tessellated"] == 0
+    assert summary["selected_primitive_ratio"] == 0.0
     assert summary["counts_by_classification"]["box"] == 1
     assert summary["counts_by_classification"]["cylinder"] == 1
     assert summary["counts_by_classification"]["tessellated"] == 1

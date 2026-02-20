@@ -520,12 +520,20 @@ def summarize_candidates(candidates: Iterable[Dict[str, Any]]) -> Dict[str, Any]
         cls = _normalize_classification(c.get("classification"))
         counts_by_class[cls] += 1
 
+    selected_mode_counts = {
+        "primitive": sum(1 for c in cands if c.get("selected_mode") == "primitive"),
+        "tessellated": sum(1 for c in cands if c.get("selected_mode") == "tessellated"),
+    }
+
     primitive_ratio = (primitive_count / total) if total else 0.0
+    selected_primitive_ratio = (selected_mode_counts["primitive"] / total) if total else 0.0
 
     return {
         "total": total,
         "primitive_count": primitive_count,
         "tessellated_count": tess_count,
         "primitive_ratio": primitive_ratio,
+        "selected_mode_counts": selected_mode_counts,
+        "selected_primitive_ratio": selected_primitive_ratio,
         "counts_by_classification": counts_by_class,
     }

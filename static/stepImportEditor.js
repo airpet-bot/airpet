@@ -3,7 +3,8 @@ import * as ExpressionInput from './expressionInput.js';
 
 // --- Module-level variables ---
 let modalElement, confirmButton, cancelButton, stepFileNameEl,
-    stepImportGroupName, stepImportParentLV, stepImportOffsetContainer;
+    stepImportGroupName, stepImportParentLV, stepImportOffsetContainer,
+    stepSmartImportCheckbox;
 
 let currentFile = null;
 let onConfirmCallback = null;
@@ -23,6 +24,7 @@ export function initStepImportEditor(callbacks) {
     stepImportGroupName = document.getElementById('stepImportGroupName');
     stepImportParentLV = document.getElementById('stepImportParentLV');
     stepImportOffsetContainer = document.getElementById('stepImportOffsetInputs');
+    stepSmartImportCheckbox = document.getElementById('stepSmartImportCheckbox');
 
     cancelButton.addEventListener('click', hide);
     confirmButton.addEventListener('click', handleConfirm);
@@ -59,6 +61,10 @@ export function show(file, projectState) {
     stepImportOffsetContainer.appendChild(ExpressionInput.create('step_offset_y', 'Y', '0'));
     stepImportOffsetContainer.appendChild(ExpressionInput.create('step_offset_z', 'Z', '0'));
 
+    if (stepSmartImportCheckbox) {
+        stepSmartImportCheckbox.checked = true;
+    }
+
     modalElement.style.display = 'block';
 }
 
@@ -83,7 +89,8 @@ function handleConfirm() {
                 x: document.getElementById('step_offset_x').value,
                 y: document.getElementById('step_offset_y').value,
                 z: document.getElementById('step_offset_z').value
-            }
+            },
+            smartImport: !!(stepSmartImportCheckbox && stepSmartImportCheckbox.checked)
         };
         onConfirmCallback(options);
     }

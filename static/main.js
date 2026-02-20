@@ -2409,6 +2409,51 @@ function handleCameraModeChange(mode) {
     }
 }
 
+function formatStepImportReportMessage(report, smartImportRequested = false) {
+    if (!report) {
+        return smartImportRequested ? "STEP file imported. Smart CAD report unavailable." : "STEP file imported successfully.";
+    }
+
+    if (!report.enabled) {
+        return "STEP file imported successfully (smart import disabled).";
+    }
+
+    const summary = report.summary || {};
+    const total = summary.total || 0;
+    const modeCounts = summary.selected_mode_counts || {};
+    const primitiveSelected = modeCounts.primitive || 0;
+    const tessSelected = modeCounts.tessellated || 0;
+
+    const ratioPct = total > 0
+        ? ((summary.selected_primitive_ratio || 0) * 100).toFixed(1)
+        : "0.0";
+
+    const fallbackReasonCounts = {};
+    (report.candidates || []).forEach(c => {
+        if (c?.selected_mode === 'tessellated' && c?.fallback_reason) {
+            fallbackReasonCounts[c.fallback_reason] = (fallbackReasonCounts[c.fallback_reason] || 0) + 1;
+        }
+    });
+
+    const topReasons = Object.entries(fallbackReasonCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([reason, count]) => `${reason}: ${count}`);
+
+    const lines = [
+        "STEP import complete (Smart CAD).",
+        `Total solids: ${total}`,
+        `Selected primitives: ${primitiveSelected} (${ratioPct}%)`,
+        `Selected tessellated fallback: ${tessSelected}`,
+    ];
+
+    if (topReasons.length > 0) {
+        lines.push(`Top fallback reasons: ${topReasons.join(', ')}`);
+    }
+
+    return lines.join("\n");
+}
+
 async function handleConfirmStepImport(options) {
     if (!options || !options.file) return;
 
@@ -2422,12 +2467,16 @@ async function handleConfirmStepImport(options) {
         // as it's already been appended.
         const optionsForJson = { ...options };
         delete optionsForJson.file;
-        formData.append('options', JSON.stringify(options));
+        formData.append('options', JSON.stringify(optionsForJson));
 
-        const result = await APIService.importStepWithOptions(formData); // This API call is still needed
+        const result = await APIService.importStepWithOptions(formData);
         syncUIWithState(result);
         UIManager.hideLoading();
-        //UIManager.showNotification("STEP file imported successfully.");
+
+        const reportMessage = formatStepImportReportMessage(result.step_import_report, optionsForJson.smartImport);
+        if (reportMessage) {
+            UIManager.showNotification(reportMessage);
+        }
     } catch (error) {
         UIManager.hideLoading();
         UIManager.showError("Failed to import STEP file: " + error.message);

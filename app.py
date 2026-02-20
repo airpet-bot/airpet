@@ -2113,7 +2113,7 @@ def load_system_prompt():
         return "You are a helpful assistant." # Fallback prompt
 
 # Function for Consistent API Responses
-def create_success_response(project_manager, message="Success",exclude_unchanged_tessellated=True):
+def create_success_response(project_manager, message="Success", exclude_unchanged_tessellated=True, extra_payload=None):
     """
     Helper to create a standard success response object, including history state.
     """
@@ -2130,7 +2130,7 @@ def create_success_response(project_manager, message="Success",exclude_unchanged
     # Reset the object change tracking.
     project_manager._clear_change_tracker()
 
-    return jsonify({
+    payload = {
         "success": True,
         "message": message,
         "project_name": project_name,
@@ -2142,7 +2142,12 @@ def create_success_response(project_manager, message="Success",exclude_unchanged
             "can_undo": project_manager.history_index > 0,
             "can_redo": project_manager.history_index < len(project_manager.history) - 1
         }
-    })
+    }
+
+    if isinstance(extra_payload, dict):
+        payload.update(extra_payload)
+
+    return jsonify(payload)
 
 def create_shallow_response(project_manager, message, scene_patch=None, project_state_patch=None, full_scene=None):
     """Creates a lightweight response with a patch and possibly the full scene update."""
@@ -5091,9 +5096,13 @@ def import_step_with_options_route():
         
     try:
         # We need a new method in ProjectManager to handle this
-        success, error_msg = pm.import_step_with_options(file, options)
+        success, error_msg, import_report = pm.import_step_with_options(file, options)
         if success:
-            return create_success_response(pm, "STEP file imported successfully.")
+            return create_success_response(
+                pm,
+                "STEP file imported successfully.",
+                extra_payload={"step_import_report": import_report}
+            )
         else:
             return jsonify({"success": False, "error": error_msg or "Failed to process STEP file."}), 500
             
