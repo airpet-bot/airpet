@@ -2568,6 +2568,11 @@ async function handleGpsEditorConfirm(data) {
 }
 
 // --- Simulation functions ---
+function formatPreflightIssues(issues, limit = 5) {
+    if (!issues || issues.length === 0) return "";
+    return issues.slice(0, limit).map(issue => `- [${issue.severity}] ${issue.message}`).join('\n');
+}
+
 async function handleRunSimulation(simSettings) {
     console.log("Checking active sources before run...");
     console.log("AppState.activeSourceIds:", AppState.activeSourceIds);
@@ -2592,6 +2597,37 @@ async function handleRunSimulation(simSettings) {
     const numEvents = parseInt(document.getElementById('simEventsInput').value, 10);
     if (numEvents <= 0) {
         UIManager.showError("Please enter a valid number of events.");
+        return;
+    }
+
+    // Preflight checks before simulation start.
+    try {
+        const preflight = await APIService.runPreflightChecks();
+        const report = preflight.preflight_report || {};
+        const summary = report.summary || {};
+
+        if (!summary.can_run) {
+            const errors = (report.issues || []).filter(i => i.severity === 'error');
+            UIManager.showError(
+                "Preflight checks failed.\n" +
+                formatPreflightIssues(errors, 8)
+            );
+            return;
+        }
+
+        if ((summary.warnings || 0) > 0) {
+            const warnings = (report.issues || []).filter(i => i.severity === 'warning');
+            const proceed = UIManager.confirmAction(
+                "Preflight warnings detected:\n\n" +
+                formatPreflightIssues(warnings, 8) +
+                "\n\nContinue anyway?"
+            );
+            if (!proceed) {
+                return;
+            }
+        }
+    } catch (error) {
+        UIManager.showError("Failed to run preflight checks: " + error.message);
         return;
     }
 

@@ -525,6 +525,15 @@ def set_active_source_route():
     else:
         return jsonify({"success": False, "error": error_msg}), 500
 
+@app.route('/api/preflight/check', methods=['POST'])
+def preflight_check_route():
+    pm = get_project_manager_for_session()
+    report = pm.run_preflight_checks()
+    return jsonify({
+        "success": True,
+        "preflight_report": report,
+    })
+
 @app.route('/api/simulation/run', methods=['POST'])
 def run_simulation():
     pm = get_project_manager_for_session()
@@ -538,6 +547,14 @@ def run_simulation():
     sim_params = request.get_json()
     if not sim_params:
         return jsonify({"success": False, "error": "Missing simulation parameters."}), 400
+
+    preflight_report = pm.run_preflight_checks()
+    if not preflight_report.get('summary', {}).get('can_run', False):
+        return jsonify({
+            "success": False,
+            "error": "Preflight checks failed. Resolve errors before running simulation.",
+            "preflight_report": preflight_report,
+        }), 400
 
     job_id = str(uuid.uuid4())
 
@@ -874,7 +891,8 @@ def run_simulation():
             "success": True,
             "message": "Simulation started.",
             "job_id": job_id,
-            "version_id": version_id
+            "version_id": version_id,
+            "preflight_summary": preflight_report.get('summary', {}),
         })
 
     except Exception as e:
