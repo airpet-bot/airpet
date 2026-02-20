@@ -17,6 +17,7 @@ from .expression_evaluator import ExpressionEvaluator
 from .geometry_types import (
     GeometryState, Define, Solid, LogicalVolume, Material, PhysicalVolumePlacement, Assembly
 )
+from .smart_cad_classifier import classify_shape, summarize_candidates
 
 def _trsf_to_dict(trsf: gp_Trsf):
     """Converts a gp_Trsf to our position and rotation dict format."""
@@ -43,6 +44,8 @@ def parse_step_file(file_path, options):
     Parses a STEP file with assembly structure and converts its geometry
     into a GeometryState object.
     """
+    smart_import_enabled = bool(options.get('smartImport', options.get('smart_import', False)))
+
     doc = TDocStd_Document("pythonocc-doc")
     reader = STEPCAFControl_Reader()
     reader.ReadFile(file_path)
@@ -52,6 +55,13 @@ def parse_step_file(file_path, options):
     
     # We will build a temporary state and then merge it into the project.
     imported_state = GeometryState()
+
+    # Smart CAD report scaffold (Phase 3 M1 foundation).
+    imported_state.smart_import_report = {
+        'enabled': smart_import_enabled,
+        'candidates': [],
+        'summary': summarize_candidates([])
+    }
     
     # Use a generic material. The user can change it later.
     default_mat_name = "G4_STAINLESS-STEEL"
@@ -75,7 +85,14 @@ def parse_step_file(file_path, options):
 
     for i in range(1, root_labels.Length() + 1):
         # The return value is a list of LVs created under this root label.
-        created_lvs = process_label(root_labels.Value(i), shape_tool, imported_state, TopLoc_Location(), grouping_name)
+        created_lvs = process_label(
+            root_labels.Value(i),
+            shape_tool,
+            imported_state,
+            TopLoc_Location(),
+            grouping_name,
+            smart_import=smart_import_enabled,
+        )
         top_level_lvs.extend(created_lvs)
 
     # --- Post-processing based on user options ---
@@ -143,9 +160,13 @@ def parse_step_file(file_path, options):
         
         imported_state.placements_to_add = placements
 
+    if smart_import_enabled:
+        candidates = imported_state.smart_import_report.get('candidates', [])
+        imported_state.smart_import_report['summary'] = summarize_candidates(candidates)
+
     return imported_state
 
-def process_label(label, shape_tool, state, parent_loc: TopLoc_Location, grouping_name):
+def process_label(label, shape_tool, state, parent_loc: TopLoc_Location, grouping_name, smart_import=False):
     """
     Recursively process labels in the STEP file's document tree.
     This version correctly handles assembly, reference, and simple shape labels.
@@ -167,14 +188,23 @@ def process_label(label, shape_tool, state, parent_loc: TopLoc_Location, groupin
             ref_label = TDF_Label()
             if shape_tool.GetReferredShape(component_label, ref_label):
                 # Recurse and aggregate the results from children.
-                created_lvs.extend(process_label(ref_label, shape_tool, state, current_loc, grouping_name))
+                created_lvs.extend(
+                    process_label(
+                        ref_label,
+                        shape_tool,
+                        state,
+                        current_loc,
+                        grouping_name,
+                        smart_import=smart_import,
+                    )
+                )
 
     # Case 2: The label is a simple shape (a leaf node in the assembly tree).
     elif shape_tool.IsSimpleShape(label):
         shape = shape_tool.GetShape(label)
         if shape.ShapeType() == TopAbs_SOLID:
             # process_solid now returns the newly created LogicalVolume.
-            new_lv = process_solid(shape, state, grouping_name)
+            new_lv = process_solid(shape, state, grouping_name, smart_import=smart_import)
             if new_lv:
                 # The transform comes from the current location in the assembly tree.
                 transform_dict = _trsf_to_dict(current_loc.Transformation())
@@ -183,7 +213,7 @@ def process_label(label, shape_tool, state, parent_loc: TopLoc_Location, groupin
     return created_lvs
 
 
-def process_solid(solid_shape, state, grouping_name):
+def process_solid(solid_shape, state, grouping_name, smart_import=False):
     """Tessellates a single solid with improved quality and vertex deduplication."""
     solid_index = len(state.solids)
     
@@ -267,6 +297,10 @@ def process_solid(solid_shape, state, grouping_name):
 
     # Don't create defines. Store vertices directly.
     solid_base_name = f"{grouping_name}_solid_{solid_index}"
+
+    if smart_import and hasattr(state, 'smart_import_report'):
+        candidate = classify_shape(solid_shape, source_id=solid_base_name)
+        state.smart_import_report.setdefault('candidates', []).append(candidate)
     
     facets = []
     for face_indices in all_faces:
