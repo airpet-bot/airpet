@@ -1,6 +1,14 @@
 import pytest
+import numpy as np
 from unittest.mock import MagicMock, patch
-from src.step_parser import process_solid, process_label, _trsf_to_dict
+from src.step_parser import (
+    process_solid,
+    process_label,
+    _trsf_to_dict,
+    _compose_transform_dicts,
+    _candidate_to_primitive,
+    _transform_dict_to_matrix,
+)
 from src.geometry_types import GeometryState
 import math
 
@@ -256,7 +264,13 @@ def test_process_solid_uses_primitive_when_confident():
             'source_id': 'smart_group_solid_0',
             'classification': 'box',
             'confidence': 0.95,
-            'params': {'x': 10.0, 'y': 20.0, 'z': 30.0},
+            'params': {
+                'x': 10.0,
+                'y': 20.0,
+                'z': 30.0,
+                'center': (5.0, 0.0, 0.0),
+                'axes': [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+            },
             'fallback_reason': None,
         }
 
@@ -270,3 +284,46 @@ def test_process_solid_uses_primitive_when_confident():
 
         # Primitive path should skip tessellation mesh call.
         MockMesh.assert_not_called()
+
+
+def test_compose_transform_dicts_applies_local_after_parent():
+    parent = {
+        'position': {'x': 10.0, 'y': 0.0, 'z': 0.0},
+        'rotation': {'x': 0.0, 'y': 0.0, 'z': math.pi / 2.0},
+    }
+    local = {
+        'position': {'x': 0.0, 'y': 5.0, 'z': 0.0},
+        'rotation': {'x': 0.0, 'y': 0.0, 'z': 0.0},
+    }
+
+    composed = _compose_transform_dicts(parent, local)
+
+    assert pytest.approx(composed['position']['x'], abs=1e-6) == 5.0
+    assert pytest.approx(composed['position']['y'], abs=1e-6) == 0.0
+    assert pytest.approx(composed['position']['z'], abs=1e-6) == 0.0
+
+
+def test_candidate_to_primitive_cylinder_preserves_axis_orientation():
+    candidate = {
+        'classification': 'cylinder',
+        'params': {
+            'rmin': 0.0,
+            'rmax': 2.0,
+            'z': 10.0,
+            'center': (1.0, 2.0, 3.0),
+            'axis': (1.0, 0.0, 0.0),
+        },
+    }
+
+    primitive_type, primitive_params, local_transform = _candidate_to_primitive(candidate)
+
+    assert primitive_type == 'tube'
+    assert primitive_params['rmax'] == 2.0
+    assert pytest.approx(local_transform['position']['x']) == 1.0
+    assert pytest.approx(local_transform['position']['y']) == 2.0
+    assert pytest.approx(local_transform['position']['z']) == 3.0
+
+    matrix = _transform_dict_to_matrix(local_transform)
+    # The transformed local +Z axis should align with global +X.
+    z_axis_world = matrix[:3, 2]
+    assert np.allclose(z_axis_world, np.array([1.0, 0.0, 0.0]), atol=1e-6)

@@ -301,6 +301,8 @@ def _fit_cylinder_candidate(
     r_spread = ((max(radii) - min(radii)) / max(radii)) if max(radii) > 0 else 1.0
 
     axis = cyl_desc[0].get("axis", (0.0, 0.0, 1.0))
+    center = obb_info.get("center") if isinstance(obb_info, dict) else cyl_desc[0].get("origin", (0.0, 0.0, 0.0))
+
     height = _obb_extent_along_axis(obb_info, axis)
     if height is None or height <= 0.0:
         return build_candidate(source_id=source_id, classification="tessellated", fallback_reason="invalid_cylinder_height")
@@ -324,6 +326,7 @@ def _fit_cylinder_candidate(
             "startphi": 0.0,
             "deltaphi": _safe_round(6.283185307179586),
             "axis": tuple(_safe_round(v) for v in axis),
+            "center": tuple(_safe_round(v) for v in center),
             "radius_spread": _safe_round(r_spread),
         },
     )

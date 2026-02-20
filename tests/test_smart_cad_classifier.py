@@ -127,6 +127,7 @@ def test_classify_from_face_descriptors_cylinder():
     assert c["fallback_reason"] is None
     assert c["params"]["rmax"] == 12.0
     assert c["params"]["z"] == 50.0
+    assert c["params"]["center"] == (0.0, 0.0, 0.0)
 
 
 def test_classify_from_face_descriptors_sphere():
