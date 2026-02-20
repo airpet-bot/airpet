@@ -213,9 +213,70 @@ def process_label(label, shape_tool, state, parent_loc: TopLoc_Location, groupin
     return created_lvs
 
 
+def _candidate_to_primitive(candidate):
+    """Maps a smart CAD candidate to a Solid(type, raw_parameters) pair."""
+    classification = candidate.get('classification')
+    params = candidate.get('params', {}) or {}
+
+    if classification == 'box':
+        return 'box', {
+            'x': params.get('x', 0.0),
+            'y': params.get('y', 0.0),
+            'z': params.get('z', 0.0),
+        }
+
+    if classification == 'cylinder':
+        return 'tube', {
+            'rmin': params.get('rmin', 0.0),
+            'rmax': params.get('rmax', 0.0),
+            'z': params.get('z', 0.0),
+            'startphi': params.get('startphi', 0.0),
+            'deltaphi': params.get('deltaphi', 6.283185307179586),
+        }
+
+    if classification == 'sphere':
+        return 'sphere', {
+            'rmin': params.get('rmin', 0.0),
+            'rmax': params.get('rmax', 0.0),
+            'startphi': params.get('startphi', 0.0),
+            'deltaphi': params.get('deltaphi', 6.283185307179586),
+            'starttheta': params.get('starttheta', 0.0),
+            'deltatheta': params.get('deltatheta', 3.141592653589793),
+        }
+
+    return None, None
+
+
+def _build_lv_for_solid(state, solid_name, solid_type, raw_params):
+    solid_obj = Solid(solid_name, solid_type, raw_params)
+    state.add_solid(solid_obj)
+
+    lv_name = f"{solid_name}_LV"
+    lv = LogicalVolume(lv_name, solid_obj.name, "G4_STAINLESS-STEEL")
+    state.add_logical_volume(lv)
+    return lv
+
+
 def process_solid(solid_shape, state, grouping_name, smart_import=False):
-    """Tessellates a single solid with improved quality and vertex deduplication."""
+    """Builds a solid from STEP geometry.
+
+    Smart import path:
+    - classify primitive candidates (box/cylinder/sphere)
+    - if confidence is high enough, create primitive GDML solid directly
+    - otherwise fallback to tessellated mesh construction
+    """
     solid_index = len(state.solids)
+    solid_base_name = f"{grouping_name}_solid_{solid_index}"
+
+    # Smart CAD candidate attempt before tessellation.
+    if smart_import and hasattr(state, 'smart_import_report'):
+        candidate = classify_shape(solid_shape, source_id=solid_base_name)
+        state.smart_import_report.setdefault('candidates', []).append(candidate)
+
+        primitive_conf_threshold = 0.80
+        primitive_type, primitive_params = _candidate_to_primitive(candidate)
+        if primitive_type and candidate.get('confidence', 0.0) >= primitive_conf_threshold:
+            return _build_lv_for_solid(state, solid_base_name, primitive_type, primitive_params)
     
     # Improved meshing quality. 
     # Linear deflection: max distance between mesh and geometry surface (mm).
@@ -296,12 +357,6 @@ def process_solid(solid_shape, state, grouping_name, smart_import=False):
         return
 
     # Don't create defines. Store vertices directly.
-    solid_base_name = f"{grouping_name}_solid_{solid_index}"
-
-    if smart_import and hasattr(state, 'smart_import_report'):
-        candidate = classify_shape(solid_shape, source_id=solid_base_name)
-        state.smart_import_report.setdefault('candidates', []).append(candidate)
-    
     facets = []
     for face_indices in all_faces:
         v1 = unique_vertices[face_indices[0]]

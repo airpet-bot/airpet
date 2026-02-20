@@ -6,6 +6,7 @@ from src.smart_cad_classifier import (
     build_candidate,
     classify_candidates,
     classify_shape,
+    classify_from_face_descriptors,
     summarize_candidates,
 )
 
@@ -89,3 +90,62 @@ def test_summary_counts_and_ratio():
     assert summary["counts_by_classification"]["box"] == 1
     assert summary["counts_by_classification"]["cylinder"] == 1
     assert summary["counts_by_classification"]["tessellated"] == 1
+
+
+def test_classify_from_face_descriptors_box():
+    descriptors = [{"surface_type": "plane"} for _ in range(6)]
+    obb_info = {
+        "center": (0.0, 0.0, 0.0),
+        "axes": [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+        "half_sizes": [5.0, 10.0, 15.0],
+    }
+
+    c = classify_from_face_descriptors("box_case", descriptors, obb_info=obb_info)
+
+    assert c["classification"] == "box"
+    assert c["fallback_reason"] is None
+    assert c["params"]["x"] == 10.0
+    assert c["params"]["y"] == 20.0
+    assert c["params"]["z"] == 30.0
+
+
+def test_classify_from_face_descriptors_cylinder():
+    descriptors = [
+        {"surface_type": "cylinder", "radius": 12.0, "axis": (0.0, 0.0, 1.0)},
+        {"surface_type": "plane"},
+        {"surface_type": "plane"},
+    ]
+    obb_info = {
+        "center": (0.0, 0.0, 0.0),
+        "axes": [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
+        "half_sizes": [12.0, 12.0, 25.0],
+    }
+
+    c = classify_from_face_descriptors("cyl_case", descriptors, obb_info=obb_info)
+
+    assert c["classification"] == "cylinder"
+    assert c["fallback_reason"] is None
+    assert c["params"]["rmax"] == 12.0
+    assert c["params"]["z"] == 50.0
+
+
+def test_classify_from_face_descriptors_sphere():
+    descriptors = [{"surface_type": "sphere", "radius": 8.5, "center": (1.0, 2.0, 3.0)}]
+
+    c = classify_from_face_descriptors("sphere_case", descriptors, obb_info=None)
+
+    assert c["classification"] == "sphere"
+    assert c["fallback_reason"] is None
+    assert c["params"]["rmax"] == 8.5
+
+
+def test_classify_from_face_descriptors_ambiguous_fallback():
+    descriptors = [
+        {"surface_type": "plane"},
+        {"surface_type": "sphere", "radius": 10.0},
+    ]
+
+    c = classify_from_face_descriptors("mixed_case", descriptors, obb_info=None)
+
+    assert c["classification"] == "tessellated"
+    assert c["fallback_reason"] == "ambiguous_surface_mix"

@@ -240,3 +240,33 @@ def test_process_solid_collects_smart_import_candidate():
         candidate = state.smart_import_report['candidates'][0]
         assert candidate['classification'] == 'box'
         MockClassify.assert_called_once()
+
+
+def test_process_solid_uses_primitive_when_confident():
+    state = GeometryState()
+    state.smart_import_report = {'enabled': True, 'candidates': [], 'summary': {}}
+
+    grouping_name = "smart_group"
+    mock_solid = MagicMock()
+
+    with patch('src.step_parser.classify_shape') as MockClassify, \
+         patch('src.step_parser.BRepMesh_IncrementalMesh') as MockMesh:
+
+        MockClassify.return_value = {
+            'source_id': 'smart_group_solid_0',
+            'classification': 'box',
+            'confidence': 0.95,
+            'params': {'x': 10.0, 'y': 20.0, 'z': 30.0},
+            'fallback_reason': None,
+        }
+
+        lv = process_solid(mock_solid, state, grouping_name, smart_import=True)
+
+        assert lv is not None
+        assert len(state.solids) == 1
+        solid = list(state.solids.values())[0]
+        assert solid.type == 'box'
+        assert solid.raw_parameters['x'] == 10.0
+
+        # Primitive path should skip tessellation mesh call.
+        MockMesh.assert_not_called()
