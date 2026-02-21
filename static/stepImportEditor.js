@@ -6,6 +6,8 @@ let modalElement, confirmButton, cancelButton, stepFileNameEl,
     stepImportGroupName, stepImportParentLV, stepImportOffsetContainer,
     stepSmartImportCheckbox;
 
+let reportModalElement, closeReportButton, stepImportReportSummary, stepImportReportTableBody;
+
 let currentFile = null;
 let onConfirmCallback = null;
 let currentProjectState = null;
@@ -26,8 +28,14 @@ export function initStepImportEditor(callbacks) {
     stepImportOffsetContainer = document.getElementById('stepImportOffsetInputs');
     stepSmartImportCheckbox = document.getElementById('stepSmartImportCheckbox');
 
+    reportModalElement = document.getElementById('stepImportReportModal');
+    closeReportButton = document.getElementById('closeStepImportReport');
+    stepImportReportSummary = document.getElementById('stepImportReportSummary');
+    stepImportReportTableBody = document.getElementById('stepImportReportTableBody');
+
     cancelButton.addEventListener('click', hide);
     confirmButton.addEventListener('click', handleConfirm);
+    if (closeReportButton) closeReportButton.addEventListener('click', hideReport);
     
     console.log("STEP Import Editor Initialized.");
 }
@@ -95,6 +103,67 @@ function handleConfirm() {
         onConfirmCallback(options);
     }
     hide();
+}
+
+function hideReport() {
+    if (reportModalElement) reportModalElement.style.display = 'none';
+}
+
+function _formatModeCell(mode) {
+    const safeMode = (mode === 'primitive') ? 'primitive' : 'tessellated';
+    return `<span class="step-report-mode-pill ${safeMode}">${safeMode}</span>`;
+}
+
+export function showImportReport(report, fileName = '') {
+    if (!reportModalElement || !stepImportReportSummary || !stepImportReportTableBody) return;
+
+    const summary = report?.summary || {};
+    const total = summary.total || 0;
+    const selected = summary.selected_mode_counts || {};
+    const primitiveSelected = selected.primitive || 0;
+    const tessSelected = selected.tessellated || 0;
+    const primitivePct = total > 0 ? ((summary.selected_primitive_ratio || 0) * 100).toFixed(1) : '0.0';
+
+    stepImportReportSummary.textContent = [
+        fileName ? `File: ${fileName}` : null,
+        `Total solids: ${total}`,
+        `Selected primitive: ${primitiveSelected} (${primitivePct}%)`,
+        `Selected tessellated fallback: ${tessSelected}`
+    ].filter(Boolean).join(' | ');
+
+    const candidates = Array.isArray(report?.candidates) ? report.candidates : [];
+    stepImportReportTableBody.innerHTML = '';
+
+    if (candidates.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td colspan="5" style="color:#64748b;">No candidate details available.</td>`;
+        stepImportReportTableBody.appendChild(tr);
+    } else {
+        const maxRows = 500;
+        const rows = candidates.slice(0, maxRows);
+
+        rows.forEach(c => {
+            const tr = document.createElement('tr');
+            const selectedMode = c?.selected_mode || 'tessellated';
+            const conf = Number.isFinite(Number(c?.confidence)) ? Number(c.confidence).toFixed(3) : 'n/a';
+            tr.innerHTML = `
+                <td>${c?.source_id || ''}</td>
+                <td>${c?.classification || ''}</td>
+                <td>${_formatModeCell(selectedMode)}</td>
+                <td>${conf}</td>
+                <td>${c?.fallback_reason || ''}</td>
+            `;
+            stepImportReportTableBody.appendChild(tr);
+        });
+
+        if (candidates.length > maxRows) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td colspan="5" style="color:#64748b;">Showing first ${maxRows} rows of ${candidates.length} candidates.</td>`;
+            stepImportReportTableBody.appendChild(tr);
+        }
+    }
+
+    reportModalElement.style.display = 'block';
 }
 
 /**

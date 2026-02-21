@@ -2478,6 +2478,10 @@ async function handleConfirmStepImport(options) {
         if (reportMessage) {
             UIManager.showNotification(reportMessage);
         }
+
+        if (result.step_import_report && result.step_import_report.enabled) {
+            StepImportEditor.showImportReport(result.step_import_report, options.file?.name || '');
+        }
     } catch (error) {
         UIManager.hideLoading();
         UIManager.showError("Failed to import STEP file: " + error.message);
