@@ -33,6 +33,12 @@ python scripts/benchmark_smart_import.py \
   --output benchmarks/results/m2_run1.json
 ```
 
+Print a compact summary from a result file:
+
+```bash
+python scripts/summarize_smart_import_benchmark.py benchmarks/results/m2_run1.json
+```
+
 ### Output
 
 Output JSON includes per-mode metrics:
