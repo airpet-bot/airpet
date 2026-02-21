@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from statistics import median
+from math import isfinite, sqrt
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 try:
@@ -56,9 +57,14 @@ ALLOWED_FALLBACK_REASONS = {
     "box_fit_nonpositive_extent",
     "no_cylinder_face",
     "invalid_cylinder_radius",
+    "invalid_cylinder_axis",
     "invalid_cylinder_height",
+    "inconsistent_cylinder_axes",
+    "inconsistent_cylinder_radii",
     "no_sphere_face",
     "invalid_sphere_radius",
+    "inconsistent_sphere_centers",
+    "inconsistent_sphere_radii",
 }
 
 SURFACE_PLANE = "plane"
@@ -119,6 +125,24 @@ def _vec3_tuple(obj: Any) -> Tuple[float, float, float]:
 
 def _dot(a: Tuple[float, float, float], b: Tuple[float, float, float]) -> float:
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _norm(v: Tuple[float, float, float]) -> float:
+    return sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+
+
+def _normalize_vec(v: Tuple[float, float, float]) -> Optional[Tuple[float, float, float]]:
+    n = _norm(v)
+    if n <= 1e-12:
+        return None
+    return (v[0] / n, v[1] / n, v[2] / n)
+
+
+def _distance(a: Tuple[float, float, float], b: Tuple[float, float, float]) -> float:
+    dx = a[0] - b[0]
+    dy = a[1] - b[1]
+    dz = a[2] - b[2]
+    return sqrt(dx * dx + dy * dy + dz * dz)
 
 
 def _safe_round(v: Any, ndigits: int = 6) -> float:
@@ -184,12 +208,23 @@ def _extract_face_descriptors(shape: Any) -> List[Dict[str, Any]]:
 
         elif surf_type == GeomAbs_Cylinder:
             cyl = surf.Cylinder()
+            height_hint = None
+            try:
+                vmin = float(surf.FirstVParameter())
+                vmax = float(surf.LastVParameter())
+                span = abs(vmax - vmin)
+                if isfinite(span) and span > 0.0:
+                    height_hint = span
+            except Exception:
+                height_hint = None
+
             descriptors.append(
                 {
                     "surface_type": SURFACE_CYLINDER,
                     "radius": float(cyl.Radius()),
                     "origin": _vec3_tuple(cyl.Location()),
                     "axis": _vec3_tuple(cyl.Axis().Direction()),
+                    "height_hint": height_hint,
                 }
             )
 
@@ -323,17 +358,67 @@ def _fit_cylinder_candidate(
     if not cyl_desc:
         return build_candidate(source_id=source_id, classification="tessellated", fallback_reason="no_cylinder_face")
 
-    radii = [float(d.get("radius", 0.0)) for d in cyl_desc if float(d.get("radius", 0.0)) > 0.0]
+    radii: List[float] = []
+    for d in cyl_desc:
+        try:
+            r = float(d.get("radius", 0.0))
+        except Exception:
+            continue
+        if isfinite(r) and r > 0.0:
+            radii.append(r)
+
     if not radii:
         return build_candidate(source_id=source_id, classification="tessellated", fallback_reason="invalid_cylinder_radius")
 
     r_med = median(radii)
     r_spread = ((max(radii) - min(radii)) / max(radii)) if max(radii) > 0 else 1.0
+    if r_spread > 0.25:
+        return build_candidate(source_id=source_id, classification="tessellated", fallback_reason="inconsistent_cylinder_radii")
 
-    axis = cyl_desc[0].get("axis", (0.0, 0.0, 1.0))
-    center = obb_info.get("center") if isinstance(obb_info, dict) else cyl_desc[0].get("origin", (0.0, 0.0, 0.0))
+    normalized_axes: List[Tuple[float, float, float]] = []
+    for d in cyl_desc:
+        axis = d.get("axis", (0.0, 0.0, 1.0))
+        axis_norm = _normalize_vec((float(axis[0]), float(axis[1]), float(axis[2])))
+        if axis_norm is not None:
+            normalized_axes.append(axis_norm)
+
+    if not normalized_axes:
+        return build_candidate(source_id=source_id, classification="tessellated", fallback_reason="invalid_cylinder_axis")
+
+    axis = normalized_axes[0]
+    for other in normalized_axes[1:]:
+        if abs(_dot(axis, other)) < 0.98:
+            return build_candidate(source_id=source_id, classification="tessellated", fallback_reason="inconsistent_cylinder_axes")
+
+    if isinstance(obb_info, dict):
+        center = obb_info.get("center", (0.0, 0.0, 0.0))
+    else:
+        origins = [d.get("origin") for d in cyl_desc if isinstance(d.get("origin"), tuple) and len(d.get("origin")) == 3]
+        if origins:
+            center = (
+                sum(float(o[0]) for o in origins) / len(origins),
+                sum(float(o[1]) for o in origins) / len(origins),
+                sum(float(o[2]) for o in origins) / len(origins),
+            )
+        else:
+            center = (0.0, 0.0, 0.0)
 
     height = _obb_extent_along_axis(obb_info, axis)
+    if height is None or height <= 0.0:
+        height_hints: List[float] = []
+        for d in cyl_desc:
+            raw_h = d.get("height_hint")
+            if raw_h is None:
+                continue
+            try:
+                h = float(raw_h)
+            except Exception:
+                continue
+            if isfinite(h) and h > 0.0:
+                height_hints.append(h)
+        if height_hints:
+            height = median(height_hints)
+
     if height is None or height <= 0.0:
         return build_candidate(source_id=source_id, classification="tessellated", fallback_reason="invalid_cylinder_height")
 
@@ -344,6 +429,8 @@ def _fit_cylinder_candidate(
         conf += 0.15
     elif r_spread < 0.05:
         conf += 0.05
+    if obb_info is None:
+        conf -= 0.05
 
     return build_candidate(
         source_id=source_id,
@@ -367,20 +454,49 @@ def _fit_sphere_candidate(source_id: str, descriptors: List[Dict[str, Any]]) -> 
     if not sph_desc:
         return build_candidate(source_id=source_id, classification="tessellated", fallback_reason="no_sphere_face")
 
-    radii = [float(d.get("radius", 0.0)) for d in sph_desc if float(d.get("radius", 0.0)) > 0.0]
+    radii: List[float] = []
+    for d in sph_desc:
+        try:
+            r = float(d.get("radius", 0.0))
+        except Exception:
+            continue
+        if isfinite(r) and r > 0.0:
+            radii.append(r)
+
     if not radii:
         return build_candidate(source_id=source_id, classification="tessellated", fallback_reason="invalid_sphere_radius")
 
     r_med = median(radii)
     r_spread = ((max(radii) - min(radii)) / max(radii)) if max(radii) > 0 else 1.0
+    if r_spread > 0.25:
+        return build_candidate(source_id=source_id, classification="tessellated", fallback_reason="inconsistent_sphere_radii")
+
+    centers: List[Tuple[float, float, float]] = []
+    for d in sph_desc:
+        center = d.get("center")
+        if isinstance(center, tuple) and len(center) == 3:
+            try:
+                centers.append((float(center[0]), float(center[1]), float(center[2])))
+            except Exception:
+                continue
+
+    if centers:
+        max_center_dist = max(_distance(centers[0], c) for c in centers)
+        if max_center_dist > max(1e-3, 0.05 * r_med):
+            return build_candidate(source_id=source_id, classification="tessellated", fallback_reason="inconsistent_sphere_centers")
+        center = (
+            sum(c[0] for c in centers) / len(centers),
+            sum(c[1] for c in centers) / len(centers),
+            sum(c[2] for c in centers) / len(centers),
+        )
+    else:
+        center = (0.0, 0.0, 0.0)
 
     conf = 0.7
     if len(sph_desc) == 1:
         conf += 0.2
     if r_spread < 0.01:
         conf += 0.1
-
-    center = sph_desc[0].get("center", (0.0, 0.0, 0.0))
 
     return build_candidate(
         source_id=source_id,

@@ -33,9 +33,14 @@ Primitive fit failures:
 - `box_fit_nonpositive_extent`
 - `no_cylinder_face`
 - `invalid_cylinder_radius`
+- `invalid_cylinder_axis`
 - `invalid_cylinder_height`
+- `inconsistent_cylinder_axes`
+- `inconsistent_cylinder_radii`
 - `no_sphere_face`
 - `invalid_sphere_radius`
+- `inconsistent_sphere_centers`
+- `inconsistent_sphere_radii`
 
 ## Selection rules
 
