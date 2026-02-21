@@ -834,6 +834,118 @@ class ProjectManager:
         
         return state_dict
 
+    def _validate_parameter_entry(self, name, entry, is_update=False):
+        if not self.current_geometry_state:
+            return False, "No active project state."
+
+        if not name or not isinstance(name, str):
+            return False, "Parameter name is required."
+
+        if not isinstance(entry, dict):
+            return False, "Parameter payload must be an object."
+
+        target_type = entry.get('target_type')
+        if target_type not in {'define', 'solid', 'source', 'sim_option'}:
+            return False, "target_type must be one of: define, solid, source, sim_option."
+
+        target_ref = entry.get('target_ref')
+        if not isinstance(target_ref, dict):
+            return False, "target_ref must be an object."
+
+        bounds = entry.get('bounds')
+        if not isinstance(bounds, dict):
+            return False, "bounds must be an object with min/max."
+
+        try:
+            min_v = float(bounds.get('min'))
+            max_v = float(bounds.get('max'))
+        except (TypeError, ValueError):
+            return False, "bounds.min and bounds.max must be numeric."
+
+        if min_v >= max_v:
+            return False, "bounds.min must be smaller than bounds.max."
+
+        try:
+            default_v = float(entry.get('default'))
+        except (TypeError, ValueError):
+            return False, "default must be numeric."
+
+        if default_v < min_v or default_v > max_v:
+            return False, "default must be inside [bounds.min, bounds.max]."
+
+        # Target validation
+        if target_type == 'define':
+            define_name = target_ref.get('name')
+            if not define_name or define_name not in self.current_geometry_state.defines:
+                return False, f"Define target '{define_name}' not found."
+        elif target_type == 'solid':
+            solid_name = target_ref.get('name')
+            param_name = target_ref.get('param')
+            if not solid_name or solid_name not in self.current_geometry_state.solids:
+                return False, f"Solid target '{solid_name}' not found."
+            if not param_name:
+                return False, "Solid parameter target_ref.param is required."
+        elif target_type == 'source':
+            source_name = target_ref.get('name')
+            field_name = target_ref.get('field')
+            if not source_name or source_name not in self.current_geometry_state.sources:
+                return False, f"Source target '{source_name}' not found."
+            if not field_name:
+                return False, "Source target_ref.field is required."
+        elif target_type == 'sim_option':
+            option_key = target_ref.get('key')
+            if not option_key:
+                return False, "sim_option target_ref.key is required."
+
+        return True, None
+
+    def list_parameter_registry(self):
+        if not self.current_geometry_state:
+            return {}
+        return dict(self.current_geometry_state.parameter_registry or {})
+
+    def upsert_parameter_registry_entry(self, name, entry):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        ok, err = self._validate_parameter_entry(name, entry)
+        if not ok:
+            return None, err
+
+        registry = self.current_geometry_state.parameter_registry
+        if name in registry and entry.get('name') and entry.get('name') != name:
+            return None, "Payload name must match parameter key for updates."
+
+        normalized = {
+            'name': name,
+            'target_type': entry.get('target_type'),
+            'target_ref': entry.get('target_ref'),
+            'bounds': {
+                'min': float(entry['bounds']['min']),
+                'max': float(entry['bounds']['max']),
+            },
+            'default': float(entry.get('default')),
+            'units': entry.get('units', ''),
+            'enabled': bool(entry.get('enabled', True)),
+            'constraint_group': entry.get('constraint_group'),
+        }
+
+        registry[name] = normalized
+        self._capture_history_state(f"Updated parameter registry entry '{name}'")
+        return normalized, None
+
+    def delete_parameter_registry_entry(self, name):
+        if not self.current_geometry_state:
+            return False, "No active project state."
+
+        registry = self.current_geometry_state.parameter_registry
+        if name not in registry:
+            return False, f"Parameter '{name}' not found."
+
+        del registry[name]
+        self._capture_history_state(f"Deleted parameter registry entry '{name}'")
+        return True, None
+
     def get_object_details(self, object_type, object_name_or_id):
         """
         Get details for a specific object by its type and name/ID.

@@ -783,6 +783,22 @@ class GeometryState:
         # Changed from single ID to list of IDs for multiple active sources
         self.active_source_ids = [] 
 
+        # Parameter registry for M3 studies/optimization.
+        # Format:
+        # {
+        #   'param_name': {
+        #       'name': 'param_name',
+        #       'target_type': 'define|solid|source|sim_option',
+        #       'target_ref': {...},
+        #       'bounds': {'min': x, 'max': y},
+        #       'default': x,
+        #       'units': 'mm',
+        #       'enabled': True,
+        #       'constraint_group': None,
+        #   }
+        # }
+        self.parameter_registry = {}
+
         # --- Dictionary to hold UI grouping information ---
         # Format: { 'solids': [{'name': 'MyCrystals', 'members': ['solid1_name', 'solid2_name']}], ... }
         self.ui_groups = {
@@ -835,6 +851,7 @@ class GeometryState:
             "border_surfaces": {k: v.to_dict() for k, v in self.border_surfaces.items()},
             "sources": {k: v.to_dict() for k, v in self.sources.items()},
             "active_source_ids": self.active_source_ids,
+            "parameter_registry": self.parameter_registry,
             "ui_groups": self.ui_groups
         }
 
@@ -872,6 +889,12 @@ class GeometryState:
             instance.active_source_ids = [legacy_id]
         else:
             instance.active_source_ids = []
+
+        registry = data.get('parameter_registry', {})
+        if isinstance(registry, dict):
+            instance.parameter_registry = registry
+        else:
+            instance.parameter_registry = {}
 
         instance.ui_groups = data.get('ui_groups', instance.ui_groups)
 

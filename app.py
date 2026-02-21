@@ -2710,6 +2710,43 @@ def update_define_route():
     else:
         return jsonify({"success": False, "error": error_msg}), 500
 
+@app.route('/api/parameter_registry/list', methods=['GET'])
+def parameter_registry_list_route():
+    pm = get_project_manager_for_session()
+    registry = pm.list_parameter_registry()
+    return jsonify({"success": True, "parameter_registry": registry})
+
+
+@app.route('/api/parameter_registry/upsert', methods=['POST'])
+def parameter_registry_upsert_route():
+    pm = get_project_manager_for_session()
+
+    data = request.get_json() or {}
+    name = data.get('name')
+    if not name:
+        return jsonify({"success": False, "error": "Parameter name is required."}), 400
+
+    entry, err = pm.upsert_parameter_registry_entry(name, data)
+    if entry:
+        return create_success_response(pm, f"Parameter '{name}' saved.")
+    return jsonify({"success": False, "error": err}), 400
+
+
+@app.route('/api/parameter_registry/delete', methods=['POST'])
+def parameter_registry_delete_route():
+    pm = get_project_manager_for_session()
+
+    data = request.get_json() or {}
+    name = data.get('name')
+    if not name:
+        return jsonify({"success": False, "error": "Parameter name is required."}), 400
+
+    ok, err = pm.delete_parameter_registry_entry(name)
+    if ok:
+        return create_success_response(pm, f"Parameter '{name}' deleted.")
+    return jsonify({"success": False, "error": err}), 404
+
+
 @app.route('/add_solid_and_place', methods=['POST'])
 def add_solid_and_place_route():
     pm = get_project_manager_for_session()
