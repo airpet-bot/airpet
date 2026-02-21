@@ -1,0 +1,12 @@
+{
+  "m2-smart-import-baseline-local": {
+    "max_import_overhead_pct": 60.0,
+    "min_selected_primitive_ratio": 0.0,
+    "require_success": true
+  },
+  "m2-smart-import-nuc13-local": {
+    "max_import_overhead_pct": 35.0,
+    "min_selected_primitive_ratio": 0.04,
+    "require_success": true
+  }
+}

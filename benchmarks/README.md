@@ -39,6 +39,14 @@ Print a compact summary from a result file:
 python scripts/summarize_smart_import_benchmark.py benchmarks/results/m2_run1.json
 ```
 
+Check result against threshold policy:
+
+```bash
+python scripts/check_benchmark_thresholds.py \
+  --thresholds benchmarks/thresholds/m2_thresholds.json \
+  --result benchmarks/results/m2_run1.json
+```
+
 ### Output
 
 Output JSON includes per-mode metrics:
@@ -57,3 +65,4 @@ Default output directory:
 
 - Harness runs in-process via Flask test client (no separate server required).
 - Simulation benchmarking is optional and may require local Geant4 runtime setup.
+- Published M2 baseline report: `benchmarks/reports/m2_baseline_report.md`
