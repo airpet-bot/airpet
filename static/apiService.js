@@ -306,6 +306,15 @@ export async function runParamStudy(name, maxRuns = null) {
     return handleResponse(response);
 }
 
+export async function extractObjectives(versionId, jobId, objectives) {
+    const response = await fetch(`${API_BASE_URL}/api/objectives/extract/${versionId}/${jobId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ objectives }),
+    });
+    return handleResponse(response);
+}
+
 // --- Sensitivity Matrix API ---
 
 /**

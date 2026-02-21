@@ -1,5 +1,5 @@
 let modal, tableBody;
-let nameInput, modeInput, paramsInput, gridStepsInput, samplesInput, seedInput, maxRunsInput, runOutput;
+let nameInput, modeInput, paramsInput, objectivesInput, gridStepsInput, samplesInput, seedInput, maxRunsInput, runOutput;
 let saveBtn, deleteBtn, runBtn, refreshBtn, cancelBtn;
 
 let callbacks = {
@@ -17,6 +17,12 @@ function _setForm(study = null, name = '') {
     nameInput.value = name || s.name || '';
     modeInput.value = s.mode || 'grid';
     paramsInput.value = (s.parameters || []).join(',');
+    objectivesInput.value = (s.objectives || []).map(o => {
+        const metric = o.metric || '';
+        const namePart = o.name ? `:${o.name}` : '';
+        const dirPart = o.direction ? `:${o.direction}` : '';
+        return `${metric}${namePart}${dirPart}`;
+    }).join(',');
     gridStepsInput.value = s.grid?.steps ?? 3;
     samplesInput.value = s.random?.samples ?? 10;
     seedInput.value = s.random?.seed ?? 42;
@@ -27,10 +33,23 @@ function _studyFromForm() {
     const mode = modeInput.value;
     const parameters = paramsInput.value.split(',').map(x => x.trim()).filter(Boolean);
 
+    const objectives = objectivesInput.value
+        .split(',')
+        .map(x => x.trim())
+        .filter(Boolean)
+        .map(token => {
+            const parts = token.split(':').map(p => p.trim());
+            const metric = parts[0];
+            const name = parts[1] || metric;
+            const direction = parts[2] || 'maximize';
+            return { metric, name, direction };
+        });
+
     return {
         name: nameInput.value.trim(),
         mode,
         parameters,
+        objectives,
         grid: {
             steps: Number(gridStepsInput.value || 3),
             per_parameter_steps: {},
@@ -112,6 +131,7 @@ export function init(newCallbacks = {}) {
     nameInput = document.getElementById('ps_name');
     modeInput = document.getElementById('ps_mode');
     paramsInput = document.getElementById('ps_parameters');
+    objectivesInput = document.getElementById('ps_objectives');
     gridStepsInput = document.getElementById('ps_grid_steps');
     samplesInput = document.getElementById('ps_samples');
     seedInput = document.getElementById('ps_seed');

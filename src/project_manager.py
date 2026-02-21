@@ -979,6 +979,26 @@ class ProjectManager:
             if samples < 1:
                 return False, "Random studies require at least 1 sample."
 
+        objectives = config.get('objectives', []) or []
+        if not isinstance(objectives, list):
+            return False, "objectives must be a list."
+        allowed_metrics = {
+            'success_flag',
+            'solids_count',
+            'logical_volumes_count',
+            'placements_count',
+            'sources_count',
+        }
+        for idx, obj in enumerate(objectives):
+            if not isinstance(obj, dict):
+                return False, f"Objective at index {idx} must be an object."
+            metric = obj.get('metric')
+            if metric not in allowed_metrics:
+                return False, f"Objective metric '{metric}' is not supported."
+            direction = obj.get('direction', 'maximize')
+            if direction not in {'maximize', 'minimize'}:
+                return False, f"Objective direction '{direction}' is invalid."
+
         return True, None
 
     def list_param_studies(self):
@@ -1076,6 +1096,53 @@ class ProjectManager:
 
         return False, f"Unsupported target_type '{target_type}'."
 
+    def _compute_run_metrics(self):
+        """Compute lightweight per-run metrics for study objective evaluation."""
+        state = self.current_geometry_state
+        placement_count = 0
+        for lv in state.logical_volumes.values():
+            if lv.content_type == 'physvol' and isinstance(lv.content, list):
+                placement_count += len(lv.content)
+        for asm in state.assemblies.values():
+            placement_count += len(getattr(asm, 'placements', []) or [])
+
+        return {
+            'solids_count': len(state.solids),
+            'logical_volumes_count': len(state.logical_volumes),
+            'sources_count': len(state.sources),
+            'placements_count': placement_count,
+        }
+
+    def _evaluate_study_objectives(self, objectives, run_record):
+        """Evaluate configured objectives from run-local metrics.
+
+        Supported objective fields:
+          - name (optional; defaults to metric)
+          - metric: success_flag|solids_count|logical_volumes_count|placements_count|sources_count
+          - direction: maximize|minimize (metadata only for now)
+        """
+        if not objectives:
+            return {}
+
+        out = {}
+        metrics = run_record.get('metrics', {}) or {}
+        success = 1.0 if run_record.get('success') else 0.0
+
+        for obj in objectives:
+            if not isinstance(obj, dict):
+                continue
+            metric = obj.get('metric')
+            if not metric:
+                continue
+            name = obj.get('name', metric)
+
+            if metric == 'success_flag':
+                out[name] = success
+            elif metric in {'solids_count', 'logical_volumes_count', 'placements_count', 'sources_count'}:
+                out[name] = float(metrics.get(metric, 0.0))
+
+        return out
+
     def _generate_param_study_samples(self, study):
         registry = self.current_geometry_state.parameter_registry
         param_names = study.get('parameters', [])
@@ -1151,26 +1218,33 @@ class ProjectManager:
                         break
 
                 if apply_error:
-                    runs.append({
+                    run_record = {
                         'run_index': i,
                         'values': sample,
                         'sim_options': sim_options,
                         'success': False,
                         'error': apply_error,
-                    })
+                        'metrics': {},
+                    }
+                    run_record['objectives'] = self._evaluate_study_objectives(study.get('objectives', []), run_record)
+                    runs.append(run_record)
                     continue
 
                 ok, err = self.recalculate_geometry_state()
                 if ok:
                     success_count += 1
 
-                runs.append({
+                run_record = {
                     'run_index': i,
                     'values': sample,
                     'sim_options': sim_options,
                     'success': bool(ok),
                     'error': err,
-                })
+                    'metrics': self._compute_run_metrics() if ok else {},
+                }
+                run_record['objectives'] = self._evaluate_study_objectives(study.get('objectives', []), run_record)
+
+                runs.append(run_record)
         finally:
             self.current_geometry_state = original_state
             self.recalculate_geometry_state()

@@ -944,6 +944,117 @@ def get_simulation_metadata(version_id, job_id):
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+def _read_hits_columns_for_objectives(output_path):
+    """Read minimal columns needed for objective extraction."""
+    with h5py.File(output_path, 'r') as f:
+        if 'default_ntuples/Hits' not in f:
+            raise RuntimeError("Hits data not found in output file.")
+
+        hits_group = f['default_ntuples/Hits']
+
+        num_entries = None
+        if 'entries' in hits_group:
+            try:
+                ent_dset = hits_group['entries']
+                if ent_dset.shape == ():
+                    num_entries = int(ent_dset[()])
+                else:
+                    num_entries = int(ent_dset[0])
+            except Exception:
+                num_entries = None
+
+        def get_col(name):
+            if name not in hits_group:
+                return np.array([])
+            dset = hits_group[name]
+            if isinstance(dset, h5py.Group) and 'pages' in dset:
+                data = dset['pages'][:]
+            elif isinstance(dset, h5py.Dataset):
+                data = dset[:]
+            else:
+                return np.array([])
+            if num_entries is not None and len(data) >= num_entries:
+                return data[:num_entries]
+            return data
+
+        return {
+            'Edep': get_col('Edep'),
+            'CopyNo': get_col('CopyNo'),
+            'ParticleName': get_col('ParticleName'),
+        }
+
+
+@app.route('/api/objectives/extract/<version_id>/<job_id>', methods=['POST'])
+def extract_objectives(version_id, job_id):
+    pm = get_project_manager_for_session()
+    version_dir = pm._get_version_dir(version_id)
+    run_dir = os.path.join(version_dir, "sim_runs", job_id)
+    output_path = os.path.join(run_dir, "output.hdf5")
+
+    if not os.path.exists(output_path):
+        return jsonify({"success": False, "error": "Simulation output not found."}), 404
+
+    payload = request.get_json() or {}
+    objectives = payload.get('objectives', []) or []
+    if not isinstance(objectives, list):
+        return jsonify({"success": False, "error": "objectives must be a list."}), 400
+
+    try:
+        cols = _read_hits_columns_for_objectives(output_path)
+        edep = cols['Edep']
+        copy_no = cols['CopyNo']
+        particle_name_ds = cols['ParticleName']
+
+        objective_values = {}
+
+        for i, obj in enumerate(objectives):
+            if not isinstance(obj, dict):
+                continue
+            metric = obj.get('metric')
+            name = obj.get('name', metric or f'objective_{i}')
+
+            if metric == 'total_hits':
+                objective_values[name] = float(len(edep))
+            elif metric == 'edep_sum':
+                objective_values[name] = float(np.sum(edep)) if len(edep) > 0 else 0.0
+            elif metric == 'edep_mean':
+                objective_values[name] = float(np.mean(edep)) if len(edep) > 0 else 0.0
+            elif metric == 'edep_max':
+                objective_values[name] = float(np.max(edep)) if len(edep) > 0 else 0.0
+            elif metric == 'unique_copyno_count':
+                objective_values[name] = float(len(np.unique(copy_no))) if len(copy_no) > 0 else 0.0
+            elif metric == 'particle_unique_count':
+                if len(particle_name_ds) == 0:
+                    objective_values[name] = 0.0
+                else:
+                    p_names = [n.decode('utf-8') if isinstance(n, bytes) else str(n) for n in particle_name_ds]
+                    objective_values[name] = float(len(set(p_names)))
+            elif metric == 'particle_fraction':
+                target_particle = (obj.get('particle') or '').strip()
+                if not target_particle or len(particle_name_ds) == 0:
+                    objective_values[name] = 0.0
+                else:
+                    p_names = np.array([n.decode('utf-8') if isinstance(n, bytes) else str(n) for n in particle_name_ds])
+                    objective_values[name] = float(np.mean(p_names == target_particle))
+
+        return jsonify({
+            "success": True,
+            "objective_values": objective_values,
+            "available_metrics": [
+                "total_hits",
+                "edep_sum",
+                "edep_mean",
+                "edep_max",
+                "unique_copyno_count",
+                "particle_unique_count",
+                "particle_fraction",
+            ],
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route('/api/simulation/analysis/<version_id>/<job_id>', methods=['GET'])
 def get_simulation_analysis(version_id, job_id):
     pm = get_project_manager_for_session()

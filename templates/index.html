@@ -2218,6 +2218,10 @@
                         <label for="ps_parameters">Parameters (comma-separated):</label>
                         <input type="text" id="ps_parameters" placeholder="param1,param2,...">
                     </div>
+                    <div class="property_item" style="grid-column: 1 / span 2;">
+                        <label for="ps_objectives">Objectives (metric[:name[:direction]], comma-separated):</label>
+                        <input type="text" id="ps_objectives" placeholder="success_flag:success:maximize, placements_count:placements:minimize">
+                    </div>
                     <div class="property_item">
                         <label for="ps_grid_steps">Grid Steps (default):</label>
                         <input type="number" id="ps_grid_steps" value="3" min="2" step="1">

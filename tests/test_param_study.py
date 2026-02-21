@@ -1,4 +1,9 @@
+import os
+import tempfile
 from unittest.mock import patch
+
+import h5py
+import numpy as np
 
 from app import app
 from src.expression_evaluator import ExpressionEvaluator
@@ -36,6 +41,10 @@ def test_param_study_grid_run_basic():
         "mode": "grid",
         "parameters": ["p1"],
         "grid": {"steps": 3},
+        "objectives": [
+            {"metric": "success_flag", "name": "success", "direction": "maximize"},
+            {"metric": "placements_count", "name": "placements", "direction": "maximize"}
+        ]
     })
     assert study is not None and err is None
 
@@ -46,6 +55,8 @@ def test_param_study_grid_run_basic():
     vals = [r["values"]["p1"] for r in result["runs"]]
     assert vals[0] == 0.0
     assert vals[-1] == 10.0
+    assert "success" in result["runs"][0]["objectives"]
+    assert "placements" in result["runs"][0]["objectives"]
 
 
 def test_param_study_random_reproducible():
@@ -118,3 +129,46 @@ def test_param_study_api_routes():
             del_resp = client.post("/api/param_study/delete", json={"name": "grid_api"})
             assert del_resp.status_code == 200
             assert del_resp.get_json()["success"] is True
+
+
+def test_objective_extraction_api_from_hdf5():
+    app.config["TESTING"] = True
+    with app.test_client() as client:
+        pm = _make_pm()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            version_id = "v_test"
+            job_id = "j_test"
+            run_dir = os.path.join(tmp, "sim_runs", job_id)
+            os.makedirs(run_dir, exist_ok=True)
+            output_path = os.path.join(run_dir, "output.hdf5")
+
+            with h5py.File(output_path, "w") as f:
+                g = f.create_group("default_ntuples/Hits")
+                edep = np.array([1.0, 2.0, 3.0], dtype=float)
+                copy_no = np.array([1, 1, 2], dtype=int)
+                pnames = np.array([b"gamma", b"e-", b"gamma"])
+                g.create_dataset("Edep", data=edep)
+                g.create_dataset("CopyNo", data=copy_no)
+                g.create_dataset("ParticleName", data=pnames)
+                g.create_dataset("entries", data=np.array([3], dtype=int))
+
+            with patch("app.get_project_manager_for_session", return_value=pm), \
+                 patch.object(pm, "_get_version_dir", return_value=os.path.join(tmp)):
+                resp = client.post(
+                    f"/api/objectives/extract/{version_id}/{job_id}",
+                    json={
+                        "objectives": [
+                            {"name": "hits", "metric": "total_hits"},
+                            {"name": "edep_sum", "metric": "edep_sum"},
+                            {"name": "gamma_frac", "metric": "particle_fraction", "particle": "gamma"},
+                        ]
+                    },
+                )
+
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["success"] is True
+            assert data["objective_values"]["hits"] == 3.0
+            assert data["objective_values"]["edep_sum"] == 6.0
+            assert data["objective_values"]["gamma_frac"] == 2.0 / 3.0
