@@ -176,6 +176,7 @@ async function initializeApp() {
         // Simulation
         onRunSimulationClicked: handleRunSimulation,
         onStopSimulationClicked: handleStopSimulation,
+        onRunPreflightClicked: handleRunPreflight,
         onSimOptionsClicked: handleOpenSimOptions,
         onSaveSimOptions: handleSaveSimOptions,
         onDrawTracksToggle: handleDrawTracksToggle,
@@ -2570,7 +2571,65 @@ async function handleGpsEditorConfirm(data) {
 // --- Simulation functions ---
 function formatPreflightIssues(issues, limit = 5) {
     if (!issues || issues.length === 0) return "";
-    return issues.slice(0, limit).map(issue => `- [${issue.severity}] ${issue.message}`).join('\n');
+    return issues.slice(0, limit).map(issue => {
+        const hint = issue.hint ? ` (hint: ${issue.hint})` : '';
+        return `- [${issue.severity}] ${issue.message}${hint}`;
+    }).join('\n');
+}
+
+async function runAndRenderPreflight({ enforceRunBlocking = false, confirmWarnings = false, showNotification = false } = {}) {
+    UIManager.setPreflightState('running');
+    try {
+        const preflight = await APIService.runPreflightChecks();
+        const report = preflight.preflight_report || {};
+        const summary = report.summary || {};
+
+        UIManager.renderPreflightReport(report);
+
+        const errors = summary.errors || 0;
+        const warnings = summary.warnings || 0;
+        const infos = summary.infos || 0;
+
+        if (showNotification) {
+            UIManager.showNotification(`Preflight complete: ${errors} error(s), ${warnings} warning(s), ${infos} info.`);
+        }
+
+        if (enforceRunBlocking && !summary.can_run) {
+            const errorIssues = (report.issues || []).filter(i => i.severity === 'error');
+            UIManager.showError(
+                "Preflight checks failed.\n" +
+                formatPreflightIssues(errorIssues, 8)
+            );
+            return { ok: false, report };
+        }
+
+        if (enforceRunBlocking && warnings > 0 && confirmWarnings) {
+            const warningIssues = (report.issues || []).filter(i => i.severity === 'warning');
+            const proceed = UIManager.confirmAction(
+                "Preflight warnings detected:\n\n" +
+                formatPreflightIssues(warningIssues, 8) +
+                "\n\nContinue anyway?"
+            );
+            if (!proceed) {
+                return { ok: false, report };
+            }
+        }
+
+        return { ok: true, report };
+    } catch (error) {
+        UIManager.showError("Failed to run preflight checks: " + error.message);
+        return { ok: false, report: null };
+    } finally {
+        UIManager.setPreflightState('idle');
+    }
+}
+
+async function handleRunPreflight() {
+    await runAndRenderPreflight({
+        enforceRunBlocking: false,
+        confirmWarnings: false,
+        showNotification: true,
+    });
 }
 
 async function handleRunSimulation(simSettings) {
@@ -2601,33 +2660,12 @@ async function handleRunSimulation(simSettings) {
     }
 
     // Preflight checks before simulation start.
-    try {
-        const preflight = await APIService.runPreflightChecks();
-        const report = preflight.preflight_report || {};
-        const summary = report.summary || {};
-
-        if (!summary.can_run) {
-            const errors = (report.issues || []).filter(i => i.severity === 'error');
-            UIManager.showError(
-                "Preflight checks failed.\n" +
-                formatPreflightIssues(errors, 8)
-            );
-            return;
-        }
-
-        if ((summary.warnings || 0) > 0) {
-            const warnings = (report.issues || []).filter(i => i.severity === 'warning');
-            const proceed = UIManager.confirmAction(
-                "Preflight warnings detected:\n\n" +
-                formatPreflightIssues(warnings, 8) +
-                "\n\nContinue anyway?"
-            );
-            if (!proceed) {
-                return;
-            }
-        }
-    } catch (error) {
-        UIManager.showError("Failed to run preflight checks: " + error.message);
+    const preflightResult = await runAndRenderPreflight({
+        enforceRunBlocking: true,
+        confirmWarnings: true,
+        showNotification: false,
+    });
+    if (!preflightResult.ok) {
         return;
     }
 
