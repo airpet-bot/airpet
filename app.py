@@ -2747,6 +2747,56 @@ def parameter_registry_delete_route():
     return jsonify({"success": False, "error": err}), 404
 
 
+@app.route('/api/param_study/list', methods=['GET'])
+def param_study_list_route():
+    pm = get_project_manager_for_session()
+    studies = pm.list_param_studies()
+    return jsonify({"success": True, "param_studies": studies})
+
+
+@app.route('/api/param_study/upsert', methods=['POST'])
+def param_study_upsert_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+    name = data.get('name')
+    if not name:
+        return jsonify({"success": False, "error": "Study name is required."}), 400
+
+    study, err = pm.upsert_param_study(name, data)
+    if study:
+        return create_success_response(pm, f"Param study '{name}' saved.")
+    return jsonify({"success": False, "error": err}), 400
+
+
+@app.route('/api/param_study/delete', methods=['POST'])
+def param_study_delete_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+    name = data.get('name')
+    if not name:
+        return jsonify({"success": False, "error": "Study name is required."}), 400
+
+    ok, err = pm.delete_param_study(name)
+    if ok:
+        return create_success_response(pm, f"Param study '{name}' deleted.")
+    return jsonify({"success": False, "error": err}), 404
+
+
+@app.route('/api/param_study/run', methods=['POST'])
+def param_study_run_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+    name = data.get('name')
+    if not name:
+        return jsonify({"success": False, "error": "Study name is required."}), 400
+
+    max_runs = data.get('max_runs')
+    result, err = pm.run_param_study(name, max_runs=max_runs)
+    if result:
+        return jsonify({"success": True, "study_result": result})
+    return jsonify({"success": False, "error": err}), 400
+
+
 @app.route('/add_solid_and_place', methods=['POST'])
 def add_solid_and_place_route():
     pm = get_project_manager_for_session()

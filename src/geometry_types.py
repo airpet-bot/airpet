@@ -799,6 +799,18 @@ class GeometryState:
         # }
         self.parameter_registry = {}
 
+        # Parametric study definitions (M3).
+        # {
+        #   'study_name': {
+        #       'name': 'study_name',
+        #       'mode': 'grid|random',
+        #       'parameters': ['p1', 'p2'],
+        #       'grid': {'steps': 3, 'per_parameter_steps': {'p1': 5}},
+        #       'random': {'samples': 20, 'seed': 42},
+        #   }
+        # }
+        self.param_studies = {}
+
         # --- Dictionary to hold UI grouping information ---
         # Format: { 'solids': [{'name': 'MyCrystals', 'members': ['solid1_name', 'solid2_name']}], ... }
         self.ui_groups = {
@@ -852,6 +864,7 @@ class GeometryState:
             "sources": {k: v.to_dict() for k, v in self.sources.items()},
             "active_source_ids": self.active_source_ids,
             "parameter_registry": self.parameter_registry,
+            "param_studies": self.param_studies,
             "ui_groups": self.ui_groups
         }
 
@@ -895,6 +908,12 @@ class GeometryState:
             instance.parameter_registry = registry
         else:
             instance.parameter_registry = {}
+
+        param_studies = data.get('param_studies', {})
+        if isinstance(param_studies, dict):
+            instance.param_studies = param_studies
+        else:
+            instance.param_studies = {}
 
         instance.ui_groups = data.get('ui_groups', instance.ui_groups)
 

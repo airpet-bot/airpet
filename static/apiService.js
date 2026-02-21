@@ -273,6 +273,39 @@ export async function deleteParameterRegistry(name) {
     return handleResponse(response);
 }
 
+// --- Param Study API (M3 step 3) ---
+export async function getParamStudies() {
+    const response = await fetch(`${API_BASE_URL}/api/param_study/list`);
+    return handleResponse(response);
+}
+
+export async function upsertParamStudy(payload) {
+    const response = await fetch(`${API_BASE_URL}/api/param_study/upsert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    return handleResponse(response);
+}
+
+export async function deleteParamStudy(name) {
+    const response = await fetch(`${API_BASE_URL}/api/param_study/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+    });
+    return handleResponse(response);
+}
+
+export async function runParamStudy(name, maxRuns = null) {
+    const response = await fetch(`${API_BASE_URL}/api/param_study/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, max_runs: maxRuns }),
+    });
+    return handleResponse(response);
+}
+
 // --- Sensitivity Matrix API ---
 
 /**

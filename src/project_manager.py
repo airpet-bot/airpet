@@ -9,6 +9,7 @@ from datetime import datetime
 from scipy.spatial.transform import Rotation as R
 import shutil
 import itertools
+import random
 
 from .geometry_types import GeometryState, Solid, Define, Material, Element, Isotope, \
                             LogicalVolume, PhysicalVolumePlacement, Assembly, ReplicaVolume, \
@@ -945,6 +946,243 @@ class ProjectManager:
         del registry[name]
         self._capture_history_state(f"Deleted parameter registry entry '{name}'")
         return True, None
+
+    def _validate_param_study(self, name, config):
+        if not self.current_geometry_state:
+            return False, "No active project state."
+        if not name or not isinstance(name, str):
+            return False, "Study name is required."
+        if not isinstance(config, dict):
+            return False, "Study config must be an object."
+
+        mode = config.get('mode', 'grid')
+        if mode not in {'grid', 'random'}:
+            return False, "Study mode must be 'grid' or 'random'."
+
+        params = config.get('parameters', [])
+        if not isinstance(params, list) or not params:
+            return False, "Study must include a non-empty parameter list."
+
+        registry = self.current_geometry_state.parameter_registry or {}
+        for p in params:
+            if p not in registry:
+                return False, f"Parameter '{p}' not found in registry."
+
+        if mode == 'grid':
+            grid_cfg = config.get('grid', {}) or {}
+            steps = int(grid_cfg.get('steps', 3))
+            if steps < 2:
+                return False, "Grid studies require at least 2 steps."
+        else:
+            rnd_cfg = config.get('random', {}) or {}
+            samples = int(rnd_cfg.get('samples', 10))
+            if samples < 1:
+                return False, "Random studies require at least 1 sample."
+
+        return True, None
+
+    def list_param_studies(self):
+        if not self.current_geometry_state:
+            return {}
+        return dict(self.current_geometry_state.param_studies or {})
+
+    def upsert_param_study(self, name, config):
+        ok, err = self._validate_param_study(name, config)
+        if not ok:
+            return None, err
+
+        mode = config.get('mode', 'grid')
+        normalized = {
+            'name': name,
+            'mode': mode,
+            'parameters': list(config.get('parameters', [])),
+            'grid': config.get('grid', {}) or {},
+            'random': config.get('random', {}) or {},
+            'objectives': config.get('objectives', []) or [],
+        }
+
+        if mode == 'grid':
+            normalized['grid'].setdefault('steps', 3)
+            normalized['grid'].setdefault('per_parameter_steps', {})
+        else:
+            normalized['random'].setdefault('samples', 10)
+            normalized['random'].setdefault('seed', 42)
+
+        self.current_geometry_state.param_studies[name] = normalized
+        self._capture_history_state(f"Updated param study '{name}'")
+        return normalized, None
+
+    def delete_param_study(self, name):
+        if not self.current_geometry_state:
+            return False, "No active project state."
+        studies = self.current_geometry_state.param_studies
+        if name not in studies:
+            return False, f"Study '{name}' not found."
+        del studies[name]
+        self._capture_history_state(f"Deleted param study '{name}'")
+        return True, None
+
+    def _apply_param_value(self, param_entry, value, sim_options):
+        target_type = param_entry.get('target_type')
+        target_ref = param_entry.get('target_ref', {})
+        value_str = str(value)
+
+        if target_type == 'define':
+            dname = target_ref.get('name')
+            define = self.current_geometry_state.defines.get(dname)
+            if define is None:
+                return False, f"Define target '{dname}' not found."
+            define.raw_expression = value_str
+            return True, None
+
+        if target_type == 'solid':
+            sname = target_ref.get('name')
+            pname = target_ref.get('param')
+            solid = self.current_geometry_state.solids.get(sname)
+            if solid is None:
+                return False, f"Solid target '{sname}' not found."
+            if not pname:
+                return False, "Solid target param is missing."
+            solid.raw_parameters[pname] = value_str
+            return True, None
+
+        if target_type == 'source':
+            src_name = target_ref.get('name')
+            field = target_ref.get('field')
+            source = self.current_geometry_state.sources.get(src_name)
+            if source is None:
+                return False, f"Source target '{src_name}' not found."
+            if not field:
+                return False, "Source field target is missing."
+
+            if field.startswith('position.'):
+                axis = field.split('.', 1)[1]
+                source.position[axis] = value_str
+            elif field.startswith('rotation.'):
+                axis = field.split('.', 1)[1]
+                source.rotation[axis] = value_str
+            elif field == 'activity':
+                source.activity = float(value)
+            else:
+                setattr(source, field, value)
+            return True, None
+
+        if target_type == 'sim_option':
+            key = target_ref.get('key')
+            if not key:
+                return False, "sim_option key is missing."
+            sim_options[key] = value
+            return True, None
+
+        return False, f"Unsupported target_type '{target_type}'."
+
+    def _generate_param_study_samples(self, study):
+        registry = self.current_geometry_state.parameter_registry
+        param_names = study.get('parameters', [])
+        mode = study.get('mode', 'grid')
+
+        if mode == 'grid':
+            grid_cfg = study.get('grid', {}) or {}
+            default_steps = int(grid_cfg.get('steps', 3))
+            per_param_steps = grid_cfg.get('per_parameter_steps', {}) or {}
+
+            value_arrays = []
+            for p in param_names:
+                p_entry = registry[p]
+                mn = float(p_entry['bounds']['min'])
+                mx = float(p_entry['bounds']['max'])
+                steps = int(per_param_steps.get(p, default_steps))
+                steps = max(2, steps)
+                value_arrays.append(np.linspace(mn, mx, steps).tolist())
+
+            samples = []
+            for combo in itertools.product(*value_arrays):
+                sample = {param_names[i]: float(combo[i]) for i in range(len(param_names))}
+                samples.append(sample)
+            return samples
+
+        rnd_cfg = study.get('random', {}) or {}
+        n_samples = max(1, int(rnd_cfg.get('samples', 10)))
+        seed = int(rnd_cfg.get('seed', 42))
+        rng = random.Random(seed)
+
+        samples = []
+        for _ in range(n_samples):
+            sample = {}
+            for p in param_names:
+                p_entry = registry[p]
+                mn = float(p_entry['bounds']['min'])
+                mx = float(p_entry['bounds']['max'])
+                sample[p] = rng.uniform(mn, mx)
+            samples.append(sample)
+        return samples
+
+    def run_param_study(self, name, max_runs=None):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        studies = self.current_geometry_state.param_studies or {}
+        if name not in studies:
+            return None, f"Study '{name}' not found."
+
+        study = studies[name]
+        samples = self._generate_param_study_samples(study)
+        if max_runs is not None:
+            samples = samples[:max(0, int(max_runs))]
+
+        original_state = GeometryState.from_dict(self.current_geometry_state.to_dict())
+        runs = []
+        success_count = 0
+
+        try:
+            for i, sample in enumerate(samples):
+                self.current_geometry_state = GeometryState.from_dict(original_state.to_dict())
+
+                sim_options = {}
+                apply_error = None
+                for param_name, value in sample.items():
+                    param_entry = self.current_geometry_state.parameter_registry.get(param_name)
+                    if not param_entry:
+                        apply_error = f"Parameter '{param_name}' missing in registry during run."
+                        break
+                    ok, err = self._apply_param_value(param_entry, value, sim_options)
+                    if not ok:
+                        apply_error = err
+                        break
+
+                if apply_error:
+                    runs.append({
+                        'run_index': i,
+                        'values': sample,
+                        'sim_options': sim_options,
+                        'success': False,
+                        'error': apply_error,
+                    })
+                    continue
+
+                ok, err = self.recalculate_geometry_state()
+                if ok:
+                    success_count += 1
+
+                runs.append({
+                    'run_index': i,
+                    'values': sample,
+                    'sim_options': sim_options,
+                    'success': bool(ok),
+                    'error': err,
+                })
+        finally:
+            self.current_geometry_state = original_state
+            self.recalculate_geometry_state()
+
+        return {
+            'study_name': name,
+            'mode': study.get('mode'),
+            'requested_runs': len(samples),
+            'successful_runs': success_count,
+            'failed_runs': len(samples) - success_count,
+            'runs': runs,
+        }, None
 
     def get_object_details(self, object_type, object_name_or_id):
         """
