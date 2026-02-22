@@ -2939,6 +2939,7 @@ def param_optimizer_run_route():
         seed=seed,
         objective_name=objective_name,
         direction=direction,
+        cmaes_config=data.get('cmaes'),
     )
     if result:
         return jsonify({"success": True, "optimizer_result": result})

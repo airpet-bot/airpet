@@ -2278,12 +2278,31 @@
                         </select>
                     </div>
                     <div class="property_item">
+                        <label for="ps_opt_method">Optimizer Method:</label>
+                        <select id="ps_opt_method">
+                            <option value="random_search">random_search</option>
+                            <option value="cmaes">cmaes</option>
+                        </select>
+                    </div>
+                    <div class="property_item">
                         <label for="ps_opt_budget">Optimizer Budget:</label>
                         <input type="number" id="ps_opt_budget" min="1" step="1" value="20">
                     </div>
                     <div class="property_item">
                         <label for="ps_opt_seed">Optimizer Seed:</label>
                         <input type="number" id="ps_opt_seed" step="1" value="42">
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_opt_popsize">CMA-ES Population:</label>
+                        <input type="number" id="ps_opt_popsize" min="2" step="1" placeholder="auto">
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_opt_sigma_rel">CMA-ES Sigma Rel:</label>
+                        <input type="number" id="ps_opt_sigma_rel" min="0" step="any" placeholder="0.3">
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_opt_stag">CMA-ES Stagnation Gens:</label>
+                        <input type="number" id="ps_opt_stag" min="1" step="1" placeholder="12">
                     </div>
                 </div>
                 <div id="psRankingTableWrap">

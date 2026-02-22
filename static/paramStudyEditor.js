@@ -1,7 +1,7 @@
 let modal, tableBody;
 let nameInput, modeInput, paramsInput, objectivesInput, gridStepsInput, samplesInput, seedInput, maxRunsInput, runOutput;
 let rankObjectiveSelect, rankDirectionSelect, rankingTableBody;
-let optBudgetInput, optSeedInput;
+let optMethodInput, optBudgetInput, optSeedInput, optPopSizeInput, optSigmaRelInput, optStagInput;
 let saveBtn, deleteBtn, runBtn, runOptimizerBtn, downloadResultsBtn, refreshBtn, cancelBtn;
 
 const ALLOWED_OBJECTIVE_METRICS = new Set([
@@ -249,17 +249,29 @@ async function _handleRunOptimizer() {
 
     const objectiveName = rankObjectiveSelect?.value || null;
     const direction = rankDirectionSelect?.value || 'maximize';
+    const method = optMethodInput?.value || 'random_search';
     const budget = Number(optBudgetInput?.value || 20);
     const seed = Number(optSeedInput?.value || 42);
 
-    const result = await callbacks.onRunOptimizer({
+    const cmaes = {};
+    const popSize = Number(optPopSizeInput?.value);
+    const sigmaRel = Number(optSigmaRelInput?.value);
+    const stag = Number(optStagInput?.value);
+    if (Number.isFinite(popSize) && popSize > 1) cmaes.population_size = popSize;
+    if (Number.isFinite(sigmaRel) && sigmaRel > 0) cmaes.sigma_rel = sigmaRel;
+    if (Number.isFinite(stag) && stag >= 1) cmaes.stagnation_generations = stag;
+
+    const payload = {
         study_name: studyName,
-        method: 'random_search',
+        method,
         budget: Number.isFinite(budget) ? budget : 20,
         seed: Number.isFinite(seed) ? seed : 42,
         objective_name: objectiveName,
         direction,
-    });
+    };
+    if (method === 'cmaes') payload.cmaes = cmaes;
+
+    const result = await callbacks.onRunOptimizer(payload);
 
     lastRunResult = result || null;
     runOutput.value = JSON.stringify(result, null, 2);
@@ -308,8 +320,12 @@ export function init(newCallbacks = {}) {
     rankObjectiveSelect = document.getElementById('ps_rank_objective');
     rankDirectionSelect = document.getElementById('ps_rank_direction');
     rankingTableBody = document.getElementById('psRankingTableBody');
+    optMethodInput = document.getElementById('ps_opt_method');
     optBudgetInput = document.getElementById('ps_opt_budget');
     optSeedInput = document.getElementById('ps_opt_seed');
+    optPopSizeInput = document.getElementById('ps_opt_popsize');
+    optSigmaRelInput = document.getElementById('ps_opt_sigma_rel');
+    optStagInput = document.getElementById('ps_opt_stag');
 
     saveBtn = document.getElementById('psSaveBtn');
     deleteBtn = document.getElementById('psDeleteBtn');
