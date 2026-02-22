@@ -11,6 +11,7 @@ const ALLOWED_OBJECTIVE_METRICS = new Set([
     'logical_volumes_count',
     'placements_count',
     'sources_count',
+    'parameter_value',
 ]);
 
 let callbacks = {
@@ -36,7 +37,8 @@ function _setForm(study = null, name = '') {
         const metric = o.metric || '';
         const namePart = o.name ? `:${o.name}` : '';
         const dirPart = o.direction ? `:${o.direction}` : '';
-        return `${metric}${namePart}${dirPart}`;
+        const paramPart = o.parameter ? `:${o.parameter}` : '';
+        return `${metric}${namePart}${dirPart}${paramPart}`;
     }).join(',');
     gridStepsInput.value = s.grid?.steps ?? 3;
     samplesInput.value = s.random?.samples ?? 10;
@@ -61,6 +63,7 @@ function _studyFromForm() {
             const metric = parts[0];
             const name = parts[1] || metric;
             const direction = parts[2] || 'maximize';
+            const parameter = parts[3] || null;
 
             if (!ALLOWED_OBJECTIVE_METRICS.has(metric)) {
                 throw new Error(`Unsupported objective metric '${metric}'.`);
@@ -68,8 +71,13 @@ function _studyFromForm() {
             if (!['maximize', 'minimize'].includes(direction)) {
                 throw new Error(`Invalid objective direction '${direction}'. Use maximize|minimize.`);
             }
+            if (metric === 'parameter_value' && !parameter) {
+                throw new Error("parameter_value objective requires 4th token: metric:name:direction:parameterName");
+            }
 
-            return { metric, name, direction };
+            const out = { metric, name, direction };
+            if (parameter) out.parameter = parameter;
+            return out;
         });
 
     const gridSteps = Number(gridStepsInput.value || 3);

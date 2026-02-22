@@ -175,6 +175,25 @@ def test_param_optimizer_budget_cap_is_enforced():
     assert len(result["candidates"]) == pm.MAX_OPTIMIZER_BUDGET
 
 
+def test_param_study_parameter_value_objective_metric():
+    pm = _make_pm()
+    _add_define_param(pm, name="p1")
+
+    study, err = pm.upsert_param_study("obj_param_val", {
+        "name": "obj_param_val",
+        "mode": "grid",
+        "parameters": ["p1"],
+        "grid": {"steps": 2},
+        "objectives": [{"metric": "parameter_value", "name": "p1_value", "direction": "maximize", "parameter": "p1"}],
+    })
+    assert study is not None and err is None
+
+    result, err = pm.run_param_study("obj_param_val")
+    assert err is None
+    vals = [r["objectives"]["p1_value"] for r in result["runs"]]
+    assert vals == [0.0, 10.0]
+
+
 def test_param_optimizer_cmaes_backend_and_provenance():
     pm = _make_pm()
     _add_define_param(pm, name="p1")

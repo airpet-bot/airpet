@@ -994,6 +994,7 @@ class ProjectManager:
             'logical_volumes_count',
             'placements_count',
             'sources_count',
+            'parameter_value',
         }
         for idx, obj in enumerate(objectives):
             if not isinstance(obj, dict):
@@ -1004,6 +1005,8 @@ class ProjectManager:
             direction = obj.get('direction', 'maximize')
             if direction not in {'maximize', 'minimize'}:
                 return False, f"Objective direction '{direction}' is invalid."
+            if metric == 'parameter_value' and not obj.get('parameter'):
+                return False, "Objective metric 'parameter_value' requires field 'parameter'."
 
         return True, None
 
@@ -1124,8 +1127,9 @@ class ProjectManager:
 
         Supported objective fields:
           - name (optional; defaults to metric)
-          - metric: success_flag|solids_count|logical_volumes_count|placements_count|sources_count
+          - metric: success_flag|solids_count|logical_volumes_count|placements_count|sources_count|parameter_value
           - direction: maximize|minimize (metadata only for now)
+          - parameter: required when metric=parameter_value
         """
         if not objectives:
             return {}
@@ -1146,6 +1150,14 @@ class ProjectManager:
                 out[name] = success
             elif metric in {'solids_count', 'logical_volumes_count', 'placements_count', 'sources_count'}:
                 out[name] = float(metrics.get(metric, 0.0))
+            elif metric == 'parameter_value':
+                param_name = obj.get('parameter')
+                if not param_name:
+                    continue
+                try:
+                    out[name] = float(run_record.get('values', {}).get(param_name))
+                except (TypeError, ValueError):
+                    pass
 
         return out
 
