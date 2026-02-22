@@ -1,8 +1,9 @@
 let modal, tableBody;
 let nameInput, modeInput, paramsInput, objectivesInput, gridStepsInput, samplesInput, seedInput, maxRunsInput, runOutput;
 let rankObjectiveSelect, rankDirectionSelect, rankingTableBody;
-let optBudgetInput, optSeedInput;
-let saveBtn, deleteBtn, runBtn, runOptimizerBtn, downloadResultsBtn, refreshBtn, cancelBtn;
+let optMethodInput, optBudgetInput, optSeedInput, optPopSizeInput, optSigmaRelInput, optStagInput, verifyRepeatsInput;
+let summaryStatusEl, summaryMethodEl, summaryStopReasonEl, summaryEvalsEl, summaryObjectiveEl, summaryBestScoreEl;
+let saveBtn, deleteBtn, runBtn, runOptimizerBtn, replayBestBtn, verifyBestBtn, downloadResultsBtn, refreshBtn, cancelBtn;
 
 const ALLOWED_OBJECTIVE_METRICS = new Set([
     'success_flag',
@@ -10,6 +11,7 @@ const ALLOWED_OBJECTIVE_METRICS = new Set([
     'logical_volumes_count',
     'placements_count',
     'sources_count',
+    'parameter_value',
 ]);
 
 let callbacks = {
@@ -17,6 +19,8 @@ let callbacks = {
     onDelete: async (_name) => { },
     onRun: async (_name, _maxRuns) => ({}),
     onRunOptimizer: async (_payload) => ({}),
+    onReplayBest: async (_runId, _applyToProject) => ({}),
+    onVerifyBest: async (_runId, _repeats) => ({}),
     onRefresh: async () => ({})
 };
 
@@ -33,7 +37,8 @@ function _setForm(study = null, name = '') {
         const metric = o.metric || '';
         const namePart = o.name ? `:${o.name}` : '';
         const dirPart = o.direction ? `:${o.direction}` : '';
-        return `${metric}${namePart}${dirPart}`;
+        const paramPart = o.parameter ? `:${o.parameter}` : '';
+        return `${metric}${namePart}${dirPart}${paramPart}`;
     }).join(',');
     gridStepsInput.value = s.grid?.steps ?? 3;
     samplesInput.value = s.random?.samples ?? 10;
@@ -58,6 +63,7 @@ function _studyFromForm() {
             const metric = parts[0];
             const name = parts[1] || metric;
             const direction = parts[2] || 'maximize';
+            const parameter = parts[3] || null;
 
             if (!ALLOWED_OBJECTIVE_METRICS.has(metric)) {
                 throw new Error(`Unsupported objective metric '${metric}'.`);
@@ -65,8 +71,13 @@ function _studyFromForm() {
             if (!['maximize', 'minimize'].includes(direction)) {
                 throw new Error(`Invalid objective direction '${direction}'. Use maximize|minimize.`);
             }
+            if (metric === 'parameter_value' && !parameter) {
+                throw new Error("parameter_value objective requires 4th token: metric:name:direction:parameterName");
+            }
 
-            return { metric, name, direction };
+            const out = { metric, name, direction };
+            if (parameter) out.parameter = parameter;
+            return out;
         });
 
     const gridSteps = Number(gridStepsInput.value || 3);
@@ -128,6 +139,41 @@ function _extractRunsFromLastResult() {
     if (Array.isArray(lastRunResult.runs)) return lastRunResult.runs;
     if (Array.isArray(lastRunResult.candidates)) return lastRunResult.candidates;
     return [];
+}
+
+function _getOptimizerRunIdFromLastResult() {
+    if (!lastRunResult) return null;
+    if (typeof lastRunResult.run_id === 'string' && lastRunResult.run_id.length > 0) {
+        return lastRunResult.run_id;
+    }
+    return null;
+}
+
+function _renderOptimizerSummary() {
+    if (!summaryStatusEl) return;
+
+    const isOptimizerRun = !!lastRunResult && Array.isArray(lastRunResult.candidates);
+    if (!lastRunResult || !isOptimizerRun) {
+        summaryStatusEl.textContent = 'No optimizer run yet';
+        summaryMethodEl.textContent = '-';
+        summaryStopReasonEl.textContent = '-';
+        summaryEvalsEl.textContent = '-';
+        summaryObjectiveEl.textContent = '-';
+        summaryBestScoreEl.textContent = '-';
+        return;
+    }
+
+    const objective = lastRunResult.objective || {};
+    const bestRun = lastRunResult.best_run || {};
+
+    summaryStatusEl.textContent = 'Completed';
+    summaryMethodEl.textContent = lastRunResult.method || '-';
+    summaryStopReasonEl.textContent = lastRunResult.stop_reason || '-';
+    summaryEvalsEl.textContent = String(lastRunResult.evaluations_used ?? lastRunResult.candidates.length ?? '-');
+    summaryObjectiveEl.textContent = `${objective.name || '-'} (${objective.direction || '-'})`;
+
+    const bestScore = bestRun.optimizer_score;
+    summaryBestScoreEl.textContent = Number.isFinite(Number(bestScore)) ? Number(bestScore).toFixed(6) : '-';
 }
 
 function _renderRankingTable() {
@@ -241,6 +287,7 @@ async function _handleRun() {
     runOutput.value = JSON.stringify(result, null, 2);
     _updateObjectiveSelector();
     _renderRankingTable();
+    _renderOptimizerSummary();
 }
 
 async function _handleRunOptimizer() {
@@ -249,17 +296,29 @@ async function _handleRunOptimizer() {
 
     const objectiveName = rankObjectiveSelect?.value || null;
     const direction = rankDirectionSelect?.value || 'maximize';
+    const method = optMethodInput?.value || 'random_search';
     const budget = Number(optBudgetInput?.value || 20);
     const seed = Number(optSeedInput?.value || 42);
 
-    const result = await callbacks.onRunOptimizer({
+    const cmaes = {};
+    const popSize = Number(optPopSizeInput?.value);
+    const sigmaRel = Number(optSigmaRelInput?.value);
+    const stag = Number(optStagInput?.value);
+    if (Number.isFinite(popSize) && popSize > 1) cmaes.population_size = popSize;
+    if (Number.isFinite(sigmaRel) && sigmaRel > 0) cmaes.sigma_rel = sigmaRel;
+    if (Number.isFinite(stag) && stag >= 1) cmaes.stagnation_generations = stag;
+
+    const payload = {
         study_name: studyName,
-        method: 'random_search',
+        method,
         budget: Number.isFinite(budget) ? budget : 20,
         seed: Number.isFinite(seed) ? seed : 42,
         objective_name: objectiveName,
         direction,
-    });
+    };
+    if (method === 'cmaes') payload.cmaes = cmaes;
+
+    const result = await callbacks.onRunOptimizer(payload);
 
     lastRunResult = result || null;
     runOutput.value = JSON.stringify(result, null, 2);
@@ -267,6 +326,42 @@ async function _handleRunOptimizer() {
     if (objectiveName) rankObjectiveSelect.value = objectiveName;
     if (direction) rankDirectionSelect.value = direction;
     _renderRankingTable();
+    _renderOptimizerSummary();
+}
+
+async function _handleReplayBest() {
+    const runId = _getOptimizerRunIdFromLastResult();
+    if (!runId) {
+        window.alert('No optimizer run selected yet. Run optimizer first.');
+        return;
+    }
+
+    const result = await callbacks.onReplayBest(runId, true);
+    runOutput.value = JSON.stringify(result, null, 2);
+    if (result?.replay_result?.run_record) {
+        // keep optimizer summary card context; do not overwrite optimizer lastRunResult
+    }
+}
+
+async function _handleVerifyBest() {
+    const runId = _getOptimizerRunIdFromLastResult();
+    if (!runId) {
+        window.alert('No optimizer run selected yet. Run optimizer first.');
+        return;
+    }
+
+    const repeats = Number(verifyRepeatsInput?.value || 3);
+    const safeRepeats = Number.isFinite(repeats) && repeats > 0 ? repeats : 3;
+    const result = await callbacks.onVerifyBest(runId, safeRepeats);
+    runOutput.value = JSON.stringify(result, null, 2);
+
+    const stats = result?.verification_result?.verification_record?.stats;
+    if (stats && summaryStatusEl) {
+        summaryStatusEl.textContent = `Verified (${stats.count} runs)`;
+        if (summaryBestScoreEl && Number.isFinite(Number(stats.mean))) {
+            summaryBestScoreEl.textContent = `${Number(stats.mean).toFixed(6)} ± ${Number(stats.std || 0).toFixed(6)}`;
+        }
+    }
 }
 
 function _handleDownloadResults() {
@@ -308,13 +403,27 @@ export function init(newCallbacks = {}) {
     rankObjectiveSelect = document.getElementById('ps_rank_objective');
     rankDirectionSelect = document.getElementById('ps_rank_direction');
     rankingTableBody = document.getElementById('psRankingTableBody');
+    optMethodInput = document.getElementById('ps_opt_method');
     optBudgetInput = document.getElementById('ps_opt_budget');
     optSeedInput = document.getElementById('ps_opt_seed');
+    optPopSizeInput = document.getElementById('ps_opt_popsize');
+    optSigmaRelInput = document.getElementById('ps_opt_sigma_rel');
+    optStagInput = document.getElementById('ps_opt_stag');
+    verifyRepeatsInput = document.getElementById('ps_verify_repeats');
+
+    summaryStatusEl = document.getElementById('psSummaryStatus');
+    summaryMethodEl = document.getElementById('psSummaryMethod');
+    summaryStopReasonEl = document.getElementById('psSummaryStopReason');
+    summaryEvalsEl = document.getElementById('psSummaryEvals');
+    summaryObjectiveEl = document.getElementById('psSummaryObjective');
+    summaryBestScoreEl = document.getElementById('psSummaryBestScore');
 
     saveBtn = document.getElementById('psSaveBtn');
     deleteBtn = document.getElementById('psDeleteBtn');
     runBtn = document.getElementById('psRunBtn');
     runOptimizerBtn = document.getElementById('psRunOptimizerBtn');
+    replayBestBtn = document.getElementById('psReplayBestBtn');
+    verifyBestBtn = document.getElementById('psVerifyBestBtn');
     downloadResultsBtn = document.getElementById('psDownloadResultsBtn');
     refreshBtn = document.getElementById('psRefreshBtn');
     cancelBtn = document.getElementById('psCancelBtn');
@@ -323,6 +432,8 @@ export function init(newCallbacks = {}) {
     deleteBtn.addEventListener('click', _handleDelete);
     runBtn.addEventListener('click', _handleRun);
     if (runOptimizerBtn) runOptimizerBtn.addEventListener('click', _handleRunOptimizer);
+    if (replayBestBtn) replayBestBtn.addEventListener('click', _handleReplayBest);
+    if (verifyBestBtn) verifyBestBtn.addEventListener('click', _handleVerifyBest);
     if (downloadResultsBtn) downloadResultsBtn.addEventListener('click', _handleDownloadResults);
     refreshBtn.addEventListener('click', _refreshAndRender);
     cancelBtn.addEventListener('click', hide);
@@ -338,6 +449,7 @@ export async function show(initialStudies = {}) {
     _renderTable(initialStudies);
     _updateObjectiveSelector();
     _renderRankingTable();
+    _renderOptimizerSummary();
     if (modal) modal.style.display = 'block';
     await _refreshAndRender();
 }

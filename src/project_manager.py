@@ -994,6 +994,7 @@ class ProjectManager:
             'logical_volumes_count',
             'placements_count',
             'sources_count',
+            'parameter_value',
         }
         for idx, obj in enumerate(objectives):
             if not isinstance(obj, dict):
@@ -1004,6 +1005,8 @@ class ProjectManager:
             direction = obj.get('direction', 'maximize')
             if direction not in {'maximize', 'minimize'}:
                 return False, f"Objective direction '{direction}' is invalid."
+            if metric == 'parameter_value' and not obj.get('parameter'):
+                return False, "Objective metric 'parameter_value' requires field 'parameter'."
 
         return True, None
 
@@ -1124,8 +1127,9 @@ class ProjectManager:
 
         Supported objective fields:
           - name (optional; defaults to metric)
-          - metric: success_flag|solids_count|logical_volumes_count|placements_count|sources_count
+          - metric: success_flag|solids_count|logical_volumes_count|placements_count|sources_count|parameter_value
           - direction: maximize|minimize (metadata only for now)
+          - parameter: required when metric=parameter_value
         """
         if not objectives:
             return {}
@@ -1146,6 +1150,14 @@ class ProjectManager:
                 out[name] = success
             elif metric in {'solids_count', 'logical_volumes_count', 'placements_count', 'sources_count'}:
                 out[name] = float(metrics.get(metric, 0.0))
+            elif metric == 'parameter_value':
+                param_name = obj.get('parameter')
+                if not param_name:
+                    continue
+                try:
+                    out[name] = float(run_record.get('values', {}).get(param_name))
+                except (TypeError, ValueError):
+                    pass
 
         return out
 
@@ -1313,6 +1325,239 @@ class ProjectManager:
             return -float('inf')
         return x if direction == 'maximize' else -x
 
+    def _get_optimizer_bounds(self, param_names, registry):
+        mins = np.array([float(registry[p]['bounds']['min']) for p in param_names], dtype=float)
+        maxs = np.array([float(registry[p]['bounds']['max']) for p in param_names], dtype=float)
+        return mins, maxs
+
+    def _vector_to_sample(self, param_names, vec):
+        return {param_names[i]: float(vec[i]) for i in range(len(param_names))}
+
+    def _evaluate_candidate_vector(self, study, param_names, vec, mins, maxs, run_index, objective_name, direction, penalty_weight=0.0, generation=None):
+        clipped = np.clip(vec, mins, maxs)
+        violation = vec - clipped
+        boundary_penalty = penalty_weight * float(np.linalg.norm(violation))
+
+        sample = self._vector_to_sample(param_names, clipped)
+        run_record = self._evaluate_param_sample(study, sample, run_index=run_index)
+
+        raw_score = self._score_run_for_objective(run_record, objective_name, direction=direction)
+        score = raw_score - boundary_penalty
+
+        run_record['optimizer_raw_score'] = raw_score
+        run_record['optimizer_penalty'] = boundary_penalty
+        run_record['optimizer_score'] = score
+        if generation is not None:
+            run_record['generation'] = generation
+
+        return run_record, clipped
+
+    def _run_random_search_optimizer(self, study, param_names, registry, objective_name, direction, budget, seed):
+        rng = random.Random(seed)
+        mins, maxs = self._get_optimizer_bounds(param_names, registry)
+
+        candidates = []
+        best = None
+        best_score = -float('inf')
+
+        for i in range(budget):
+            sample = {}
+            for p in param_names:
+                entry = registry[p]
+                mn = float(entry['bounds']['min'])
+                mx = float(entry['bounds']['max'])
+                sample[p] = rng.uniform(mn, mx)
+
+            run_record = self._evaluate_param_sample(study, sample, run_index=i)
+            score = self._score_run_for_objective(run_record, objective_name, direction=direction)
+            run_record['optimizer_score'] = score
+            run_record['optimizer_raw_score'] = score
+            run_record['optimizer_penalty'] = 0.0
+            candidates.append(run_record)
+
+            if score > best_score:
+                best_score = score
+                best = run_record
+
+        return {
+            'candidates': candidates,
+            'best': best,
+            'stop_reason': 'budget_exhausted',
+            'generation_stats': [],
+            'step_size_history': [],
+            'evaluations_used': len(candidates),
+        }
+
+    def _run_cmaes_optimizer(self, study, param_names, registry, objective_name, direction, budget, seed, cmaes_config=None):
+        cfg = cmaes_config or {}
+        rng = np.random.default_rng(seed)
+
+        mins, maxs = self._get_optimizer_bounds(param_names, registry)
+        n = len(param_names)
+        if n <= 0:
+            return {
+                'candidates': [],
+                'best': None,
+                'stop_reason': 'no_parameters',
+                'generation_stats': [],
+                'step_size_history': [],
+                'evaluations_used': 0,
+            }
+
+        pop_size_default = max(4, 4 + int(3 * np.log(max(2, n))))
+        lambda_pop = int(cfg.get('population_size', pop_size_default))
+        lambda_pop = max(4, min(lambda_pop, budget))
+        mu = max(1, lambda_pop // 2)
+
+        raw_weights = np.log(mu + 0.5) - np.log(np.arange(1, mu + 1))
+        weights = raw_weights / np.sum(raw_weights)
+        mueff = (np.sum(weights) ** 2) / np.sum(weights ** 2)
+
+        ranges = np.maximum(maxs - mins, 1e-12)
+        mean = np.array([float(registry[p].get('default', (mins[i] + maxs[i]) * 0.5)) for i, p in enumerate(param_names)], dtype=float)
+        mean = np.clip(mean, mins, maxs)
+
+        sigma_rel = float(cfg.get('sigma_rel', 0.3))
+        sigma = float(cfg.get('sigma', sigma_rel * float(np.mean(ranges))))
+        sigma = max(sigma, 1e-12)
+
+        cc = (4 + mueff / n) / (n + 4 + 2 * mueff / n)
+        cs = (mueff + 2) / (n + mueff + 5)
+        c1 = 2 / ((n + 1.3) ** 2 + mueff)
+        cmu = min(1 - c1, 2 * (mueff - 2 + 1 / mueff) / ((n + 2) ** 2 + mueff))
+        damps = 1 + 2 * max(0, np.sqrt((mueff - 1) / (n + 1)) - 1) + cs
+        chi_n = np.sqrt(n) * (1 - 1 / (4 * n) + 1 / (21 * (n ** 2)))
+
+        C = np.eye(n)
+        B = np.eye(n)
+        D = np.ones(n)
+        invsqrtC = np.eye(n)
+        pc = np.zeros(n)
+        ps = np.zeros(n)
+
+        penalty_weight = float(cfg.get('boundary_penalty_weight', 1.0))
+        stagnation_generations = max(1, int(cfg.get('stagnation_generations', 12)))
+        min_improvement = float(cfg.get('min_improvement', 1e-9))
+        sigma_min = float(cfg.get('sigma_min', 1e-12))
+
+        candidates = []
+        best = None
+        best_score = -float('inf')
+        no_improve_gens = 0
+        generation = 0
+        eval_count = 0
+        generation_stats = []
+        step_size_history = []
+        stop_reason = 'budget_exhausted'
+
+        while eval_count < budget:
+            pop = []
+            for k in range(lambda_pop):
+                if eval_count >= budget:
+                    break
+                z = rng.standard_normal(n)
+                y = B @ (D * z)
+                x = mean + sigma * y
+
+                run_record, clipped = self._evaluate_candidate_vector(
+                    study=study,
+                    param_names=param_names,
+                    vec=x,
+                    mins=mins,
+                    maxs=maxs,
+                    run_index=eval_count,
+                    objective_name=objective_name,
+                    direction=direction,
+                    penalty_weight=penalty_weight,
+                    generation=generation,
+                )
+                pop.append((run_record, clipped))
+                candidates.append(run_record)
+                eval_count += 1
+
+                if run_record['optimizer_score'] > best_score:
+                    best_score = run_record['optimizer_score']
+                    best = run_record
+
+            if not pop:
+                stop_reason = 'empty_population'
+                break
+
+            pop.sort(key=lambda t: t[0]['optimizer_score'], reverse=True)
+            selected = pop[:mu]
+
+            old_mean = mean.copy()
+            y_list = [(vec - old_mean) / sigma for _, vec in selected]
+            y_w = np.sum(np.array([weights[i] * y_list[i] for i in range(len(y_list))]), axis=0)
+            mean = old_mean + sigma * y_w
+            mean = np.clip(mean, mins, maxs)
+
+            ps = (1 - cs) * ps + np.sqrt(cs * (2 - cs) * mueff) * (invsqrtC @ y_w)
+            norm_ps = np.linalg.norm(ps)
+            hsig = 1.0 if (norm_ps / np.sqrt(1 - (1 - cs) ** (2 * (generation + 1))) / chi_n) < (1.4 + 2 / (n + 1)) else 0.0
+            pc = (1 - cc) * pc + hsig * np.sqrt(cc * (2 - cc) * mueff) * y_w
+
+            delta_hsig = (1 - hsig) * cc * (2 - cc)
+            C = (1 - c1 - cmu + c1 * delta_hsig) * C + c1 * np.outer(pc, pc)
+            for i in range(len(y_list)):
+                C += cmu * weights[i] * np.outer(y_list[i], y_list[i])
+
+            C = (C + C.T) * 0.5
+            eigvals, eigvecs = np.linalg.eigh(C)
+            eigvals = np.maximum(eigvals, 1e-20)
+            D = np.sqrt(eigvals)
+            B = eigvecs
+            invsqrtC = B @ np.diag(1.0 / D) @ B.T
+
+            sigma *= np.exp((cs / damps) * ((norm_ps / chi_n) - 1))
+            sigma = max(sigma, sigma_min)
+
+            step_size_history.append(float(sigma))
+
+            gen_best = pop[0][0]
+            generation_stats.append({
+                'generation': generation,
+                'evaluations_used': eval_count,
+                'population_size': len(pop),
+                'sigma': float(sigma),
+                'generation_best_score': float(gen_best.get('optimizer_score', -float('inf'))),
+                'generation_best_objective': gen_best.get('objectives', {}).get(objective_name),
+            })
+
+            if generation_stats and len(generation_stats) >= 2:
+                prev_best = generation_stats[-2]['generation_best_score']
+                curr_best = generation_stats[-1]['generation_best_score']
+                if (curr_best - prev_best) > min_improvement:
+                    no_improve_gens = 0
+                else:
+                    no_improve_gens += 1
+
+            if sigma <= sigma_min:
+                stop_reason = 'sigma_min_reached'
+                break
+            if no_improve_gens >= stagnation_generations:
+                stop_reason = 'stagnation'
+                break
+
+            generation += 1
+
+        return {
+            'candidates': candidates,
+            'best': best,
+            'stop_reason': stop_reason,
+            'generation_stats': generation_stats,
+            'step_size_history': step_size_history,
+            'evaluations_used': len(candidates),
+            'cmaes': {
+                'population_size': lambda_pop,
+                'mu': mu,
+                'stagnation_generations': stagnation_generations,
+                'min_improvement': min_improvement,
+                'sigma_min': sigma_min,
+                'boundary_penalty_weight': penalty_weight,
+            },
+        }
+
     def list_optimizer_runs(self, study_name=None, limit=50):
         if not self.current_geometry_state:
             return []
@@ -1322,7 +1567,11 @@ class ProjectManager:
             runs = [r for r in runs if r.get('study_name') == study_name]
         return runs[:max(1, int(limit))]
 
-    def run_param_optimizer(self, study_name, method='random_search', budget=20, seed=42, objective_name=None, direction=None):
+    def _get_optimizer_run(self, run_id):
+        runs = (self.current_geometry_state.optimizer_runs or {}) if self.current_geometry_state else {}
+        return runs.get(run_id)
+
+    def run_param_optimizer(self, study_name, method='random_search', budget=20, seed=42, objective_name=None, direction=None, cmaes_config=None):
         if not self.current_geometry_state:
             return None, "No active project state."
 
@@ -1331,13 +1580,12 @@ class ProjectManager:
             return None, f"Study '{study_name}' not found."
 
         study = studies[study_name]
-        if method not in {'random_search'}:
+        if method not in {'random_search', 'cmaes'}:
             return None, f"Unsupported optimizer method '{method}'."
 
         budget = max(1, int(budget))
         budget = min(budget, self.MAX_OPTIMIZER_BUDGET)
         seed = int(seed)
-        rng = random.Random(seed)
 
         objectives = study.get('objectives', []) or []
         if objective_name is None:
@@ -1356,32 +1604,37 @@ class ProjectManager:
         registry = self.current_geometry_state.parameter_registry
 
         original_state = GeometryState.from_dict(self.current_geometry_state.to_dict())
-        candidates = []
-        best = None
-        best_score = -float('inf')
+        algo_result = None
 
         try:
-            for i in range(budget):
-                self.current_geometry_state = GeometryState.from_dict(original_state.to_dict())
-
-                sample = {}
-                for p in param_names:
-                    entry = registry[p]
-                    mn = float(entry['bounds']['min'])
-                    mx = float(entry['bounds']['max'])
-                    sample[p] = rng.uniform(mn, mx)
-
-                run_record = self._evaluate_param_sample(study, sample, run_index=i)
-                score = self._score_run_for_objective(run_record, objective_name, direction=direction)
-                run_record['optimizer_score'] = score
-                candidates.append(run_record)
-
-                if score > best_score:
-                    best_score = score
-                    best = run_record
+            self.current_geometry_state = GeometryState.from_dict(original_state.to_dict())
+            if method == 'random_search':
+                algo_result = self._run_random_search_optimizer(
+                    study=study,
+                    param_names=param_names,
+                    registry=registry,
+                    objective_name=objective_name,
+                    direction=direction,
+                    budget=budget,
+                    seed=seed,
+                )
+            else:
+                algo_result = self._run_cmaes_optimizer(
+                    study=study,
+                    param_names=param_names,
+                    registry=registry,
+                    objective_name=objective_name,
+                    direction=direction,
+                    budget=budget,
+                    seed=seed,
+                    cmaes_config=cmaes_config,
+                )
         finally:
             self.current_geometry_state = original_state
             self.recalculate_geometry_state()
+
+        candidates = algo_result.get('candidates', []) if isinstance(algo_result, dict) else []
+        best = algo_result.get('best') if isinstance(algo_result, dict) else None
 
         run_id = f"opt_{datetime.utcnow().strftime('%Y%m%dT%H%M%S_%f')}"
         summary = {
@@ -1400,12 +1653,148 @@ class ProjectManager:
             'failure_count': sum(1 for c in candidates if not c.get('success')),
             'best_run': best,
             'candidates': candidates,
+            'stop_reason': algo_result.get('stop_reason') if isinstance(algo_result, dict) else None,
+            'evaluations_used': algo_result.get('evaluations_used', len(candidates)) if isinstance(algo_result, dict) else len(candidates),
+            'generation_stats': algo_result.get('generation_stats', []) if isinstance(algo_result, dict) else [],
+            'step_size_history': algo_result.get('step_size_history', []) if isinstance(algo_result, dict) else [],
         }
+        if method == 'cmaes' and isinstance(algo_result, dict):
+            summary['cmaes'] = algo_result.get('cmaes', {})
 
         self.current_geometry_state.optimizer_runs[run_id] = summary
         self._capture_history_state(f"Ran optimizer '{method}' on study '{study_name}'")
 
         return summary, None
+
+    def replay_optimizer_best_candidate(self, run_id, apply_to_project=True):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        opt_run = self._get_optimizer_run(run_id)
+        if not opt_run:
+            return None, f"Optimizer run '{run_id}' not found."
+
+        study_name = opt_run.get('study_name')
+        studies = self.current_geometry_state.param_studies or {}
+        if study_name not in studies:
+            return None, f"Study '{study_name}' referenced by optimizer run not found."
+
+        best = opt_run.get('best_run') or {}
+        best_values = best.get('values')
+        if not isinstance(best_values, dict) or not best_values:
+            return None, "Optimizer run has no best candidate values to replay."
+
+        study = studies[study_name]
+        original_state = GeometryState.from_dict(self.current_geometry_state.to_dict())
+
+        try:
+            run_record = self._evaluate_param_sample(study, dict(best_values), run_index=0)
+            replay_record = {
+                'timestamp': datetime.utcnow().isoformat() + 'Z',
+                'run_id': run_id,
+                'success': bool(run_record.get('success')),
+                'error': run_record.get('error'),
+                'objective_values': run_record.get('objectives', {}),
+                'optimizer_score': run_record.get('optimizer_score'),
+            }
+
+            opt_run.setdefault('replay_records', []).append(replay_record)
+
+            if apply_to_project:
+                self._capture_history_state(f"Replayed best candidate from optimizer run '{run_id}'")
+                return {
+                    'run_id': run_id,
+                    'applied_to_project': True,
+                    'replay_record': replay_record,
+                    'run_record': run_record,
+                }, None
+
+            # not applying: restore previous state
+            self.current_geometry_state = original_state
+            self.recalculate_geometry_state()
+            return {
+                'run_id': run_id,
+                'applied_to_project': False,
+                'replay_record': replay_record,
+                'run_record': run_record,
+            }, None
+        except Exception as e:
+            self.current_geometry_state = original_state
+            self.recalculate_geometry_state()
+            return None, str(e)
+
+    def verify_optimizer_best_candidate(self, run_id, repeats=3):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        opt_run = self._get_optimizer_run(run_id)
+        if not opt_run:
+            return None, f"Optimizer run '{run_id}' not found."
+
+        study_name = opt_run.get('study_name')
+        studies = self.current_geometry_state.param_studies or {}
+        if study_name not in studies:
+            return None, f"Study '{study_name}' referenced by optimizer run not found."
+
+        best = opt_run.get('best_run') or {}
+        best_values = best.get('values')
+        if not isinstance(best_values, dict) or not best_values:
+            return None, "Optimizer run has no best candidate values to verify."
+
+        repeats = max(1, min(int(repeats), 100))
+        objective = opt_run.get('objective', {}) or {}
+        objective_name = objective.get('name')
+
+        study = studies[study_name]
+        original_state = GeometryState.from_dict(self.current_geometry_state.to_dict())
+
+        verification_runs = []
+        try:
+            for i in range(repeats):
+                self.current_geometry_state = GeometryState.from_dict(original_state.to_dict())
+                rr = self._evaluate_param_sample(study, dict(best_values), run_index=i)
+                verification_runs.append(rr)
+        finally:
+            self.current_geometry_state = original_state
+            self.recalculate_geometry_state()
+
+        obj_values = []
+        if objective_name:
+            for rr in verification_runs:
+                val = rr.get('objectives', {}).get(objective_name)
+                try:
+                    obj_values.append(float(val))
+                except (TypeError, ValueError):
+                    pass
+
+        if obj_values:
+            stats = {
+                'count': len(obj_values),
+                'mean': float(np.mean(obj_values)),
+                'std': float(np.std(obj_values)),
+                'min': float(np.min(obj_values)),
+                'max': float(np.max(obj_values)),
+            }
+        else:
+            stats = {'count': 0, 'mean': None, 'std': None, 'min': None, 'max': None}
+
+        verification_record = {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'run_id': run_id,
+            'repeats': repeats,
+            'objective_name': objective_name,
+            'stats': stats,
+            'success_count': sum(1 for r in verification_runs if r.get('success')),
+            'failure_count': sum(1 for r in verification_runs if not r.get('success')),
+        }
+        opt_run.setdefault('verification_records', []).append(verification_record)
+
+        return {
+            'run_id': run_id,
+            'objective_name': objective_name,
+            'verification_record': verification_record,
+            'runs': verification_runs,
+        }, None
 
     def get_object_details(self, object_type, object_name_or_id):
         """

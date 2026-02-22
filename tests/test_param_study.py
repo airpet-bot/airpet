@@ -175,6 +175,88 @@ def test_param_optimizer_budget_cap_is_enforced():
     assert len(result["candidates"]) == pm.MAX_OPTIMIZER_BUDGET
 
 
+def test_param_study_parameter_value_objective_metric():
+    pm = _make_pm()
+    _add_define_param(pm, name="p1")
+
+    study, err = pm.upsert_param_study("obj_param_val", {
+        "name": "obj_param_val",
+        "mode": "grid",
+        "parameters": ["p1"],
+        "grid": {"steps": 2},
+        "objectives": [{"metric": "parameter_value", "name": "p1_value", "direction": "maximize", "parameter": "p1"}],
+    })
+    assert study is not None and err is None
+
+    result, err = pm.run_param_study("obj_param_val")
+    assert err is None
+    vals = [r["objectives"]["p1_value"] for r in result["runs"]]
+    assert vals == [0.0, 10.0]
+
+
+def test_param_optimizer_cmaes_backend_and_provenance():
+    pm = _make_pm()
+    _add_define_param(pm, name="p1")
+
+    study, err = pm.upsert_param_study("opt_cmaes", {
+        "name": "opt_cmaes",
+        "mode": "random",
+        "parameters": ["p1"],
+        "random": {"samples": 4, "seed": 123},
+        "objectives": [{"metric": "success_flag", "name": "success", "direction": "maximize"}],
+    })
+    assert study is not None and err is None
+
+    result, err = pm.run_param_optimizer(
+        "opt_cmaes",
+        method="cmaes",
+        budget=18,
+        seed=5,
+        objective_name="success",
+        direction="maximize",
+        cmaes_config={"population_size": 6, "stagnation_generations": 2, "min_improvement": 1.0},
+    )
+    assert err is None
+    assert result["method"] == "cmaes"
+    assert len(result["candidates"]) <= 18
+    assert result["evaluations_used"] == len(result["candidates"])
+    assert "stop_reason" in result
+    assert "generation_stats" in result
+    assert "step_size_history" in result
+    assert "cmaes" in result
+
+    for cand in result["candidates"]:
+        assert 0.0 <= float(cand["values"]["p1"]) <= 10.0
+
+
+def test_param_optimizer_replay_and_verify_backend():
+    pm = _make_pm()
+    _add_define_param(pm, name="p1")
+
+    study, err = pm.upsert_param_study("opt_replay", {
+        "name": "opt_replay",
+        "mode": "random",
+        "parameters": ["p1"],
+        "random": {"samples": 3, "seed": 42},
+        "objectives": [{"metric": "success_flag", "name": "success", "direction": "maximize"}],
+    })
+    assert study is not None and err is None
+
+    opt, err = pm.run_param_optimizer("opt_replay", method="random_search", budget=4, seed=1)
+    assert err is None
+    run_id = opt["run_id"]
+
+    replay, err = pm.replay_optimizer_best_candidate(run_id, apply_to_project=False)
+    assert err is None
+    assert replay["run_id"] == run_id
+    assert replay["replay_record"]["success"] is True
+
+    verify, err = pm.verify_optimizer_best_candidate(run_id, repeats=4)
+    assert err is None
+    assert verify["verification_record"]["repeats"] == 4
+    assert verify["verification_record"]["stats"]["count"] >= 1
+
+
 def test_param_optimizer_api_routes():
     app.config["TESTING"] = True
     with app.test_client() as client:
@@ -203,12 +285,39 @@ def test_param_optimizer_api_routes():
             run_data = run_resp.get_json()
             assert run_data["success"] is True
             assert run_data["optimizer_result"]["budget"] == 4
+            run_id = run_data["optimizer_result"]["run_id"]
+
+            cmaes_resp = client.post("/api/param_optimizer/run", json={
+                "study_name": "opt_api",
+                "method": "cmaes",
+                "budget": 6,
+                "seed": 11,
+                "objective_name": "success",
+                "direction": "maximize",
+                "cmaes": {"population_size": 4}
+            })
+            assert cmaes_resp.status_code == 200
+            cmaes_data = cmaes_resp.get_json()
+            assert cmaes_data["success"] is True
+            assert cmaes_data["optimizer_result"]["method"] == "cmaes"
+
+            replay_resp = client.post("/api/param_optimizer/replay_best", json={"run_id": run_id, "apply_to_project": False})
+            assert replay_resp.status_code == 200
+            replay_data = replay_resp.get_json()
+            assert replay_data["success"] is True
+            assert replay_data["replay_result"]["run_id"] == run_id
+
+            verify_resp = client.post("/api/param_optimizer/verify_best", json={"run_id": run_id, "repeats": 3})
+            assert verify_resp.status_code == 200
+            verify_data = verify_resp.get_json()
+            assert verify_data["success"] is True
+            assert verify_data["verification_result"]["verification_record"]["repeats"] == 3
 
             list_resp = client.get("/api/param_optimizer/list?study_name=opt_api")
             assert list_resp.status_code == 200
             list_data = list_resp.get_json()
             assert list_data["success"] is True
-            assert len(list_data["optimizer_runs"]) >= 1
+            assert len(list_data["optimizer_runs"]) >= 2
 
 
 def test_objective_extraction_api_from_hdf5():
