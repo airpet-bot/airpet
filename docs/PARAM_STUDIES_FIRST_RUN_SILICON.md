@@ -7,6 +7,9 @@ Use the silicon slab beam monitor as the canonical first optimization example:
 - Clear objective (`Edep` in silicon)
 - Fast enough for short tutorial runs
 
+**Starter project asset:**
+- [`examples/silicon_detector/silicon_optimizer_starter.project.json`](../examples/silicon_detector/silicon_optimizer_starter.project.json)
+
 ---
 
 ## 1) Objective Builder wording (draft copy)
@@ -60,13 +63,15 @@ Optional third parameter for step 2 tutorial:
 
 This walkthrough shows the shortest path from "no study" to "first useful result."
 
-### Step 0 — Open the right tools
-1. Open your silicon detector project.
-2. Confirm the parameter registry includes `si_thickness` and `src_z`.
-3. Open **Param Studies**.
-4. Keep **View mode = Basic**.
+### Step 0 — Open the starter project
+1. In AIRPET, go to **File → Load Geometry (JSON)...**
+2. Load `examples/silicon_detector/silicon_optimizer_starter.project.json`.
+3. Confirm the parameter registry includes `si_thickness` and `src_z`.
+4. Open **Param Studies**.
+5. Keep **View mode = Basic**.
 
-### Step 1 — Create a study
+### Step 1 — Select or create the study
+The starter project already includes `si_first_run`. You can use it directly, or recreate it with:
 1. **Name**: `si_first_run`
 2. **Mode**: `random`
 3. **Parameters**: `si_thickness,src_z`
