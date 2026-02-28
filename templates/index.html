@@ -2235,6 +2235,16 @@
             </div>
             <div class="modal-body" style="flex-direction: column;">
                 <div id="psNotice" style="display:none; margin: 0 0 8px 0; padding: 8px 10px; border-radius: 4px; font-size: 12px;"></div>
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:4px;">
+                    <div style="font-size:12px; color:#334155;"><b>View mode:</b> Basic keeps the core study flow visible. Switch to Advanced for diagnostics and optimizer internals.</div>
+                    <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+                        <label for="ps_view_mode" style="margin:0; font-size:12px; color:#334155;">Mode</label>
+                        <select id="ps_view_mode">
+                            <option value="basic" selected>Basic</option>
+                            <option value="advanced">Advanced</option>
+                        </select>
+                    </div>
+                </div>
                 <div id="paramStudiesTableWrap">
                     <table id="paramStudiesTable">
                         <thead>
@@ -2264,21 +2274,21 @@
                         <label for="ps_parameters">Parameters (comma-separated):</label>
                         <input type="text" id="ps_parameters" placeholder="param1,param2,...">
                     </div>
-                    <div class="property_item" style="grid-column: 1 / span 2;">
+                    <div class="property_item" style="grid-column: 1 / span 2;" data-ps-view="advanced">
                         <label style="display:flex; align-items:center; gap:8px;">
                             <input type="checkbox" id="ps_show_legacy_objectives">
                             <span>Show legacy objective text input (advanced)</span>
                         </label>
                         <div style="font-size:12px; color:#64748b; margin-top:4px;">Objective Builder is the default path. Legacy objective text input is optional for advanced/manual workflows.</div>
                     </div>
-                    <div class="property_item" id="psLegacyObjectivesRow" style="grid-column: 1 / span 2; display:none;">
+                    <div class="property_item" id="psLegacyObjectivesRow" style="grid-column: 1 / span 2; display:none;" data-ps-view="advanced">
                         <label for="ps_objectives">Objectives (legacy quick input, metric[:name[:direction[:parameter]]], comma-separated):</label>
                         <input type="text" id="ps_objectives" placeholder="success_flag:success:maximize, placements_count:placements:minimize">
                     </div>
 
                     <div id="psObjectiveBuilderCard" style="grid-column: 1 / span 2; margin-top: 6px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc;">
-                        <div style="font-weight: 600; margin-bottom: 8px;">Objective Builder (M6 MVP)</div>
-                        <div id="psObPolicyCaps" style="font-size:12px; color:#334155; background:#fff; border:1px solid #e2e8f0; border-radius:4px; padding:6px 8px; margin-bottom:8px;">Loading run policy limits...</div>
+                        <div style="font-weight: 600; margin-bottom: 8px;">Objective Builder</div>
+                        <div id="psObPolicyCaps" data-ps-view="advanced" style="font-size:12px; color:#334155; background:#fff; border:1px solid #e2e8f0; border-radius:4px; padding:6px 8px; margin-bottom:8px;">Loading run policy limits...</div>
 
                         <div class="pr-form-grid" style="margin-top: 0;">
                             <div class="property_item">
@@ -2297,20 +2307,20 @@
                                 <div id="psObDatasetHint" style="font-size:12px; color:#64748b; margin-top:4px;">Use an HDF5 dataset path (e.g. default_ntuples/Hits/Edep) with reduce=sum for total deposited energy.</div>
                             </div>
                             <div class="property_item">
-                                <label for="ps_ob_cost_key">Context cost key:</label>
-                                <input type="text" id="ps_ob_cost_key" value="cost_norm" placeholder="cost_norm">
+                                <label for="ps_ob_cost_key">Context cost key (optional):</label>
+                                <input type="text" id="ps_ob_cost_key" value="" placeholder="optional (e.g. cost_norm)">
                             </div>
                             <div class="property_item">
                                 <label for="ps_ob_score_expr">Score expression:</label>
-                                <input type="text" id="ps_ob_score_expr" value="0.8*edep_sum - 0.2*cost_norm" placeholder="0.8*edep_sum - 0.2*cost_norm">
-                                <div style="font-size:12px; color:#64748b; margin-top:4px;">Formula can reference extract objective names and prior study aliases.</div>
-                                <div id="psObAllowedFunctions" style="font-size:12px; color:#475569; margin-top:2px;">Allowed functions: loading...</div>
-                                <div id="psObFormulaVars" style="font-size:12px; color:#475569; margin-top:4px;">Formula variables: loading...</div>
+                                <input type="text" id="ps_ob_score_expr" value="edep_sum" placeholder="edep_sum - 0.15*si_thickness - 0.02*abs(src_z)">
+                                <div style="font-size:12px; color:#64748b; margin-top:4px;">Start simple with <code>edep_sum</code>, then add penalties for thickness/cost if needed.</div>
+                                <div id="psObAllowedFunctions" data-ps-view="advanced" style="font-size:12px; color:#475569; margin-top:2px;">Allowed functions: loading...</div>
+                                <div id="psObFormulaVars" data-ps-view="advanced" style="font-size:12px; color:#475569; margin-top:4px;">Formula variables: loading...</div>
                             </div>
                             <div class="property_item" style="display:flex; align-items:end; gap:8px; flex-wrap:wrap;">
-                                <button id="psObBuildBtn" type="button">Build</button>
-                                <button id="psObUpsertBtn" type="button">Upsert Study</button>
-                                <button id="psObLaunchDryRunBtn" type="button">Launch Dry Run</button>
+                                <button id="psObBuildBtn" type="button" data-ps-view="advanced">Build</button>
+                                <button id="psObUpsertBtn" type="button" data-ps-view="advanced">Upsert Study</button>
+                                <button id="psObLaunchDryRunBtn" type="button" data-ps-view="advanced">Launch Dry Run</button>
                                 <button id="psObGuidedBtn" type="button" class="confirm-button">Guided: Validate → Build → Dry Run</button>
                             </div>
                             <div class="property_item" style="grid-column: 1 / span 2; border:1px solid #e2e8f0; border-radius:4px; padding:8px; background:#fff;">
@@ -2328,8 +2338,8 @@
                                     <label for="ps_ob_output" style="margin:0;">Objective Builder output:</label>
                                     <div style="display:flex; gap:8px; flex-wrap:wrap;">
                                         <button id="psObCopyOutputBtn" type="button">Copy Output JSON</button>
-                                        <button id="psObCopyBuildBtn" type="button">Copy Build Payload</button>
-                                        <button id="psObCopyLaunchBtn" type="button">Copy Launch Payload</button>
+                                        <button id="psObCopyBuildBtn" type="button" data-ps-view="advanced">Copy Build Payload</button>
+                                        <button id="psObCopyLaunchBtn" type="button" data-ps-view="advanced">Copy Launch Payload</button>
                                     </div>
                                 </div>
                                 <textarea id="ps_ob_output" rows="6" readonly style="width:100%; font-family: ui-monospace, Menlo, monospace;"></textarea>
@@ -2355,7 +2365,7 @@
                     </div>
                 </div>
 
-                <div id="psOptimizerSummaryCard" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                <div id="psOptimizerSummaryCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
                     <div style="font-weight: 600; margin-bottom: 6px;">Optimizer Summary</div>
                     <div id="psOptimizerSummaryGrid" style="display:grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; color: #334155;">
                         <div><b>Status:</b> <span id="psSummaryStatus">No optimizer run yet</span></div>
@@ -2367,7 +2377,7 @@
                     </div>
                 </div>
 
-                <div id="psRunTimelineCard" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                <div id="psRunTimelineCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
                     <div style="font-weight: 600; margin-bottom: 6px;">Run Timeline &amp; Status</div>
                     <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px 10px; color: #334155;">
                         <div><b>Status:</b> <span id="psRunStatus">idle</span></div>
@@ -2383,7 +2393,7 @@
                     </ul>
                 </div>
 
-                <div id="psRunReviewCard" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                <div id="psRunReviewCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
                     <div style="font-weight: 600; margin-bottom: 6px;">Run Review &amp; Apply</div>
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; color: #334155;">
                         <div><b>Run ID:</b> <span id="psReviewRunId">-</span></div>
@@ -2459,7 +2469,7 @@
                     <textarea id="ps_run_output" rows="8" readonly style="width:100%; font-family: ui-monospace, Menlo, monospace;"></textarea>
                 </div>
 
-                <div class="pr-form-grid" style="margin-top: 10px;">
+                <div class="pr-form-grid" style="margin-top: 10px;" data-ps-view="advanced">
                     <div class="property_item">
                         <label for="ps_rank_objective">Ranking Objective:</label>
                         <select id="ps_rank_objective"></select>
@@ -2516,7 +2526,7 @@
                     </table>
                 </div>
 
-                <div id="psDecompositionCard" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                <div id="psDecompositionCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
                     <div style="font-weight: 600; margin-bottom: 6px;">Candidate Decomposition (Top Ranked)</div>
                     <table id="psDecompositionTable" style="width:100%; border-collapse: collapse; font-size:12px;">
                         <thead>
@@ -2534,7 +2544,7 @@
                     </table>
                 </div>
 
-                <div id="psCandidateCompareCard" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                <div id="psCandidateCompareCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
                     <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
                         <div style="font-weight: 600;">Top Candidate Compare</div>
                         <div style="display:flex; align-items:center; gap:8px;">
@@ -2553,13 +2563,13 @@
                     </div>
                 </div>
 
-                <div id="psWhySelectedCard" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                <div id="psWhySelectedCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
                     <div style="font-weight: 600; margin-bottom: 6px;">Why Selected</div>
                     <div id="psWhySelectedSummary" style="color:#334155; margin-bottom:6px;">No optimizer selection yet.</div>
                     <textarea id="psWhySelectedDetails" rows="5" readonly style="width:100%; font-family: ui-monospace, Menlo, monospace;"></textarea>
                 </div>
 
-                <div id="psFailureDiagnosticsCard" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                <div id="psFailureDiagnosticsCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
                     <div style="font-weight: 600; margin-bottom: 6px;">Failure Diagnostics</div>
                     <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; color:#334155; margin-bottom:6px;">
                         <div><b>Failed runs:</b> <span id="psFailureCount">0</span></div>
@@ -2578,12 +2588,12 @@
                 <button id="psRefreshBtn">Refresh</button>
                 <button id="psDeleteBtn">Delete</button>
                 <button id="psRunBtn">Run Study</button>
-                <button id="psRunOptimizerBtn">Run Optimizer</button>
+                <button id="psRunOptimizerBtn" data-ps-view="advanced">Run Optimizer</button>
                 <button id="psStopRunBtn" class="danger-button" disabled>Stop Active Run</button>
                 <button id="psReplayBestBtn" style="display:none;" aria-hidden="true">Replay Best (Legacy)</button>
                 <button id="psVerifyBestBtn" style="display:none;" aria-hidden="true">Verify Best (Legacy)</button>
                 <button id="psDownloadResultsBtn">Download Results</button>
-                <span style="margin-left: 8px; color: #64748b; font-size: 12px;">Use <b>Run Review &amp; Apply</b> above for verify/apply.</span>
+                <span data-ps-view="advanced" style="margin-left: 8px; color: #64748b; font-size: 12px;">Use <b>Run Review &amp; Apply</b> above for verify/apply.</span>
                 <button id="psCancelBtn">Close</button>
                 <button id="psSaveBtn" class="confirm-button">Save</button>
             </div>

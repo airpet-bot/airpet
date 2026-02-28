@@ -14,6 +14,7 @@ let reviewAuditTargetSelect, reviewAuditTargetHintEl, reviewAuditTableBody, revi
 let reviewApplyConfirmTextEl, reviewRollbackConfirmTextEl;
 let verifyMinSuccessRateInput, verifyMaxStdInput;
 let noticeEl;
+let viewModeInput;
 let saveBtn, deleteBtn, runBtn, runOptimizerBtn, stopRunBtn, replayBestBtn, verifyBestBtn, downloadResultsBtn, refreshBtn, cancelBtn;
 let obTemplateInput, obDatasetPathInput, obCostKeyInput, obScoreExprInput, obOutput;
 let obPolicyCapsEl, obAllowedFunctionsEl, obFormulaVarsEl, obDatasetHintEl;
@@ -105,6 +106,19 @@ function _setLegacyObjectivesVisible(visible) {
     if (!legacyObjectivesRow) return;
     legacyObjectivesRow.style.display = visible ? '' : 'none';
     if (legacyObjectivesToggleInput) legacyObjectivesToggleInput.checked = !!visible;
+}
+
+function _setParamStudiesViewMode(mode = 'basic') {
+    const normalized = String(mode || 'basic').toLowerCase() === 'advanced' ? 'advanced' : 'basic';
+    if (viewModeInput && viewModeInput.value !== normalized) {
+        viewModeInput.value = normalized;
+    }
+    if (!modal) return;
+
+    const advancedEls = modal.querySelectorAll('[data-ps-view="advanced"]');
+    advancedEls.forEach((el) => {
+        el.hidden = normalized !== 'advanced';
+    });
 }
 
 function _extractFormulaIdentifiers(expr) {
@@ -2102,6 +2116,7 @@ export function init(newCallbacks = {}) {
 
     modal = document.getElementById('paramStudiesModal');
     noticeEl = document.getElementById('psNotice');
+    viewModeInput = document.getElementById('ps_view_mode');
     tableBody = document.getElementById('paramStudiesTableBody');
 
     nameInput = document.getElementById('ps_name');
@@ -2235,6 +2250,12 @@ export function init(newCallbacks = {}) {
         });
     }
 
+    if (viewModeInput) {
+        viewModeInput.addEventListener('change', () => {
+            _setParamStudiesViewMode(viewModeInput.value);
+        });
+    }
+
     if (paramsInput) paramsInput.addEventListener('input', _renderFormulaVariableHints);
     if (obCostKeyInput) obCostKeyInput.addEventListener('input', _renderFormulaVariableHints);
     if (obScoreExprInput) obScoreExprInput.addEventListener('input', _renderFormulaVariableHints);
@@ -2248,6 +2269,8 @@ export function init(newCallbacks = {}) {
     if (obCopyOutputBtn) obCopyOutputBtn.addEventListener('click', _handleCopyObjectiveBuilderOutput);
     if (obCopyBuildBtn) obCopyBuildBtn.addEventListener('click', _handleCopyObjectiveBuilderBuild);
     if (obCopyLaunchBtn) obCopyLaunchBtn.addEventListener('click', _handleCopyObjectiveBuilderLaunch);
+
+    _setParamStudiesViewMode(viewModeInput?.value || 'basic');
 
     // Populate schema-driven UI hints/caps/templates.
     callbacks.onObjectiveBuilderSchema().then(schema => {
@@ -2283,6 +2306,8 @@ export async function show(initialStudies = {}) {
     _stopRunLifecycleTimer();
 
     _setForm();
+    if (viewModeInput) viewModeInput.value = 'basic';
+    _setParamStudiesViewMode('basic');
     runOutput.value = '';
     if (obOutput) obOutput.value = '';
     _showNotice('', 'info', 0);
