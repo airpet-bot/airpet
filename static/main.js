@@ -108,6 +108,10 @@ function ensureParamStudyEditorInit() {
         onDelete: handleParamStudyDelete,
         onRun: handleParamStudyRun,
         onRunOptimizer: handleParamStudyRunOptimizer,
+        onApplyCandidate: handleParamStudyApplyCandidate,
+        onGetParameterRegistry: handleParameterRegistryRefresh,
+        onGetActiveRunStatus: handleParamOptimizerGetActiveRunStatus,
+        onGetObjectiveBuilderLaunchStatus: handleObjectiveBuilderLaunchStatus,
         onStopActiveRun: handleParamOptimizerStopActiveRun,
         onReplayBest: handleParamOptimizerReplayBest,
         onVerifyBest: handleParamOptimizerVerifyBest,
@@ -2653,13 +2657,13 @@ async function handleParamStudyDelete(name) {
 }
 
 async function handleParamStudyRun(name, maxRuns = null) {
-    UIManager.showLoading(`Running param study '${name}'...`);
+    UIManager.showLoading(`Running parameter sweep (no simulation) for '${name}'...`);
     try {
         const result = await APIService.runParamStudy(name, maxRuns);
-        UIManager.showNotification(`Param study '${name}' run complete.`);
+        UIManager.showNotification(`Parameter sweep completed for '${name}' (no simulation).`);
         return result.study_result || result;
     } catch (error) {
-        UIManager.showError("Failed to run param study: " + error.message);
+        UIManager.showError("Failed to run parameter sweep: " + error.message);
         throw error;
     } finally {
         UIManager.hideLoading();
@@ -2677,6 +2681,29 @@ async function handleParamStudyRunOptimizer(payload) {
         throw error;
     } finally {
         UIManager.hideLoading();
+    }
+}
+
+async function handleParamStudyApplyCandidate(studyName, values) {
+    UIManager.showLoading('Applying candidate to geometry...');
+    try {
+        const result = await APIService.applyParamStudyCandidate(studyName, values);
+        syncUIWithState(result);
+        UIManager.showNotification('Geometry updated from selected parameter set.');
+        return result;
+    } catch (error) {
+        UIManager.showError('Failed to apply selected candidate: ' + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleParamOptimizerGetActiveRunStatus() {
+    try {
+        return await APIService.getActiveParamOptimizerRunStatus();
+    } catch (error) {
+        throw error;
     }
 }
 
@@ -2826,19 +2853,27 @@ async function handleObjectiveBuilderUpsert(payload) {
 }
 
 async function handleObjectiveBuilderLaunch(payload) {
-    UIManager.showLoading(payload?.dry_run ? 'Preparing objective builder launch (dry run)...' : 'Launching objective builder run...');
+    const isDryRun = !!payload?.dry_run;
+    if (isDryRun) {
+        UIManager.showLoading('Preparing objective builder launch (dry run)...');
+    }
     try {
         const result = await APIService.launchObjectiveBuilder(payload);
         if (!result?.dry_run && result?.optimizer_result) {
-            UIManager.showNotification('Objective builder launch completed.');
+            UIManager.showNotification('Simulation-in-loop optimization completed.');
         }
         return result;
     } catch (error) {
         UIManager.showError('Objective builder launch failed: ' + error.message);
         throw error;
     } finally {
-        UIManager.hideLoading();
+        if (isDryRun) UIManager.hideLoading();
     }
+}
+
+async function handleObjectiveBuilderLaunchStatus(runControlId) {
+    const result = await APIService.getObjectiveBuilderLaunchStatus(runControlId);
+    return result || {};
 }
 
 function getAvailableVolumes() {

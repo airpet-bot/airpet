@@ -130,6 +130,72 @@ class ProjectManager:
             'last': _decorate(last),
         }
 
+    def update_managed_run_progress(
+        self,
+        *,
+        total_evaluations=None,
+        evaluations_completed=None,
+        success_count=None,
+        failure_count=None,
+        current_run_index=None,
+        current_values=None,
+        phase=None,
+        message=None,
+    ):
+        with self._run_control_lock:
+            rc = self._active_run_control
+            if not rc or rc.get('status') != 'running':
+                return None
+
+            progress = dict(rc.get('progress') or {})
+
+            if total_evaluations is not None:
+                try:
+                    progress['total_evaluations'] = max(0, int(total_evaluations))
+                except Exception:
+                    pass
+
+            if evaluations_completed is not None:
+                try:
+                    progress['evaluations_completed'] = max(0, int(evaluations_completed))
+                except Exception:
+                    pass
+
+            if success_count is not None:
+                try:
+                    progress['success_count'] = max(0, int(success_count))
+                except Exception:
+                    pass
+
+            if failure_count is not None:
+                try:
+                    progress['failure_count'] = max(0, int(failure_count))
+                except Exception:
+                    pass
+
+            if current_run_index is not None:
+                try:
+                    progress['current_run_index'] = max(0, int(current_run_index))
+                except Exception:
+                    pass
+
+            if current_values is not None:
+                if isinstance(current_values, dict):
+                    progress['current_values'] = dict(current_values)
+                else:
+                    progress['current_values'] = {}
+
+            if phase is not None:
+                progress['phase'] = str(phase)
+
+            if message is not None:
+                progress['message'] = str(message)
+
+            progress['updated_at'] = time.time()
+            rc['progress'] = progress
+            self._last_run_control = dict(rc)
+            return dict(progress)
+
     def _should_abort_managed_run(self):
         with self._run_control_lock:
             rc = self._active_run_control
@@ -1430,6 +1496,15 @@ class ProjectManager:
         success_count = 0
         stop_reason = 'completed'
 
+        self.update_managed_run_progress(
+            total_evaluations=len(samples),
+            evaluations_completed=0,
+            success_count=0,
+            failure_count=0,
+            phase='running',
+            message=f"Parameter sweep '{name}' started.",
+        )
+
         try:
             for i, sample in enumerate(samples):
                 abort_reason = self._should_abort_managed_run()
@@ -1437,6 +1512,16 @@ class ProjectManager:
                     stop_reason = abort_reason
                     break
                 self.current_geometry_state = GeometryState.from_dict(original_state.to_dict())
+
+                self.update_managed_run_progress(
+                    current_run_index=i,
+                    current_values=sample,
+                    evaluations_completed=len(runs),
+                    success_count=success_count,
+                    failure_count=len(runs) - success_count,
+                    phase='evaluating',
+                    message=f"Evaluating candidate {i + 1}/{len(samples)}",
+                )
 
                 sim_options = {}
                 apply_error = None
@@ -1461,6 +1546,13 @@ class ProjectManager:
                     }
                     run_record['objectives'] = self._evaluate_study_objectives(study.get('objectives', []), run_record)
                     runs.append(run_record)
+                    self.update_managed_run_progress(
+                        evaluations_completed=len(runs),
+                        success_count=success_count,
+                        failure_count=len(runs) - success_count,
+                        phase='evaluating',
+                        message=f"Candidate {i + 1}/{len(samples)} failed: {apply_error}",
+                    )
                     continue
 
                 ok, err = self.recalculate_geometry_state()
@@ -1478,9 +1570,25 @@ class ProjectManager:
                 run_record['objectives'] = self._evaluate_study_objectives(study.get('objectives', []), run_record)
 
                 runs.append(run_record)
+                self.update_managed_run_progress(
+                    evaluations_completed=len(runs),
+                    success_count=success_count,
+                    failure_count=len(runs) - success_count,
+                    phase='evaluating',
+                    message=f"Candidate {i + 1}/{len(samples)} {'ok' if run_record.get('success') else 'failed'}",
+                )
         finally:
             self.current_geometry_state = original_state
             self.recalculate_geometry_state()
+
+        self.update_managed_run_progress(
+            evaluations_completed=len(runs),
+            success_count=success_count,
+            failure_count=len(runs) - success_count,
+            phase=stop_reason,
+            current_values={},
+            message=f"Parameter sweep finished with status '{stop_reason}'.",
+        )
 
         return {
             'study_name': name,
@@ -1491,6 +1599,55 @@ class ProjectManager:
             'failed_runs': len(runs) - success_count,
             'stop_reason': stop_reason,
             'runs': runs,
+        }, None
+
+    def apply_study_candidate_values(self, study_name, values):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        studies = self.current_geometry_state.param_studies or {}
+        if study_name not in studies:
+            return None, f"Study '{study_name}' not found."
+
+        if not isinstance(values, dict) or not values:
+            return None, "values must be a non-empty object/dict."
+
+        study = studies[study_name]
+        study_params = list(study.get('parameters', []) or [])
+
+        sim_options = {}
+        applied_values = {}
+        for param_name in study_params:
+            if param_name not in values:
+                continue
+            param_entry = self.current_geometry_state.parameter_registry.get(param_name)
+            if not param_entry:
+                return None, f"Parameter '{param_name}' not found in registry."
+
+            raw_v = values.get(param_name)
+            try:
+                v = float(raw_v)
+            except (TypeError, ValueError):
+                return None, f"Parameter '{param_name}' value must be numeric."
+
+            ok, err = self._apply_param_value(param_entry, v, sim_options)
+            if not ok:
+                return None, err
+            applied_values[param_name] = v
+
+        if not applied_values:
+            return None, "No matching study parameters found in values payload."
+
+        ok, err = self.recalculate_geometry_state()
+        if not ok:
+            return None, err
+
+        self._capture_history_state(f"Applied candidate values for study '{study_name}'")
+
+        return {
+            'study_name': study_name,
+            'applied_values': applied_values,
+            'sim_options': sim_options,
         }, None
 
     def _evaluate_param_sample(self, study, sample, run_index=0, evaluator=None):
@@ -1593,6 +1750,15 @@ class ProjectManager:
         best_score = -float('inf')
         stop_reason = 'budget_exhausted'
 
+        self.update_managed_run_progress(
+            total_evaluations=budget,
+            evaluations_completed=0,
+            success_count=0,
+            failure_count=0,
+            phase='running',
+            message=f"Optimizer random_search started (budget={budget}).",
+        )
+
         for i in range(budget):
             abort_reason = self._should_abort_managed_run()
             if abort_reason:
@@ -1605,6 +1771,16 @@ class ProjectManager:
                 mx = float(entry['bounds']['max'])
                 sample[p] = rng.uniform(mn, mx)
 
+            self.update_managed_run_progress(
+                current_run_index=i,
+                current_values=sample,
+                evaluations_completed=len(candidates),
+                success_count=sum(1 for c in candidates if c.get('success')),
+                failure_count=sum(1 for c in candidates if not c.get('success')),
+                phase='evaluating',
+                message=f"Evaluating candidate {i + 1}/{budget}",
+            )
+
             run_record = self._evaluate_param_sample(study, sample, run_index=i, evaluator=evaluator)
             score = self._score_run_for_objective(run_record, objective_name, direction=direction)
             run_record['optimizer_score'] = score
@@ -1615,6 +1791,23 @@ class ProjectManager:
             if score > best_score:
                 best_score = score
                 best = run_record
+
+            self.update_managed_run_progress(
+                evaluations_completed=len(candidates),
+                success_count=sum(1 for c in candidates if c.get('success')),
+                failure_count=sum(1 for c in candidates if not c.get('success')),
+                phase='evaluating',
+                message=f"Completed candidate {i + 1}/{budget}",
+            )
+
+        self.update_managed_run_progress(
+            evaluations_completed=len(candidates),
+            success_count=sum(1 for c in candidates if c.get('success')),
+            failure_count=sum(1 for c in candidates if not c.get('success')),
+            phase=stop_reason,
+            current_values={},
+            message=f"Optimizer random_search finished with status '{stop_reason}'.",
+        )
 
         return {
             'candidates': candidates,
@@ -1687,6 +1880,15 @@ class ProjectManager:
         step_size_history = []
         stop_reason = 'budget_exhausted'
 
+        self.update_managed_run_progress(
+            total_evaluations=budget,
+            evaluations_completed=0,
+            success_count=0,
+            failure_count=0,
+            phase='running',
+            message=f"Optimizer cmaes started (budget={budget}).",
+        )
+
         while eval_count < budget:
             abort_reason = self._should_abort_managed_run()
             if abort_reason:
@@ -1705,6 +1907,17 @@ class ProjectManager:
                 z = rng.standard_normal(n)
                 y = B @ (D * z)
                 x = mean + sigma * y
+                sample_preview = self._vector_to_sample(param_names, np.clip(x, mins, maxs))
+
+                self.update_managed_run_progress(
+                    current_run_index=eval_count,
+                    current_values=sample_preview,
+                    evaluations_completed=len(candidates),
+                    success_count=sum(1 for c in candidates if c.get('success')),
+                    failure_count=sum(1 for c in candidates if not c.get('success')),
+                    phase='evaluating',
+                    message=f"Evaluating candidate {eval_count + 1}/{budget} (generation {generation})",
+                )
 
                 run_record, clipped = self._evaluate_candidate_vector(
                     study=study,
@@ -1726,6 +1939,14 @@ class ProjectManager:
                 if run_record['optimizer_score'] > best_score:
                     best_score = run_record['optimizer_score']
                     best = run_record
+
+                self.update_managed_run_progress(
+                    evaluations_completed=len(candidates),
+                    success_count=sum(1 for c in candidates if c.get('success')),
+                    failure_count=sum(1 for c in candidates if not c.get('success')),
+                    phase='evaluating',
+                    message=f"Completed candidate {eval_count}/{budget}",
+                )
 
             if stop_reason not in {'budget_exhausted', 'empty_population', 'sigma_min_reached', 'stagnation'}:
                 break
@@ -1791,6 +2012,15 @@ class ProjectManager:
                 break
 
             generation += 1
+
+        self.update_managed_run_progress(
+            evaluations_completed=len(candidates),
+            success_count=sum(1 for c in candidates if c.get('success')),
+            failure_count=sum(1 for c in candidates if not c.get('success')),
+            phase=stop_reason,
+            current_values={},
+            message=f"Optimizer cmaes finished with status '{stop_reason}'.",
+        )
 
         return {
             'candidates': candidates,
@@ -1945,6 +2175,15 @@ class ProjectManager:
         x_obs = []
         y_obs = []
 
+        self.update_managed_run_progress(
+            total_evaluations=budget,
+            evaluations_completed=0,
+            success_count=0,
+            failure_count=0,
+            phase='running',
+            message=f"Optimizer surrogate_gp started (budget={budget}).",
+        )
+
         try:
             for i in range(budget):
                 abort_reason = self._should_abort_managed_run()
@@ -1992,6 +2231,16 @@ class ProjectManager:
                 else:
                     sample = self._sample_random_candidate(param_names, registry, rng)
 
+                self.update_managed_run_progress(
+                    current_run_index=i,
+                    current_values=sample,
+                    evaluations_completed=len(candidates),
+                    success_count=sum(1 for c in candidates if c.get('success')),
+                    failure_count=sum(1 for c in candidates if not c.get('success')),
+                    phase='evaluating',
+                    message=f"Evaluating candidate {i + 1}/{budget}",
+                )
+
                 run_record = self._evaluate_param_sample(study, sample, run_index=i, evaluator=evaluator)
                 score = self._score_run_for_objective(run_record, objective_name, direction=direction)
 
@@ -2018,9 +2267,26 @@ class ProjectManager:
                 if score > best_score:
                     best_score = score
                     best = run_record
+
+                self.update_managed_run_progress(
+                    evaluations_completed=len(candidates),
+                    success_count=sum(1 for c in candidates if c.get('success')),
+                    failure_count=sum(1 for c in candidates if not c.get('success')),
+                    phase='evaluating',
+                    message=f"Completed candidate {i + 1}/{budget}",
+                )
         finally:
             self.current_geometry_state = original_state
             self.recalculate_geometry_state()
+
+        self.update_managed_run_progress(
+            evaluations_completed=len(candidates),
+            success_count=sum(1 for c in candidates if c.get('success')),
+            failure_count=sum(1 for c in candidates if not c.get('success')),
+            phase=stop_reason,
+            current_values={},
+            message=f"Optimizer surrogate_gp finished with status '{stop_reason}'.",
+        )
 
         run_id = f"opt_{datetime.utcnow().strftime('%Y%m%dT%H%M%S_%f')}"
         summary = {

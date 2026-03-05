@@ -1,5 +1,5 @@
 let modal, tableBody;
-let nameInput, modeInput, paramsInput, objectivesInput, gridStepsInput, samplesInput, seedInput, maxRunsInput, runOutput;
+let nameInput, modeInput, paramsInput, paramPickerInput, paramAddBtn, paramRemoveBtn, objectivesInput, gridStepsInput, samplesInput, seedInput, maxRunsInput, runOutput;
 let legacyObjectivesToggleInput, legacyObjectivesRow;
 let rankObjectiveSelect, rankDirectionSelect, rankingTableBody;
 let decompositionTableBody, compareTopNSelect, compareRefreshBtn, compareTableWrap, whySelectedSummaryEl, whySelectedDetailsEl;
@@ -14,10 +14,12 @@ let reviewAuditTargetSelect, reviewAuditTargetHintEl, reviewAuditTableBody, revi
 let reviewApplyConfirmTextEl, reviewRollbackConfirmTextEl;
 let verifyMinSuccessRateInput, verifyMaxStdInput;
 let noticeEl;
-let saveBtn, deleteBtn, runBtn, runOptimizerBtn, stopRunBtn, replayBestBtn, verifyBestBtn, downloadResultsBtn, refreshBtn, cancelBtn;
-let obTemplateInput, obDatasetPathInput, obCostKeyInput, obScoreExprInput, obOutput;
-let obPolicyCapsEl, obAllowedFunctionsEl, obFormulaVarsEl, obDatasetHintEl;
-let obLoadExampleBtn, obValidateBtn, obBuildBtn, obUpsertBtn, obLaunchDryRunBtn, obGuidedBtn;
+let quickStatusEl, quickStatusBarEl;
+let viewModeInput;
+let saveBtn, deleteBtn, runBtn, runOptimizerBtn, stopRunBtn, replayBestBtn, verifyBestBtn, applySelectedBtn, downloadResultsBtn, refreshBtn, cancelBtn;
+let obTemplateInput, obDatasetPathInput, obCostKeyInput, obScoreExprInput, obKeepCandidateRunsInput, obCandidateRunsRootInput, obOutput;
+let obPolicyCapsEl, obAllowedFunctionsEl, obFormulaVarsEl, obDatasetHintEl, obRunsDirStatusEl;
+let obLoadExampleBtn, obValidateBtn, obBuildBtn, obUpsertBtn, obLaunchDryRunBtn, obLaunchRunBtn, obGuidedBtn;
 let obCopyOutputBtn, obCopyBuildBtn, obCopyLaunchBtn;
 let obStatusEl, obStageEl, obErrorsList, obWarningsList;
 
@@ -35,6 +37,10 @@ let callbacks = {
     onDelete: async (_name) => { },
     onRun: async (_name, _maxRuns) => ({}),
     onRunOptimizer: async (_payload) => ({}),
+    onApplyCandidate: async (_studyName, _values) => ({}),
+    onGetParameterRegistry: async () => ({}),
+    onGetActiveRunStatus: async () => ({ active: null, last: null }),
+    onGetObjectiveBuilderLaunchStatus: async (_runControlId) => ({}),
     onStopActiveRun: async (_reason) => ({ active: false, stop_requested: false }),
     onReplayBest: async (_runId, _options) => ({}),
     onVerifyBest: async (_runId, _options) => ({}),
@@ -52,6 +58,9 @@ let callbacks = {
 
 let activeName = null;
 let currentStudies = {};
+let currentParameterRegistry = {};
+let selectedRankedRun = null;
+let restoredSelectedRunIndex = null;
 let lastRunResult = null;
 let lastVerificationResult = null;
 let currentApplyToken = null;
@@ -71,14 +80,23 @@ let applyConfirmState = { armed: false, runId: null, token: null, expiresAtMs: 0
 let rollbackConfirmState = { armed: false, auditId: null, expiresAtMs: 0 };
 let applyConfirmTimer = null;
 let rollbackConfirmTimer = null;
+let persistedModalState = null;
 let runLifecycleState = {
     status: 'idle',
     action: '-',
+    actionDetail: '',
     startedAtMs: null,
     endedAtMs: null,
     lastUpdateMs: null,
+    liveProgress: null,
 };
 let runLifecycleTimer = null;
+let runStatusPollTimer = null;
+let runStatusPollPending = false;
+let launchStatusPollTimer = null;
+let launchStatusPollPending = false;
+let activeLaunchRunControlId = null;
+let lastRunProgressSignature = '';
 let runTimelineEvents = [];
 let stopRunRequestPending = false;
 
@@ -86,7 +104,8 @@ function _setForm(study = null, name = '') {
     const s = study || {};
     nameInput.value = name || s.name || '';
     modeInput.value = s.mode || 'grid';
-    paramsInput.value = (s.parameters || []).join(',');
+    _setSelectedParameters(s.parameters || []);
+    _refreshParameterPicker();
     objectivesInput.value = (s.objectives || []).map(o => {
         const metric = o.metric || '';
         const namePart = o.name ? `:${o.name}` : '';
@@ -107,19 +126,111 @@ function _setLegacyObjectivesVisible(visible) {
     if (legacyObjectivesToggleInput) legacyObjectivesToggleInput.checked = !!visible;
 }
 
+function _setParamStudiesViewMode(mode = 'basic') {
+    const normalized = String(mode || 'basic').toLowerCase() === 'advanced' ? 'advanced' : 'basic';
+    if (viewModeInput && viewModeInput.value !== normalized) {
+        viewModeInput.value = normalized;
+    }
+    if (!modal) return;
+
+    const advancedEls = modal.querySelectorAll('[data-ps-view="advanced"]');
+    advancedEls.forEach((el) => {
+        el.hidden = normalized !== 'advanced';
+    });
+}
+
 function _extractFormulaIdentifiers(expr) {
     const text = String(expr || '');
     const matches = text.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
     return [...new Set(matches)];
 }
 
-function _renderFormulaVariableHints() {
-    if (!obFormulaVarsEl) return;
-
-    const params = (paramsInput?.value || '')
+function _getSelectedParameters() {
+    if (!paramsInput) return [];
+    if (paramsInput.tagName === 'SELECT') {
+        return [...paramsInput.options].map(o => String(o.value || '').trim()).filter(Boolean);
+    }
+    return (paramsInput?.value || '')
         .split(',')
         .map(x => x.trim())
         .filter(Boolean);
+}
+
+function _setSelectedParameters(names = []) {
+    const unique = [...new Set((names || []).map(x => String(x || '').trim()).filter(Boolean))];
+    if (!paramsInput) return;
+
+    if (paramsInput.tagName === 'SELECT') {
+        paramsInput.innerHTML = '';
+        unique.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            paramsInput.appendChild(opt);
+        });
+        return;
+    }
+
+    paramsInput.value = unique.join(',');
+}
+
+function _refreshParameterPicker() {
+    if (!paramPickerInput) return;
+
+    const selected = new Set(_getSelectedParameters());
+    const names = Object.keys(currentParameterRegistry || {}).sort((a, b) => a.localeCompare(b));
+
+    paramPickerInput.innerHTML = '';
+    if (names.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '(no registry parameters)';
+        paramPickerInput.appendChild(opt);
+        paramPickerInput.disabled = true;
+        if (paramAddBtn) paramAddBtn.disabled = true;
+        return;
+    }
+
+    names.forEach(name => {
+        const entry = currentParameterRegistry?.[name] || {};
+        const targetType = entry?.target_type ? ` [${entry.target_type}]` : '';
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = `${name}${targetType}`;
+        if (selected.has(name)) {
+            opt.disabled = true;
+        }
+        paramPickerInput.appendChild(opt);
+    });
+    paramPickerInput.disabled = false;
+    if (paramAddBtn) paramAddBtn.disabled = false;
+}
+
+function _handleAddSelectedParameter() {
+    const name = String(paramPickerInput?.value || '').trim();
+    if (!name) return;
+    const current = new Set(_getSelectedParameters());
+    current.add(name);
+    _setSelectedParameters([...current]);
+    _refreshParameterPicker();
+    _renderFormulaVariableHints();
+}
+
+function _handleRemoveSelectedParameter() {
+    if (!paramsInput || paramsInput.tagName !== 'SELECT') return;
+    const keep = [...paramsInput.options]
+        .filter(o => !o.selected)
+        .map(o => String(o.value || '').trim())
+        .filter(Boolean);
+    _setSelectedParameters(keep);
+    _refreshParameterPicker();
+    _renderFormulaVariableHints();
+}
+
+function _renderFormulaVariableHints() {
+    if (!obFormulaVarsEl) return;
+
+    const params = _getSelectedParameters();
 
     const costKey = (obCostKeyInput?.value || '').trim();
     const available = new Set(['edep_sum', ...params]);
@@ -193,7 +304,7 @@ function _applyObjectiveBuilderSchemaToUI(schema) {
 
 function _studyFromForm() {
     const mode = modeInput.value;
-    const parameters = paramsInput.value.split(',').map(x => x.trim()).filter(Boolean);
+    const parameters = _getSelectedParameters();
 
     if (parameters.length === 0) {
         throw new Error('Please provide at least one parameter name.');
@@ -253,10 +364,7 @@ function _studyFromForm() {
 function _objectiveBuilderPayloadFromForm() {
     const studyName = (nameInput?.value || '').trim();
     const studyMode = (modeInput?.value || 'random').trim();
-    const studyParameters = (paramsInput?.value || '')
-        .split(',')
-        .map(x => x.trim())
-        .filter(Boolean);
+    const studyParameters = _getSelectedParameters();
 
     if (!studyName) {
         throw new Error('Objective Builder requires a study name.');
@@ -327,7 +435,13 @@ function _objectiveBuilderPayloadFromForm() {
         run_method: runMethod,
         run_budget: Number.isFinite(budget) ? budget : 20,
         run_seed: Number.isFinite(seed) ? seed : 42,
+        keep_candidate_runs: !!obKeepCandidateRunsInput?.checked,
     };
+
+    const candidateRunsRoot = (obCandidateRunsRootInput?.value || '').trim();
+    if (candidateRunsRoot) {
+        payload.candidate_runs_root = candidateRunsRoot;
+    }
 
     return payload;
 }
@@ -336,12 +450,44 @@ function _setObjectiveBuilderOutput(value) {
     if (!obOutput) return;
     if (typeof value === 'string') {
         obOutput.value = value;
+        _renderRunsDirStatusFromForm();
         return;
     }
     try {
         obOutput.value = JSON.stringify(value, null, 2);
     } catch (_e) {
         obOutput.value = String(value);
+    }
+    _renderRunsDirStatusFromResult(value);
+}
+
+function _renderRunsDirStatusFromResult(result) {
+    if (!obRunsDirStatusEl) return;
+
+    const launchPayload = result?.run_payload || result?.build?.run_sim_loop_payload || result?.result?.run_payload || null;
+    const keep = !!(launchPayload?.keep_candidate_runs || result?.keep_candidate_runs);
+    const root = launchPayload?.candidate_runs_root || result?.candidate_runs_root || (obCandidateRunsRootInput?.value || '').trim();
+
+    if (keep) {
+        const pathText = root || 'surrogate/simloop_runs';
+        obRunsDirStatusEl.textContent = `Artifacts directory: ${pathText}`;
+        obRunsDirStatusEl.style.color = '#14532d';
+    } else {
+        obRunsDirStatusEl.textContent = 'Artifacts directory: not persisted (keep disabled).';
+        obRunsDirStatusEl.style.color = '#334155';
+    }
+}
+
+function _renderRunsDirStatusFromForm() {
+    if (!obRunsDirStatusEl) return;
+    const keep = !!obKeepCandidateRunsInput?.checked;
+    const root = (obCandidateRunsRootInput?.value || '').trim();
+    if (keep) {
+        obRunsDirStatusEl.textContent = `Artifacts directory: ${root || 'surrogate/simloop_runs'}`;
+        obRunsDirStatusEl.style.color = '#14532d';
+    } else {
+        obRunsDirStatusEl.textContent = 'Artifacts directory: not persisted (keep disabled).';
+        obRunsDirStatusEl.style.color = '#334155';
     }
 }
 
@@ -530,8 +676,9 @@ function _applyObjectiveBuilderExample(example) {
     if (example.study_mode) {
         modeInput.value = example.study_mode;
     }
-    if (Array.isArray(example.study_parameters) && example.study_parameters.length > 0 && !paramsInput.value.trim()) {
-        paramsInput.value = example.study_parameters.join(',');
+    if (Array.isArray(example.study_parameters) && example.study_parameters.length > 0 && _getSelectedParameters().length === 0) {
+        _setSelectedParameters(example.study_parameters);
+        _refreshParameterPicker();
     }
 
     const extract = Array.isArray(example.extract_objectives) ? example.extract_objectives : [];
@@ -622,12 +769,136 @@ async function _handleObjectiveBuilderLaunchDryRun() {
         lastObjectiveBuilderLaunch = result || null;
         _renderObjectiveBuilderFeedback('launch_dry_run', result || {});
         _setObjectiveBuilderOutput(result || {});
-        _showNotice('Launch dry run prepared successfully.', 'success', 2800);
+        _showNotice('Launch dry run prepared (no simulations executed).', 'success', 3200);
         _setRunLifecycle('completed', 'objective_builder_launch_dry_run', 'dry_run prepared');
     } catch (error) {
         _renderObjectiveBuilderFailure('launch_dry_run', error);
         _showNotice(error.message || String(error), 'error', 7000);
         _setRunLifecycle('failed', 'objective_builder_launch_dry_run', error?.message || String(error));
+    }
+}
+
+async function _consumeObjectiveBuilderLaunchResult(result, { stage = 'launch', fromPoll = false } = {}) {
+    lastObjectiveBuilderLaunch = result || null;
+    _renderObjectiveBuilderFeedback(stage, result || {});
+    _setObjectiveBuilderOutput(result || {});
+
+    if (!(result?.optimizer_result && typeof result.optimizer_result === 'object')) {
+        return false;
+    }
+
+    lastRunResult = result.optimizer_result;
+    selectedRankedRun = null;
+    lastVerificationResult = null;
+    _clearReviewToken();
+
+    runOutput.value = JSON.stringify(result.optimizer_result, null, 2);
+    _updateObjectiveSelector();
+
+    const objectiveName = result?.optimizer_result?.objective?.name;
+    const direction = result?.optimizer_result?.objective?.direction;
+    if (objectiveName && rankObjectiveSelect && [...rankObjectiveSelect.options].some(o => o.value === objectiveName)) {
+        rankObjectiveSelect.value = objectiveName;
+    }
+    if (direction && rankDirectionSelect) {
+        rankDirectionSelect.value = direction;
+    }
+
+    _renderRankingTable();
+    _renderOptimizerSummary();
+    await _refreshAndRender();
+
+    const evals = Number(result?.optimizer_result?.evaluations_used ?? result?.optimizer_result?.candidates?.length ?? 0);
+    const stopReason = result?.optimizer_result?.stop_reason;
+    const detail = stopReason && stopReason !== 'budget_exhausted'
+        ? `evaluations=${Number.isFinite(evals) ? evals : 'n/a'}, stop_reason=${stopReason}`
+        : `evaluations=${Number.isFinite(evals) ? evals : 'n/a'}`;
+
+    _setRunLifecycle('completed', 'objective_builder_launch', detail);
+    if (!fromPoll) {
+        _showNotice('Simulation-in-loop optimization completed.', 'success', 3200);
+    }
+    return true;
+}
+
+async function _pollObjectiveBuilderLaunchStatus() {
+    if (!activeLaunchRunControlId || launchStatusPollPending) return;
+    if (typeof callbacks.onGetObjectiveBuilderLaunchStatus !== 'function') return;
+
+    launchStatusPollPending = true;
+    try {
+        const status = await callbacks.onGetObjectiveBuilderLaunchStatus(activeLaunchRunControlId);
+        const state = String(status?.job_status || '').toLowerCase();
+
+        if (state === 'completed' && status?.result) {
+            await _consumeObjectiveBuilderLaunchResult(status.result, { stage: 'launch_completed', fromPoll: true });
+            _showNotice('Simulation-in-loop optimization completed.', 'success', 3200);
+            activeLaunchRunControlId = null;
+            _stopLaunchStatusPoller();
+            return;
+        }
+
+        if (state === 'failed') {
+            const errText = status?.error || 'Launch failed.';
+            _setRunLifecycle('failed', 'objective_builder_launch', errText);
+            _showNotice(errText, 'error', 7000);
+            activeLaunchRunControlId = null;
+            _stopLaunchStatusPoller();
+            return;
+        }
+    } catch (_error) {
+        // best-effort poller
+    } finally {
+        launchStatusPollPending = false;
+    }
+}
+
+function _startLaunchStatusPoller() {
+    if (!activeLaunchRunControlId) return;
+    if (launchStatusPollTimer) return;
+    launchStatusPollTimer = setInterval(() => {
+        _pollObjectiveBuilderLaunchStatus();
+    }, 1000);
+    _pollObjectiveBuilderLaunchStatus();
+}
+
+function _stopLaunchStatusPoller() {
+    if (launchStatusPollTimer) {
+        clearInterval(launchStatusPollTimer);
+        launchStatusPollTimer = null;
+    }
+    launchStatusPollPending = false;
+}
+
+async function _handleObjectiveBuilderLaunchRun() {
+    _setRunLifecycle('running', 'objective_builder_launch', 'Launching simulation-in-loop optimization');
+    try {
+        const payload = _objectiveBuilderPayloadFromForm();
+        payload.dry_run = false;
+        payload.run_async = true;
+
+        const result = await callbacks.onObjectiveBuilderLaunch(payload);
+        lastObjectiveBuilderLaunch = result || null;
+        _renderObjectiveBuilderFeedback('launch_started', result || {});
+        _setObjectiveBuilderOutput(result || {});
+
+        if (result?.async && result?.run_control_id) {
+            activeLaunchRunControlId = result.run_control_id;
+            _setRunLifecycle('running', 'objective_builder_launch', `run_control=${activeLaunchRunControlId}`);
+            _startLaunchStatusPoller();
+            _showNotice('Simulation-in-loop run started. Live progress is shown in Run Timeline.', 'info', 4200);
+            return;
+        }
+
+        const consumed = await _consumeObjectiveBuilderLaunchResult(result, { stage: 'launch' });
+        if (!consumed) {
+            _setRunLifecycle('completed', 'objective_builder_launch', 'launch returned no optimizer_result payload');
+            _showNotice('Launch completed, but no optimizer result payload was returned.', 'warning', 4200);
+        }
+    } catch (error) {
+        _renderObjectiveBuilderFailure('launch', error);
+        _showNotice(error.message || String(error), 'error', 7000);
+        _setRunLifecycle('failed', 'objective_builder_launch', error?.message || String(error));
     }
 }
 
@@ -659,10 +930,10 @@ async function _handleObjectiveBuilderGuided() {
         guidedOutput.steps.launch_dry_run = launchResult;
         lastObjectiveBuilderLaunch = launchResult || null;
 
-        const out = { success: true, message: 'Guided flow completed (validate → build → dry run).', ...guidedOutput };
+        const out = { success: true, message: 'Guided prep completed (validate → build → dry run). No simulations executed.', ...guidedOutput };
         _renderObjectiveBuilderFeedback('guided_complete', out);
         _setObjectiveBuilderOutput(out);
-        _showNotice('Guided flow completed.', 'success', 2800);
+        _showNotice('Guided prep completed (no simulations executed).', 'success', 3200);
     } catch (error) {
         const failure = {
             success: false,
@@ -711,6 +982,15 @@ function _extractRunsFromLastResult() {
     if (Array.isArray(lastRunResult.runs)) return lastRunResult.runs;
     if (Array.isArray(lastRunResult.candidates)) return lastRunResult.candidates;
     return [];
+}
+
+function _restoreSelectedRankedRun() {
+    if (restoredSelectedRunIndex == null) return;
+    const idx = Number(restoredSelectedRunIndex);
+    const runs = _extractRunsFromLastResult();
+    const hit = runs.find(r => Number(r?.run_index) === idx);
+    selectedRankedRun = hit ? { run: hit } : null;
+    restoredSelectedRunIndex = null;
 }
 
 function _getOptimizerRunIdFromLastResult() {
@@ -823,6 +1103,14 @@ function _formatElapsedSeconds(ms) {
 }
 
 function _computeRunBudgetSummary() {
+    const live = runLifecycleState?.liveProgress;
+    if (live && runLifecycleState.status === 'running') {
+        const used = Number(live.evaluations_completed);
+        const total = Number(live.total_evaluations);
+        if (Number.isFinite(used) && Number.isFinite(total) && total > 0) return `${used}/${total}`;
+        if (Number.isFinite(used)) return String(used);
+    }
+
     if (!lastRunResult || typeof lastRunResult !== 'object') return '-';
 
     if (Array.isArray(lastRunResult.candidates)) {
@@ -843,6 +1131,13 @@ function _computeRunBudgetSummary() {
 }
 
 function _computeRunSuccessFailureSummary() {
+    const live = runLifecycleState?.liveProgress;
+    if (live && runLifecycleState.status === 'running') {
+        const s = Number(live.success_count);
+        const f = Number(live.failure_count);
+        if (Number.isFinite(s) || Number.isFinite(f)) return `${Number.isFinite(s) ? s : 0}/${Number.isFinite(f) ? f : 0}`;
+    }
+
     if (!lastRunResult || typeof lastRunResult !== 'object') return '-';
 
     if (Number.isFinite(Number(lastRunResult.success_count)) || Number.isFinite(Number(lastRunResult.failure_count))) {
@@ -892,11 +1187,51 @@ function _renderRunTimelineCard() {
                 : '#64748b';
     runStatusEl.style.fontWeight = '700';
 
-    if (runActionEl) runActionEl.textContent = runLifecycleState.action || '-';
+    if (runActionEl) {
+        const action = runLifecycleState.action || '-';
+        const detail = runLifecycleState.actionDetail ? ` — ${runLifecycleState.actionDetail}` : '';
+        runActionEl.textContent = `${action}${detail}`;
+    }
     if (runElapsedEl) runElapsedEl.textContent = _formatElapsedSeconds(elapsedMs);
     if (runBudgetUsedEl) runBudgetUsedEl.textContent = _computeRunBudgetSummary();
     if (runSuccessFailureEl) runSuccessFailureEl.textContent = _computeRunSuccessFailureSummary();
     if (runLastUpdateEl) runLastUpdateEl.textContent = _formatClockTime(runLifecycleState.lastUpdateMs);
+
+    if (quickStatusEl) {
+        const action = runLifecycleState.action || 'idle';
+        const detail = runLifecycleState.actionDetail || '';
+        if (runLifecycleState.status === 'running') {
+            quickStatusEl.textContent = `Running · ${action}${detail ? ` — ${detail}` : ''}`;
+            quickStatusEl.style.color = '#0369a1';
+        } else if (runLifecycleState.status === 'completed') {
+            quickStatusEl.textContent = `Completed · ${action}${detail ? ` — ${detail}` : ''}`;
+            quickStatusEl.style.color = '#15803d';
+        } else if (runLifecycleState.status === 'failed') {
+            quickStatusEl.textContent = `Failed · ${action}${detail ? ` — ${detail}` : ''}`;
+            quickStatusEl.style.color = '#b91c1c';
+        } else {
+            quickStatusEl.textContent = 'Idle. Select a study and run when ready.';
+            quickStatusEl.style.color = '#475569';
+        }
+    }
+
+    if (quickStatusBarEl) {
+        let pct = 0;
+        const lp = runLifecycleState.liveProgress;
+        const used = Number(lp?.evaluations_completed);
+        const total = Number(lp?.total_evaluations);
+        if (Number.isFinite(used) && Number.isFinite(total) && total > 0) {
+            pct = Math.max(0, Math.min(100, (used / total) * 100));
+        } else if (runLifecycleState.status === 'completed') {
+            pct = 100;
+        }
+        quickStatusBarEl.style.width = `${pct.toFixed(1)}%`;
+        quickStatusBarEl.style.background = runLifecycleState.status === 'failed'
+            ? '#ef4444'
+            : runLifecycleState.status === 'completed'
+                ? '#22c55e'
+                : '#0ea5e9';
+    }
 
     if (runTimelineListEl) {
         runTimelineListEl.innerHTML = '';
@@ -937,9 +1272,114 @@ function _stopRunLifecycleTimer() {
     }
 }
 
+function _progressSignature(progress) {
+    if (!progress || typeof progress !== 'object') return '';
+    return JSON.stringify({
+        i: Number(progress.current_run_index ?? -1),
+        used: Number(progress.evaluations_completed ?? -1),
+        total: Number(progress.total_evaluations ?? -1),
+        s: Number(progress.success_count ?? -1),
+        f: Number(progress.failure_count ?? -1),
+        phase: String(progress.phase || ''),
+    });
+}
+
+function _applyActiveRunStatus(statusPayload) {
+    const active = statusPayload?.active;
+    if (!active || typeof active !== 'object') return;
+
+    const progress = active.progress && typeof active.progress === 'object'
+        ? active.progress
+        : null;
+
+    if (!progress) return;
+
+    runLifecycleState.liveProgress = progress;
+    runLifecycleState.lastUpdateMs = Date.now();
+
+    const currentIdx = Number(progress.current_run_index);
+    const completed = Number(progress.evaluations_completed);
+    const total = Number(progress.total_evaluations);
+    const phase = String(progress.phase || '').trim();
+
+    const bits = [];
+    if (Number.isFinite(currentIdx) && Number.isFinite(total) && total > 0) bits.push(`candidate ${currentIdx + 1}/${total}`);
+    else if (Number.isFinite(completed) && Number.isFinite(total) && total > 0) bits.push(`${completed}/${total}`);
+    else if (Number.isFinite(completed)) bits.push(`completed ${completed}`);
+
+    const startMs = Number(runLifecycleState.startedAtMs);
+    if (Number.isFinite(startMs) && Number.isFinite(completed) && completed > 0 && Number.isFinite(total) && total > completed) {
+        const elapsedSec = Math.max(0, (Date.now() - startMs) / 1000.0);
+        const etaSec = (elapsedSec / completed) * (total - completed);
+        if (Number.isFinite(etaSec) && etaSec >= 0) {
+            bits.push(`ETA ~${_formatElapsedSeconds(etaSec * 1000)}`);
+        }
+    }
+
+    if (phase) bits.push(phase);
+
+    const values = progress.current_values && typeof progress.current_values === 'object'
+        ? Object.entries(progress.current_values)
+            .slice(0, 3)
+            .map(([k, v]) => `${k}=${_formatMaybeNumber(v, 4)}`)
+            .join(', ')
+        : '';
+    if (values) bits.push(values);
+
+    runLifecycleState.actionDetail = bits.join(' · ');
+
+    const signature = _progressSignature(progress);
+    if (signature && signature !== lastRunProgressSignature) {
+        lastRunProgressSignature = signature;
+        runTimelineEvents.push({
+            timeMs: Date.now(),
+            status: 'running',
+            action: runLifecycleState.action || 'run',
+            details: runLifecycleState.actionDetail || (progress.message || ''),
+        });
+        if (runTimelineEvents.length > 50) {
+            runTimelineEvents = runTimelineEvents.slice(-50);
+        }
+    }
+
+    _renderRunTimelineCard();
+}
+
+async function _pollActiveRunStatus() {
+    if (runStatusPollPending) return;
+    if (runLifecycleState.status !== 'running') return;
+    if (typeof callbacks.onGetActiveRunStatus !== 'function') return;
+
+    runStatusPollPending = true;
+    try {
+        const payload = await callbacks.onGetActiveRunStatus();
+        _applyActiveRunStatus(payload || {});
+    } catch (_err) {
+        // best-effort status polling; ignore transient failures
+    } finally {
+        runStatusPollPending = false;
+    }
+}
+
+function _startRunStatusPoller() {
+    if (runStatusPollTimer) return;
+    runStatusPollTimer = setInterval(() => {
+        _pollActiveRunStatus();
+    }, 1000);
+    _pollActiveRunStatus();
+}
+
+function _stopRunStatusPoller() {
+    if (runStatusPollTimer) {
+        clearInterval(runStatusPollTimer);
+        runStatusPollTimer = null;
+    }
+    runStatusPollPending = false;
+}
+
 function _updateStopRunButtonState() {
     if (!stopRunBtn) return;
-    const stoppableActions = new Set(['optimizer_run', 'param_study_run']);
+    const stoppableActions = new Set(['optimizer_run', 'param_study_run', 'param_study_sweep', 'objective_builder_launch']);
     const isRunning = runLifecycleState.status === 'running' && stoppableActions.has(runLifecycleState.action);
     stopRunBtn.disabled = !isRunning || stopRunRequestPending;
     stopRunBtn.textContent = stopRunRequestPending ? 'Stopping…' : 'Stop Active Run';
@@ -950,10 +1390,14 @@ function _setRunLifecycle(status, action, details = '') {
     if (status === 'running') {
         runLifecycleState.startedAtMs = now;
         runLifecycleState.endedAtMs = null;
+        runLifecycleState.liveProgress = null;
+        runLifecycleState.actionDetail = '';
+        lastRunProgressSignature = '';
     }
     if (status === 'completed' || status === 'failed') {
         if (!runLifecycleState.startedAtMs) runLifecycleState.startedAtMs = now;
         runLifecycleState.endedAtMs = now;
+        runLifecycleState.actionDetail = details || '';
     }
 
     runLifecycleState.status = status;
@@ -971,8 +1415,15 @@ function _setRunLifecycle(status, action, details = '') {
         runTimelineEvents = runTimelineEvents.slice(-50);
     }
 
-    if (status === 'running') _startRunLifecycleTimer();
-    else _stopRunLifecycleTimer();
+    if (status === 'running') {
+        _startRunLifecycleTimer();
+        _startRunStatusPoller();
+        _startLaunchStatusPoller();
+    } else {
+        _stopRunLifecycleTimer();
+        _stopRunStatusPoller();
+        _stopLaunchStatusPoller();
+    }
 
     _updateStopRunButtonState();
     _renderRunTimelineCard();
@@ -1752,6 +2203,7 @@ function _renderRankingTable() {
     rankingTableBody.innerHTML = '';
 
     if (runs.length === 0) {
+        selectedRankedRun = null;
         rankingTableBody.innerHTML = '<tr><td colspan="5" style="color:#64748b;">Run a study to populate ranking results.</td></tr>';
         _renderCandidateDecomposition([], '', 'maximize');
         _renderCandidateCompare([], '', 'maximize');
@@ -1776,6 +2228,23 @@ function _renderRankingTable() {
             <td>${r.success ? 'yes' : 'no'}</td>
             <td>${paramsStr}</td>
         `;
+
+        const isSelected = selectedRankedRun && selectedRankedRun?.run?.run_index === r?.run_index;
+        if (isSelected) {
+            tr.style.background = '#e0f2fe';
+            tr.style.outline = '1px solid #7dd3fc';
+        }
+
+        tr.addEventListener('click', () => {
+            selectedRankedRun = item;
+            _renderRankingTable();
+        });
+        tr.addEventListener('dblclick', () => {
+            selectedRankedRun = item;
+            _renderRankingTable();
+            _handleApplySelectedCandidate();
+        });
+
         rankingTableBody.appendChild(tr);
     });
 
@@ -1815,6 +2284,17 @@ function _updateObjectiveSelector() {
 async function _refreshAndRender() {
     const studies = await callbacks.onRefresh();
     _renderTable(studies || {});
+    await _refreshParameterRegistryFromServer();
+}
+
+async function _refreshParameterRegistryFromServer() {
+    try {
+        const registry = await callbacks.onGetParameterRegistry();
+        currentParameterRegistry = (registry && typeof registry === 'object') ? registry : {};
+    } catch (_error) {
+        currentParameterRegistry = {};
+    }
+    _refreshParameterPicker();
 }
 
 async function _handleSave() {
@@ -1844,11 +2324,12 @@ async function _handleRun() {
     const maxRunsRaw = maxRunsInput.value.trim();
     const maxRuns = maxRunsRaw ? Number(maxRunsRaw) : null;
 
-    _setRunLifecycle('running', 'param_study_run', `study=${name}`);
+    _setRunLifecycle('running', 'param_study_sweep', `study=${name} (no simulation)`);
 
     try {
         const result = await callbacks.onRun(name, Number.isFinite(maxRuns) ? maxRuns : null);
         lastRunResult = result || null;
+        selectedRankedRun = null;
         lastVerificationResult = null;
         _clearReviewToken();
         runOutput.value = JSON.stringify(result, null, 2);
@@ -1861,10 +2342,33 @@ async function _handleRun() {
         const detail = stopReason && stopReason !== 'completed'
             ? `runs=${runsCount}, stop_reason=${stopReason}`
             : `runs=${runsCount}`;
-        _setRunLifecycle('completed', 'param_study_run', detail);
+        _setRunLifecycle('completed', 'param_study_sweep', detail);
+        _showNotice('Parameter sweep completed (no simulation). Use Objective Builder → Run Simulation-in-Loop for physics optimization.', 'info', 4200);
     } catch (error) {
         runOutput.value = JSON.stringify(error?.data || { success: false, error: error?.message || String(error) }, null, 2);
-        _setRunLifecycle('failed', 'param_study_run', error?.message || String(error));
+        _setRunLifecycle('failed', 'param_study_sweep', error?.message || String(error));
+        _showNotice(error?.message || String(error), 'error', 7000);
+    }
+}
+
+async function _handleApplySelectedCandidate() {
+    const studyName = nameInput.value.trim() || activeName;
+    if (!studyName) {
+        _showNotice('Select a study first.', 'warning', 2500);
+        return;
+    }
+
+    const selected = selectedRankedRun?.run;
+    if (!selected || !selected.values || typeof selected.values !== 'object') {
+        _showNotice('Select a row in the ranking table first.', 'warning', 2800);
+        return;
+    }
+
+    try {
+        const result = await callbacks.onApplyCandidate(studyName, selected.values);
+        _showNotice(`Applied ranked row #${selected.run_index ?? '-'} to geometry.`, 'success', 3000);
+        runOutput.value = JSON.stringify(result, null, 2);
+    } catch (error) {
         _showNotice(error?.message || String(error), 'error', 7000);
     }
 }
@@ -1903,6 +2407,7 @@ async function _handleRunOptimizer() {
         const result = await callbacks.onRunOptimizer(payload);
 
         lastRunResult = result || null;
+        selectedRankedRun = null;
         lastVerificationResult = null;
         _clearReviewToken();
         runOutput.value = JSON.stringify(result, null, 2);
@@ -2102,10 +2607,16 @@ export function init(newCallbacks = {}) {
 
     modal = document.getElementById('paramStudiesModal');
     noticeEl = document.getElementById('psNotice');
+    quickStatusEl = document.getElementById('psQuickStatus');
+    quickStatusBarEl = document.getElementById('psQuickStatusBar');
+    viewModeInput = document.getElementById('ps_view_mode');
     tableBody = document.getElementById('paramStudiesTableBody');
 
     nameInput = document.getElementById('ps_name');
     modeInput = document.getElementById('ps_mode');
+    paramPickerInput = document.getElementById('ps_param_picker');
+    paramAddBtn = document.getElementById('psParamAddBtn');
+    paramRemoveBtn = document.getElementById('psParamRemoveBtn');
     paramsInput = document.getElementById('ps_parameters');
     legacyObjectivesToggleInput = document.getElementById('ps_show_legacy_objectives');
     legacyObjectivesRow = document.getElementById('psLegacyObjectivesRow');
@@ -2163,15 +2674,19 @@ export function init(newCallbacks = {}) {
     obDatasetHintEl = document.getElementById('psObDatasetHint');
     obCostKeyInput = document.getElementById('ps_ob_cost_key');
     obScoreExprInput = document.getElementById('ps_ob_score_expr');
+    obKeepCandidateRunsInput = document.getElementById('ps_ob_keep_candidate_runs');
+    obCandidateRunsRootInput = document.getElementById('ps_ob_candidate_runs_root');
     obAllowedFunctionsEl = document.getElementById('psObAllowedFunctions');
     obFormulaVarsEl = document.getElementById('psObFormulaVars');
     obPolicyCapsEl = document.getElementById('psObPolicyCaps');
+    obRunsDirStatusEl = document.getElementById('psObRunsDirStatus');
     obOutput = document.getElementById('ps_ob_output');
     obLoadExampleBtn = document.getElementById('psObLoadExampleBtn');
     obValidateBtn = document.getElementById('psObValidateBtn');
     obBuildBtn = document.getElementById('psObBuildBtn');
     obUpsertBtn = document.getElementById('psObUpsertBtn');
     obLaunchDryRunBtn = document.getElementById('psObLaunchDryRunBtn');
+    obLaunchRunBtn = document.getElementById('psObLaunchRunBtn');
     obGuidedBtn = document.getElementById('psObGuidedBtn');
     obCopyOutputBtn = document.getElementById('psObCopyOutputBtn');
     obCopyBuildBtn = document.getElementById('psObCopyBuildBtn');
@@ -2204,6 +2719,7 @@ export function init(newCallbacks = {}) {
     stopRunBtn = document.getElementById('psStopRunBtn');
     replayBestBtn = document.getElementById('psReplayBestBtn');
     verifyBestBtn = document.getElementById('psVerifyBestBtn');
+    applySelectedBtn = document.getElementById('psApplySelectedBtn');
     downloadResultsBtn = document.getElementById('psDownloadResultsBtn');
     refreshBtn = document.getElementById('psRefreshBtn');
     cancelBtn = document.getElementById('psCancelBtn');
@@ -2215,6 +2731,7 @@ export function init(newCallbacks = {}) {
     if (stopRunBtn) stopRunBtn.addEventListener('click', _handleStopActiveRun);
     if (replayBestBtn) replayBestBtn.addEventListener('click', _handleReplayBest);
     if (verifyBestBtn) verifyBestBtn.addEventListener('click', _handleVerifyBest);
+    if (applySelectedBtn) applySelectedBtn.addEventListener('click', _handleApplySelectedCandidate);
     if (reviewVerifyBtn) reviewVerifyBtn.addEventListener('click', _handleVerifyBest);
     if (reviewApplyBtn) reviewApplyBtn.addEventListener('click', _handleReplayBest);
     if (reviewCopyTokenBtn) reviewCopyTokenBtn.addEventListener('click', _handleCopyReviewToken);
@@ -2235,19 +2752,36 @@ export function init(newCallbacks = {}) {
         });
     }
 
-    if (paramsInput) paramsInput.addEventListener('input', _renderFormulaVariableHints);
+    if (viewModeInput) {
+        viewModeInput.addEventListener('change', () => {
+            _setParamStudiesViewMode(viewModeInput.value);
+        });
+    }
+
+    if (paramsInput) {
+        const ev = paramsInput.tagName === 'SELECT' ? 'change' : 'input';
+        paramsInput.addEventListener(ev, _renderFormulaVariableHints);
+    }
+    if (paramAddBtn) paramAddBtn.addEventListener('click', _handleAddSelectedParameter);
+    if (paramRemoveBtn) paramRemoveBtn.addEventListener('click', _handleRemoveSelectedParameter);
     if (obCostKeyInput) obCostKeyInput.addEventListener('input', _renderFormulaVariableHints);
     if (obScoreExprInput) obScoreExprInput.addEventListener('input', _renderFormulaVariableHints);
+    if (obKeepCandidateRunsInput) obKeepCandidateRunsInput.addEventListener('change', _renderRunsDirStatusFromForm);
+    if (obCandidateRunsRootInput) obCandidateRunsRootInput.addEventListener('input', _renderRunsDirStatusFromForm);
 
     if (obLoadExampleBtn) obLoadExampleBtn.addEventListener('click', _handleObjectiveBuilderLoadExample);
     if (obValidateBtn) obValidateBtn.addEventListener('click', _handleObjectiveBuilderValidate);
     if (obBuildBtn) obBuildBtn.addEventListener('click', _handleObjectiveBuilderBuild);
     if (obUpsertBtn) obUpsertBtn.addEventListener('click', _handleObjectiveBuilderUpsert);
     if (obLaunchDryRunBtn) obLaunchDryRunBtn.addEventListener('click', _handleObjectiveBuilderLaunchDryRun);
+    if (obLaunchRunBtn) obLaunchRunBtn.addEventListener('click', _handleObjectiveBuilderLaunchRun);
     if (obGuidedBtn) obGuidedBtn.addEventListener('click', _handleObjectiveBuilderGuided);
     if (obCopyOutputBtn) obCopyOutputBtn.addEventListener('click', _handleCopyObjectiveBuilderOutput);
     if (obCopyBuildBtn) obCopyBuildBtn.addEventListener('click', _handleCopyObjectiveBuilderBuild);
     if (obCopyLaunchBtn) obCopyLaunchBtn.addEventListener('click', _handleCopyObjectiveBuilderLaunch);
+
+    _setParamStudiesViewMode(viewModeInput?.value || 'basic');
+    _renderRunsDirStatusFromForm();
 
     // Populate schema-driven UI hints/caps/templates.
     callbacks.onObjectiveBuilderSchema().then(schema => {
@@ -2257,40 +2791,134 @@ export function init(newCallbacks = {}) {
     });
 }
 
-export async function show(initialStudies = {}) {
-    activeName = null;
-    lastRunResult = null;
-    lastVerificationResult = null;
-    _clearReviewToken();
-    _resetRollbackConfirmation();
-    lastObjectiveBuilderBuild = null;
-    lastObjectiveBuilderLaunch = null;
-    applyAuditHistory = [];
-    applyAuditDiagnostics = null;
-    applyAuditHistoryLoading = false;
-    applyAuditHistoryError = null;
-    applyAuditDiagnosticsLoading = false;
-    applyAuditDiagnosticsError = null;
-    runLifecycleState = {
-        status: 'idle',
-        action: '-',
-        startedAtMs: null,
-        endedAtMs: null,
-        lastUpdateMs: Date.now(),
+function _captureModalState() {
+    return {
+        activeName,
+        form: {
+            name: nameInput?.value || '',
+            mode: modeInput?.value || 'grid',
+            parameters: _getSelectedParameters(),
+            gridSteps: gridStepsInput?.value || '3',
+            samples: samplesInput?.value || '10',
+            seed: seedInput?.value || '42',
+            maxRuns: maxRunsInput?.value || '',
+            template: obTemplateInput?.value || 'weighted_tradeoff',
+            datasetPath: obDatasetPathInput?.value || 'default_ntuples/Hits/Edep',
+            costKey: obCostKeyInput?.value || '',
+            scoreExpr: obScoreExprInput?.value || 'edep_sum',
+            keepCandidateRuns: !!obKeepCandidateRunsInput?.checked,
+            candidateRunsRoot: obCandidateRunsRootInput?.value || '',
+            method: optMethodInput?.value || 'surrogate_gp',
+            budget: optBudgetInput?.value || '20',
+            optSeed: optSeedInput?.value || '42',
+            viewMode: viewModeInput?.value || 'basic',
+        },
+        selectedRankedRunIndex: selectedRankedRun?.run?.run_index ?? null,
+        lastRunResult,
+        lastVerificationResult,
+        lastObjectiveBuilderBuild,
+        lastObjectiveBuilderLaunch,
+        runOutput: runOutput?.value || '',
+        obOutput: obOutput?.value || '',
+        runLifecycleState,
+        runTimelineEvents,
+        activeLaunchRunControlId,
     };
-    runTimelineEvents = [];
-    stopRunRequestPending = false;
-    _stopRunLifecycleTimer();
+}
 
-    _setForm();
-    runOutput.value = '';
-    if (obOutput) obOutput.value = '';
-    _showNotice('', 'info', 0);
+function _restoreModalState(state) {
+    if (!state || typeof state !== 'object') return false;
+    activeName = state.activeName || null;
+
+    nameInput.value = state.form?.name || '';
+    modeInput.value = state.form?.mode || 'grid';
+    _setSelectedParameters(state.form?.parameters || []);
+    _refreshParameterPicker();
+    gridStepsInput.value = state.form?.gridSteps ?? '3';
+    samplesInput.value = state.form?.samples ?? '10';
+    seedInput.value = state.form?.seed ?? '42';
+    maxRunsInput.value = state.form?.maxRuns ?? '';
+
+    if (obTemplateInput && state.form?.template) obTemplateInput.value = state.form.template;
+    if (obDatasetPathInput) obDatasetPathInput.value = state.form?.datasetPath || 'default_ntuples/Hits/Edep';
+    if (obCostKeyInput) obCostKeyInput.value = state.form?.costKey || '';
+    if (obScoreExprInput) obScoreExprInput.value = state.form?.scoreExpr || 'edep_sum';
+    if (obKeepCandidateRunsInput) obKeepCandidateRunsInput.checked = !!state.form?.keepCandidateRuns;
+    if (obCandidateRunsRootInput) obCandidateRunsRootInput.value = state.form?.candidateRunsRoot || '';
+    if (optMethodInput && state.form?.method) optMethodInput.value = state.form.method;
+    if (optBudgetInput) optBudgetInput.value = state.form?.budget || '20';
+    if (optSeedInput) optSeedInput.value = state.form?.optSeed || '42';
+
+    if (viewModeInput) viewModeInput.value = state.form?.viewMode || 'basic';
+    _setParamStudiesViewMode(viewModeInput?.value || 'basic');
+
+    lastRunResult = state.lastRunResult || null;
+    lastVerificationResult = state.lastVerificationResult || null;
+    lastObjectiveBuilderBuild = state.lastObjectiveBuilderBuild || null;
+    lastObjectiveBuilderLaunch = state.lastObjectiveBuilderLaunch || null;
+
+    runLifecycleState = state.runLifecycleState || runLifecycleState;
+    runTimelineEvents = Array.isArray(state.runTimelineEvents) ? state.runTimelineEvents : [];
+    activeLaunchRunControlId = state.activeLaunchRunControlId || null;
+    restoredSelectedRunIndex = state.selectedRankedRunIndex;
+    selectedRankedRun = null;
+
+    if (runOutput) runOutput.value = state.runOutput || '';
+    if (obOutput) obOutput.value = state.obOutput || '';
+
+    return true;
+}
+
+export async function show(initialStudies = {}) {
+    _stopRunLifecycleTimer();
+    _stopRunStatusPoller();
+    _stopLaunchStatusPoller();
+    stopRunRequestPending = false;
+    lastRunProgressSignature = '';
+
+    const restored = _restoreModalState(persistedModalState);
+    if (!restored) {
+        activeName = null;
+        selectedRankedRun = null;
+        restoredSelectedRunIndex = null;
+        lastRunResult = null;
+        lastVerificationResult = null;
+        _clearReviewToken();
+        _resetRollbackConfirmation();
+        lastObjectiveBuilderBuild = null;
+        lastObjectiveBuilderLaunch = null;
+        applyAuditHistory = [];
+        applyAuditDiagnostics = null;
+        applyAuditHistoryLoading = false;
+        applyAuditHistoryError = null;
+        applyAuditDiagnosticsLoading = false;
+        applyAuditDiagnosticsError = null;
+        runLifecycleState = {
+            status: 'idle',
+            action: '-',
+            actionDetail: '',
+            startedAtMs: null,
+            endedAtMs: null,
+            lastUpdateMs: Date.now(),
+            liveProgress: null,
+        };
+        runTimelineEvents = [];
+
+        _setForm();
+        if (viewModeInput) viewModeInput.value = 'basic';
+        _setParamStudiesViewMode('basic');
+        runOutput.value = '';
+        if (obOutput) obOutput.value = '';
+        _showNotice('', 'info', 0);
+        _renderObjectiveBuilderFeedback('idle', { success: true, validation: { errors: [], warnings: [] } });
+    }
+
     _renderFormulaVariableHints();
-    _renderObjectiveBuilderFeedback('idle', { success: true, validation: { errors: [], warnings: [] } });
+    _renderRunsDirStatusFromForm();
     _renderApplyAuditPanel();
     _renderTable(initialStudies);
     _updateObjectiveSelector();
+    _restoreSelectedRankedRun();
     _renderRankingTable();
     _renderOptimizerSummary();
     _renderRunTimelineCard();
@@ -2298,15 +2926,24 @@ export async function show(initialStudies = {}) {
     if (modal) modal.style.display = 'block';
     await _refreshAndRender();
     await _refreshApplyAuditHistory();
+
+    if (runLifecycleState?.status === 'running') {
+        _startRunLifecycleTimer();
+        _startRunStatusPoller();
+        _startLaunchStatusPoller();
+    }
 }
 
 export function hide() {
+    persistedModalState = _captureModalState();
     if (modal) modal.style.display = 'none';
     if (noticeTimer) {
         clearTimeout(noticeTimer);
         noticeTimer = null;
     }
     _stopRunLifecycleTimer();
+    _stopRunStatusPoller();
+    _stopLaunchStatusPoller();
     _stopTokenExpiryTimer();
     stopRunRequestPending = false;
     _updateStopRunButtonState();
