@@ -17,8 +17,8 @@ let noticeEl;
 let quickStatusEl, quickStatusBarEl;
 let viewModeInput;
 let saveBtn, deleteBtn, runBtn, runOptimizerBtn, stopRunBtn, replayBestBtn, verifyBestBtn, applySelectedBtn, downloadResultsBtn, refreshBtn, cancelBtn;
-let obTemplateInput, obDatasetPathInput, obCostKeyInput, obScoreExprInput, obOutput;
-let obPolicyCapsEl, obAllowedFunctionsEl, obFormulaVarsEl, obDatasetHintEl;
+let obTemplateInput, obDatasetPathInput, obCostKeyInput, obScoreExprInput, obKeepCandidateRunsInput, obCandidateRunsRootInput, obOutput;
+let obPolicyCapsEl, obAllowedFunctionsEl, obFormulaVarsEl, obDatasetHintEl, obRunsDirStatusEl;
 let obLoadExampleBtn, obValidateBtn, obBuildBtn, obUpsertBtn, obLaunchDryRunBtn, obLaunchRunBtn, obGuidedBtn;
 let obCopyOutputBtn, obCopyBuildBtn, obCopyLaunchBtn;
 let obStatusEl, obStageEl, obErrorsList, obWarningsList;
@@ -435,7 +435,13 @@ function _objectiveBuilderPayloadFromForm() {
         run_method: runMethod,
         run_budget: Number.isFinite(budget) ? budget : 20,
         run_seed: Number.isFinite(seed) ? seed : 42,
+        keep_candidate_runs: !!obKeepCandidateRunsInput?.checked,
     };
+
+    const candidateRunsRoot = (obCandidateRunsRootInput?.value || '').trim();
+    if (candidateRunsRoot) {
+        payload.candidate_runs_root = candidateRunsRoot;
+    }
 
     return payload;
 }
@@ -444,12 +450,44 @@ function _setObjectiveBuilderOutput(value) {
     if (!obOutput) return;
     if (typeof value === 'string') {
         obOutput.value = value;
+        _renderRunsDirStatusFromForm();
         return;
     }
     try {
         obOutput.value = JSON.stringify(value, null, 2);
     } catch (_e) {
         obOutput.value = String(value);
+    }
+    _renderRunsDirStatusFromResult(value);
+}
+
+function _renderRunsDirStatusFromResult(result) {
+    if (!obRunsDirStatusEl) return;
+
+    const launchPayload = result?.run_payload || result?.build?.run_sim_loop_payload || result?.result?.run_payload || null;
+    const keep = !!(launchPayload?.keep_candidate_runs || result?.keep_candidate_runs);
+    const root = launchPayload?.candidate_runs_root || result?.candidate_runs_root || (obCandidateRunsRootInput?.value || '').trim();
+
+    if (keep) {
+        const pathText = root || 'surrogate/simloop_runs';
+        obRunsDirStatusEl.textContent = `Artifacts directory: ${pathText}`;
+        obRunsDirStatusEl.style.color = '#14532d';
+    } else {
+        obRunsDirStatusEl.textContent = 'Artifacts directory: not persisted (keep disabled).';
+        obRunsDirStatusEl.style.color = '#334155';
+    }
+}
+
+function _renderRunsDirStatusFromForm() {
+    if (!obRunsDirStatusEl) return;
+    const keep = !!obKeepCandidateRunsInput?.checked;
+    const root = (obCandidateRunsRootInput?.value || '').trim();
+    if (keep) {
+        obRunsDirStatusEl.textContent = `Artifacts directory: ${root || 'surrogate/simloop_runs'}`;
+        obRunsDirStatusEl.style.color = '#14532d';
+    } else {
+        obRunsDirStatusEl.textContent = 'Artifacts directory: not persisted (keep disabled).';
+        obRunsDirStatusEl.style.color = '#334155';
     }
 }
 
@@ -2636,9 +2674,12 @@ export function init(newCallbacks = {}) {
     obDatasetHintEl = document.getElementById('psObDatasetHint');
     obCostKeyInput = document.getElementById('ps_ob_cost_key');
     obScoreExprInput = document.getElementById('ps_ob_score_expr');
+    obKeepCandidateRunsInput = document.getElementById('ps_ob_keep_candidate_runs');
+    obCandidateRunsRootInput = document.getElementById('ps_ob_candidate_runs_root');
     obAllowedFunctionsEl = document.getElementById('psObAllowedFunctions');
     obFormulaVarsEl = document.getElementById('psObFormulaVars');
     obPolicyCapsEl = document.getElementById('psObPolicyCaps');
+    obRunsDirStatusEl = document.getElementById('psObRunsDirStatus');
     obOutput = document.getElementById('ps_ob_output');
     obLoadExampleBtn = document.getElementById('psObLoadExampleBtn');
     obValidateBtn = document.getElementById('psObValidateBtn');
@@ -2725,6 +2766,8 @@ export function init(newCallbacks = {}) {
     if (paramRemoveBtn) paramRemoveBtn.addEventListener('click', _handleRemoveSelectedParameter);
     if (obCostKeyInput) obCostKeyInput.addEventListener('input', _renderFormulaVariableHints);
     if (obScoreExprInput) obScoreExprInput.addEventListener('input', _renderFormulaVariableHints);
+    if (obKeepCandidateRunsInput) obKeepCandidateRunsInput.addEventListener('change', _renderRunsDirStatusFromForm);
+    if (obCandidateRunsRootInput) obCandidateRunsRootInput.addEventListener('input', _renderRunsDirStatusFromForm);
 
     if (obLoadExampleBtn) obLoadExampleBtn.addEventListener('click', _handleObjectiveBuilderLoadExample);
     if (obValidateBtn) obValidateBtn.addEventListener('click', _handleObjectiveBuilderValidate);
@@ -2738,6 +2781,7 @@ export function init(newCallbacks = {}) {
     if (obCopyLaunchBtn) obCopyLaunchBtn.addEventListener('click', _handleCopyObjectiveBuilderLaunch);
 
     _setParamStudiesViewMode(viewModeInput?.value || 'basic');
+    _renderRunsDirStatusFromForm();
 
     // Populate schema-driven UI hints/caps/templates.
     callbacks.onObjectiveBuilderSchema().then(schema => {
@@ -2762,6 +2806,8 @@ function _captureModalState() {
             datasetPath: obDatasetPathInput?.value || 'default_ntuples/Hits/Edep',
             costKey: obCostKeyInput?.value || '',
             scoreExpr: obScoreExprInput?.value || 'edep_sum',
+            keepCandidateRuns: !!obKeepCandidateRunsInput?.checked,
+            candidateRunsRoot: obCandidateRunsRootInput?.value || '',
             method: optMethodInput?.value || 'surrogate_gp',
             budget: optBudgetInput?.value || '20',
             optSeed: optSeedInput?.value || '42',
@@ -2797,6 +2843,8 @@ function _restoreModalState(state) {
     if (obDatasetPathInput) obDatasetPathInput.value = state.form?.datasetPath || 'default_ntuples/Hits/Edep';
     if (obCostKeyInput) obCostKeyInput.value = state.form?.costKey || '';
     if (obScoreExprInput) obScoreExprInput.value = state.form?.scoreExpr || 'edep_sum';
+    if (obKeepCandidateRunsInput) obKeepCandidateRunsInput.checked = !!state.form?.keepCandidateRuns;
+    if (obCandidateRunsRootInput) obCandidateRunsRootInput.value = state.form?.candidateRunsRoot || '';
     if (optMethodInput && state.form?.method) optMethodInput.value = state.form.method;
     if (optBudgetInput) optBudgetInput.value = state.form?.budget || '20';
     if (optSeedInput) optSeedInput.value = state.form?.optSeed || '42';
@@ -2866,6 +2914,7 @@ export async function show(initialStudies = {}) {
     }
 
     _renderFormulaVariableHints();
+    _renderRunsDirStatusFromForm();
     _renderApplyAuditPanel();
     _renderTable(initialStudies);
     _updateObjectiveSelector();
