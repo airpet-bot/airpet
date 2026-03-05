@@ -108,7 +108,10 @@ function ensureParamStudyEditorInit() {
         onDelete: handleParamStudyDelete,
         onRun: handleParamStudyRun,
         onRunOptimizer: handleParamStudyRunOptimizer,
+        onApplyCandidate: handleParamStudyApplyCandidate,
+        onGetParameterRegistry: handleParameterRegistryRefresh,
         onGetActiveRunStatus: handleParamOptimizerGetActiveRunStatus,
+        onGetObjectiveBuilderLaunchStatus: handleObjectiveBuilderLaunchStatus,
         onStopActiveRun: handleParamOptimizerStopActiveRun,
         onReplayBest: handleParamOptimizerReplayBest,
         onVerifyBest: handleParamOptimizerVerifyBest,
@@ -2681,6 +2684,21 @@ async function handleParamStudyRunOptimizer(payload) {
     }
 }
 
+async function handleParamStudyApplyCandidate(studyName, values) {
+    UIManager.showLoading('Applying candidate to geometry...');
+    try {
+        const result = await APIService.applyParamStudyCandidate(studyName, values);
+        syncUIWithState(result);
+        UIManager.showNotification('Geometry updated from selected parameter set.');
+        return result;
+    } catch (error) {
+        UIManager.showError('Failed to apply selected candidate: ' + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
 async function handleParamOptimizerGetActiveRunStatus() {
     try {
         return await APIService.getActiveParamOptimizerRunStatus();
@@ -2851,6 +2869,11 @@ async function handleObjectiveBuilderLaunch(payload) {
     } finally {
         if (isDryRun) UIManager.hideLoading();
     }
+}
+
+async function handleObjectiveBuilderLaunchStatus(runControlId) {
+    const result = await APIService.getObjectiveBuilderLaunchStatus(runControlId);
+    return result || {};
 }
 
 function getAvailableVolumes() {

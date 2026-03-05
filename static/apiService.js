@@ -456,6 +456,20 @@ export async function launchObjectiveBuilder(payload) {
     return handleResponse(response);
 }
 
+export async function getObjectiveBuilderLaunchStatus(runControlId) {
+    const response = await fetch(`${API_BASE_URL}/api/objective_builder/launch_status/${encodeURIComponent(runControlId)}`);
+    return handleResponse(response);
+}
+
+export async function applyParamStudyCandidate(studyName, values) {
+    const response = await fetch(`${API_BASE_URL}/api/param_study/apply_candidate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ study_name: studyName, values: values || {} }),
+    });
+    return handleResponse(response);
+}
+
 // --- Sensitivity Matrix API ---
 
 /**

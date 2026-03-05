@@ -1,5 +1,5 @@
 let modal, tableBody;
-let nameInput, modeInput, paramsInput, objectivesInput, gridStepsInput, samplesInput, seedInput, maxRunsInput, runOutput;
+let nameInput, modeInput, paramsInput, paramPickerInput, paramAddBtn, paramRemoveBtn, objectivesInput, gridStepsInput, samplesInput, seedInput, maxRunsInput, runOutput;
 let legacyObjectivesToggleInput, legacyObjectivesRow;
 let rankObjectiveSelect, rankDirectionSelect, rankingTableBody;
 let decompositionTableBody, compareTopNSelect, compareRefreshBtn, compareTableWrap, whySelectedSummaryEl, whySelectedDetailsEl;
@@ -15,7 +15,7 @@ let reviewApplyConfirmTextEl, reviewRollbackConfirmTextEl;
 let verifyMinSuccessRateInput, verifyMaxStdInput;
 let noticeEl;
 let viewModeInput;
-let saveBtn, deleteBtn, runBtn, runOptimizerBtn, stopRunBtn, replayBestBtn, verifyBestBtn, downloadResultsBtn, refreshBtn, cancelBtn;
+let saveBtn, deleteBtn, runBtn, runOptimizerBtn, stopRunBtn, replayBestBtn, verifyBestBtn, applySelectedBtn, downloadResultsBtn, refreshBtn, cancelBtn;
 let obTemplateInput, obDatasetPathInput, obCostKeyInput, obScoreExprInput, obOutput;
 let obPolicyCapsEl, obAllowedFunctionsEl, obFormulaVarsEl, obDatasetHintEl;
 let obLoadExampleBtn, obValidateBtn, obBuildBtn, obUpsertBtn, obLaunchDryRunBtn, obLaunchRunBtn, obGuidedBtn;
@@ -36,7 +36,10 @@ let callbacks = {
     onDelete: async (_name) => { },
     onRun: async (_name, _maxRuns) => ({}),
     onRunOptimizer: async (_payload) => ({}),
+    onApplyCandidate: async (_studyName, _values) => ({}),
+    onGetParameterRegistry: async () => ({}),
     onGetActiveRunStatus: async () => ({ active: null, last: null }),
+    onGetObjectiveBuilderLaunchStatus: async (_runControlId) => ({}),
     onStopActiveRun: async (_reason) => ({ active: false, stop_requested: false }),
     onReplayBest: async (_runId, _options) => ({}),
     onVerifyBest: async (_runId, _options) => ({}),
@@ -54,6 +57,8 @@ let callbacks = {
 
 let activeName = null;
 let currentStudies = {};
+let currentParameterRegistry = {};
+let selectedRankedRun = null;
 let lastRunResult = null;
 let lastVerificationResult = null;
 let currentApplyToken = null;
@@ -73,6 +78,7 @@ let applyConfirmState = { armed: false, runId: null, token: null, expiresAtMs: 0
 let rollbackConfirmState = { armed: false, auditId: null, expiresAtMs: 0 };
 let applyConfirmTimer = null;
 let rollbackConfirmTimer = null;
+let persistedModalState = null;
 let runLifecycleState = {
     status: 'idle',
     action: '-',
@@ -85,6 +91,9 @@ let runLifecycleState = {
 let runLifecycleTimer = null;
 let runStatusPollTimer = null;
 let runStatusPollPending = false;
+let launchStatusPollTimer = null;
+let launchStatusPollPending = false;
+let activeLaunchRunControlId = null;
 let lastRunProgressSignature = '';
 let runTimelineEvents = [];
 let stopRunRequestPending = false;
@@ -93,7 +102,8 @@ function _setForm(study = null, name = '') {
     const s = study || {};
     nameInput.value = name || s.name || '';
     modeInput.value = s.mode || 'grid';
-    paramsInput.value = (s.parameters || []).join(',');
+    _setSelectedParameters(s.parameters || []);
+    _refreshParameterPicker();
     objectivesInput.value = (s.objectives || []).map(o => {
         const metric = o.metric || '';
         const namePart = o.name ? `:${o.name}` : '';
@@ -133,13 +143,92 @@ function _extractFormulaIdentifiers(expr) {
     return [...new Set(matches)];
 }
 
-function _renderFormulaVariableHints() {
-    if (!obFormulaVarsEl) return;
-
-    const params = (paramsInput?.value || '')
+function _getSelectedParameters() {
+    if (!paramsInput) return [];
+    if (paramsInput.tagName === 'SELECT') {
+        return [...paramsInput.options].map(o => String(o.value || '').trim()).filter(Boolean);
+    }
+    return (paramsInput?.value || '')
         .split(',')
         .map(x => x.trim())
         .filter(Boolean);
+}
+
+function _setSelectedParameters(names = []) {
+    const unique = [...new Set((names || []).map(x => String(x || '').trim()).filter(Boolean))];
+    if (!paramsInput) return;
+
+    if (paramsInput.tagName === 'SELECT') {
+        paramsInput.innerHTML = '';
+        unique.forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            paramsInput.appendChild(opt);
+        });
+        return;
+    }
+
+    paramsInput.value = unique.join(',');
+}
+
+function _refreshParameterPicker() {
+    if (!paramPickerInput) return;
+
+    const selected = new Set(_getSelectedParameters());
+    const names = Object.keys(currentParameterRegistry || {}).sort((a, b) => a.localeCompare(b));
+
+    paramPickerInput.innerHTML = '';
+    if (names.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '(no registry parameters)';
+        paramPickerInput.appendChild(opt);
+        paramPickerInput.disabled = true;
+        if (paramAddBtn) paramAddBtn.disabled = true;
+        return;
+    }
+
+    names.forEach(name => {
+        const entry = currentParameterRegistry?.[name] || {};
+        const targetType = entry?.target_type ? ` [${entry.target_type}]` : '';
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = `${name}${targetType}`;
+        if (selected.has(name)) {
+            opt.disabled = true;
+        }
+        paramPickerInput.appendChild(opt);
+    });
+    paramPickerInput.disabled = false;
+    if (paramAddBtn) paramAddBtn.disabled = false;
+}
+
+function _handleAddSelectedParameter() {
+    const name = String(paramPickerInput?.value || '').trim();
+    if (!name) return;
+    const current = new Set(_getSelectedParameters());
+    current.add(name);
+    _setSelectedParameters([...current]);
+    _refreshParameterPicker();
+    _renderFormulaVariableHints();
+}
+
+function _handleRemoveSelectedParameter() {
+    if (!paramsInput || paramsInput.tagName !== 'SELECT') return;
+    const keep = [...paramsInput.options]
+        .filter(o => !o.selected)
+        .map(o => String(o.value || '').trim())
+        .filter(Boolean);
+    _setSelectedParameters(keep);
+    _refreshParameterPicker();
+    _renderFormulaVariableHints();
+}
+
+function _renderFormulaVariableHints() {
+    if (!obFormulaVarsEl) return;
+
+    const params = _getSelectedParameters();
 
     const costKey = (obCostKeyInput?.value || '').trim();
     const available = new Set(['edep_sum', ...params]);
@@ -213,7 +302,7 @@ function _applyObjectiveBuilderSchemaToUI(schema) {
 
 function _studyFromForm() {
     const mode = modeInput.value;
-    const parameters = paramsInput.value.split(',').map(x => x.trim()).filter(Boolean);
+    const parameters = _getSelectedParameters();
 
     if (parameters.length === 0) {
         throw new Error('Please provide at least one parameter name.');
@@ -273,10 +362,7 @@ function _studyFromForm() {
 function _objectiveBuilderPayloadFromForm() {
     const studyName = (nameInput?.value || '').trim();
     const studyMode = (modeInput?.value || 'random').trim();
-    const studyParameters = (paramsInput?.value || '')
-        .split(',')
-        .map(x => x.trim())
-        .filter(Boolean);
+    const studyParameters = _getSelectedParameters();
 
     if (!studyName) {
         throw new Error('Objective Builder requires a study name.');
@@ -550,8 +636,9 @@ function _applyObjectiveBuilderExample(example) {
     if (example.study_mode) {
         modeInput.value = example.study_mode;
     }
-    if (Array.isArray(example.study_parameters) && example.study_parameters.length > 0 && !paramsInput.value.trim()) {
-        paramsInput.value = example.study_parameters.join(',');
+    if (Array.isArray(example.study_parameters) && example.study_parameters.length > 0 && _getSelectedParameters().length === 0) {
+        _setSelectedParameters(example.study_parameters);
+        _refreshParameterPicker();
     }
 
     const extract = Array.isArray(example.extract_objectives) ? example.extract_objectives : [];
@@ -651,51 +738,123 @@ async function _handleObjectiveBuilderLaunchDryRun() {
     }
 }
 
+async function _consumeObjectiveBuilderLaunchResult(result, { stage = 'launch', fromPoll = false } = {}) {
+    lastObjectiveBuilderLaunch = result || null;
+    _renderObjectiveBuilderFeedback(stage, result || {});
+    _setObjectiveBuilderOutput(result || {});
+
+    if (!(result?.optimizer_result && typeof result.optimizer_result === 'object')) {
+        return false;
+    }
+
+    lastRunResult = result.optimizer_result;
+    selectedRankedRun = null;
+    lastVerificationResult = null;
+    _clearReviewToken();
+
+    runOutput.value = JSON.stringify(result.optimizer_result, null, 2);
+    _updateObjectiveSelector();
+
+    const objectiveName = result?.optimizer_result?.objective?.name;
+    const direction = result?.optimizer_result?.objective?.direction;
+    if (objectiveName && rankObjectiveSelect && [...rankObjectiveSelect.options].some(o => o.value === objectiveName)) {
+        rankObjectiveSelect.value = objectiveName;
+    }
+    if (direction && rankDirectionSelect) {
+        rankDirectionSelect.value = direction;
+    }
+
+    _renderRankingTable();
+    _renderOptimizerSummary();
+    await _refreshAndRender();
+
+    const evals = Number(result?.optimizer_result?.evaluations_used ?? result?.optimizer_result?.candidates?.length ?? 0);
+    const stopReason = result?.optimizer_result?.stop_reason;
+    const detail = stopReason && stopReason !== 'budget_exhausted'
+        ? `evaluations=${Number.isFinite(evals) ? evals : 'n/a'}, stop_reason=${stopReason}`
+        : `evaluations=${Number.isFinite(evals) ? evals : 'n/a'}`;
+
+    _setRunLifecycle('completed', 'objective_builder_launch', detail);
+    if (!fromPoll) {
+        _showNotice('Simulation-in-loop optimization completed.', 'success', 3200);
+    }
+    return true;
+}
+
+async function _pollObjectiveBuilderLaunchStatus() {
+    if (!activeLaunchRunControlId || launchStatusPollPending) return;
+    if (typeof callbacks.onGetObjectiveBuilderLaunchStatus !== 'function') return;
+
+    launchStatusPollPending = true;
+    try {
+        const status = await callbacks.onGetObjectiveBuilderLaunchStatus(activeLaunchRunControlId);
+        const state = String(status?.job_status || '').toLowerCase();
+
+        if (state === 'completed' && status?.result) {
+            await _consumeObjectiveBuilderLaunchResult(status.result, { stage: 'launch_completed', fromPoll: true });
+            _showNotice('Simulation-in-loop optimization completed.', 'success', 3200);
+            activeLaunchRunControlId = null;
+            _stopLaunchStatusPoller();
+            return;
+        }
+
+        if (state === 'failed') {
+            const errText = status?.error || 'Launch failed.';
+            _setRunLifecycle('failed', 'objective_builder_launch', errText);
+            _showNotice(errText, 'error', 7000);
+            activeLaunchRunControlId = null;
+            _stopLaunchStatusPoller();
+            return;
+        }
+    } catch (_error) {
+        // best-effort poller
+    } finally {
+        launchStatusPollPending = false;
+    }
+}
+
+function _startLaunchStatusPoller() {
+    if (!activeLaunchRunControlId) return;
+    if (launchStatusPollTimer) return;
+    launchStatusPollTimer = setInterval(() => {
+        _pollObjectiveBuilderLaunchStatus();
+    }, 1000);
+    _pollObjectiveBuilderLaunchStatus();
+}
+
+function _stopLaunchStatusPoller() {
+    if (launchStatusPollTimer) {
+        clearInterval(launchStatusPollTimer);
+        launchStatusPollTimer = null;
+    }
+    launchStatusPollPending = false;
+}
+
 async function _handleObjectiveBuilderLaunchRun() {
     _setRunLifecycle('running', 'objective_builder_launch', 'Launching simulation-in-loop optimization');
     try {
         const payload = _objectiveBuilderPayloadFromForm();
         payload.dry_run = false;
+        payload.run_async = true;
+
         const result = await callbacks.onObjectiveBuilderLaunch(payload);
         lastObjectiveBuilderLaunch = result || null;
-
-        _renderObjectiveBuilderFeedback('launch', result || {});
+        _renderObjectiveBuilderFeedback('launch_started', result || {});
         _setObjectiveBuilderOutput(result || {});
 
-        if (result?.optimizer_result && typeof result.optimizer_result === 'object') {
-            lastRunResult = result.optimizer_result;
-            lastVerificationResult = null;
-            _clearReviewToken();
-
-            runOutput.value = JSON.stringify(result.optimizer_result, null, 2);
-            _updateObjectiveSelector();
-
-            const objectiveName = result?.optimizer_result?.objective?.name;
-            const direction = result?.optimizer_result?.objective?.direction;
-            if (objectiveName && rankObjectiveSelect && [...rankObjectiveSelect.options].some(o => o.value === objectiveName)) {
-                rankObjectiveSelect.value = objectiveName;
-            }
-            if (direction && rankDirectionSelect) {
-                rankDirectionSelect.value = direction;
-            }
-
-            _renderRankingTable();
-            _renderOptimizerSummary();
-            await _refreshAndRender();
-
-            const evals = Number(result?.optimizer_result?.evaluations_used ?? result?.optimizer_result?.candidates?.length ?? 0);
-            const stopReason = result?.optimizer_result?.stop_reason;
-            const detail = stopReason && stopReason !== 'budget_exhausted'
-                ? `evaluations=${Number.isFinite(evals) ? evals : 'n/a'}, stop_reason=${stopReason}`
-                : `evaluations=${Number.isFinite(evals) ? evals : 'n/a'}`;
-
-            _setRunLifecycle('completed', 'objective_builder_launch', detail);
-            _showNotice('Simulation-in-loop optimization completed.', 'success', 3200);
+        if (result?.async && result?.run_control_id) {
+            activeLaunchRunControlId = result.run_control_id;
+            _setRunLifecycle('running', 'objective_builder_launch', `run_control=${activeLaunchRunControlId}`);
+            _startLaunchStatusPoller();
+            _showNotice('Simulation-in-loop run started. Live progress is shown in Run Timeline.', 'info', 4200);
             return;
         }
 
-        _setRunLifecycle('completed', 'objective_builder_launch', 'launch returned no optimizer_result payload');
-        _showNotice('Launch completed, but no optimizer result payload was returned.', 'warning', 4200);
+        const consumed = await _consumeObjectiveBuilderLaunchResult(result, { stage: 'launch' });
+        if (!consumed) {
+            _setRunLifecycle('completed', 'objective_builder_launch', 'launch returned no optimizer_result payload');
+            _showNotice('Launch completed, but no optimizer result payload was returned.', 'warning', 4200);
+        }
     } catch (error) {
         _renderObjectiveBuilderFailure('launch', error);
         _showNotice(error.message || String(error), 'error', 7000);
@@ -1174,9 +1333,11 @@ function _setRunLifecycle(status, action, details = '') {
     if (status === 'running') {
         _startRunLifecycleTimer();
         _startRunStatusPoller();
+        _startLaunchStatusPoller();
     } else {
         _stopRunLifecycleTimer();
         _stopRunStatusPoller();
+        _stopLaunchStatusPoller();
     }
 
     _updateStopRunButtonState();
@@ -1957,6 +2118,7 @@ function _renderRankingTable() {
     rankingTableBody.innerHTML = '';
 
     if (runs.length === 0) {
+        selectedRankedRun = null;
         rankingTableBody.innerHTML = '<tr><td colspan="5" style="color:#64748b;">Run a study to populate ranking results.</td></tr>';
         _renderCandidateDecomposition([], '', 'maximize');
         _renderCandidateCompare([], '', 'maximize');
@@ -1981,6 +2143,23 @@ function _renderRankingTable() {
             <td>${r.success ? 'yes' : 'no'}</td>
             <td>${paramsStr}</td>
         `;
+
+        const isSelected = selectedRankedRun && selectedRankedRun?.run?.run_index === r?.run_index;
+        if (isSelected) {
+            tr.style.background = '#e0f2fe';
+            tr.style.outline = '1px solid #7dd3fc';
+        }
+
+        tr.addEventListener('click', () => {
+            selectedRankedRun = item;
+            _renderRankingTable();
+        });
+        tr.addEventListener('dblclick', () => {
+            selectedRankedRun = item;
+            _renderRankingTable();
+            _handleApplySelectedCandidate();
+        });
+
         rankingTableBody.appendChild(tr);
     });
 
@@ -2020,6 +2199,17 @@ function _updateObjectiveSelector() {
 async function _refreshAndRender() {
     const studies = await callbacks.onRefresh();
     _renderTable(studies || {});
+    await _refreshParameterRegistryFromServer();
+}
+
+async function _refreshParameterRegistryFromServer() {
+    try {
+        const registry = await callbacks.onGetParameterRegistry();
+        currentParameterRegistry = (registry && typeof registry === 'object') ? registry : {};
+    } catch (_error) {
+        currentParameterRegistry = {};
+    }
+    _refreshParameterPicker();
 }
 
 async function _handleSave() {
@@ -2054,6 +2244,7 @@ async function _handleRun() {
     try {
         const result = await callbacks.onRun(name, Number.isFinite(maxRuns) ? maxRuns : null);
         lastRunResult = result || null;
+        selectedRankedRun = null;
         lastVerificationResult = null;
         _clearReviewToken();
         runOutput.value = JSON.stringify(result, null, 2);
@@ -2071,6 +2262,28 @@ async function _handleRun() {
     } catch (error) {
         runOutput.value = JSON.stringify(error?.data || { success: false, error: error?.message || String(error) }, null, 2);
         _setRunLifecycle('failed', 'param_study_sweep', error?.message || String(error));
+        _showNotice(error?.message || String(error), 'error', 7000);
+    }
+}
+
+async function _handleApplySelectedCandidate() {
+    const studyName = nameInput.value.trim() || activeName;
+    if (!studyName) {
+        _showNotice('Select a study first.', 'warning', 2500);
+        return;
+    }
+
+    const selected = selectedRankedRun?.run;
+    if (!selected || !selected.values || typeof selected.values !== 'object') {
+        _showNotice('Select a row in the ranking table first.', 'warning', 2800);
+        return;
+    }
+
+    try {
+        const result = await callbacks.onApplyCandidate(studyName, selected.values);
+        _showNotice(`Applied ranked row #${selected.run_index ?? '-'} to geometry.`, 'success', 3000);
+        runOutput.value = JSON.stringify(result, null, 2);
+    } catch (error) {
         _showNotice(error?.message || String(error), 'error', 7000);
     }
 }
@@ -2109,6 +2322,7 @@ async function _handleRunOptimizer() {
         const result = await callbacks.onRunOptimizer(payload);
 
         lastRunResult = result || null;
+        selectedRankedRun = null;
         lastVerificationResult = null;
         _clearReviewToken();
         runOutput.value = JSON.stringify(result, null, 2);
@@ -2313,6 +2527,9 @@ export function init(newCallbacks = {}) {
 
     nameInput = document.getElementById('ps_name');
     modeInput = document.getElementById('ps_mode');
+    paramPickerInput = document.getElementById('ps_param_picker');
+    paramAddBtn = document.getElementById('psParamAddBtn');
+    paramRemoveBtn = document.getElementById('psParamRemoveBtn');
     paramsInput = document.getElementById('ps_parameters');
     legacyObjectivesToggleInput = document.getElementById('ps_show_legacy_objectives');
     legacyObjectivesRow = document.getElementById('psLegacyObjectivesRow');
@@ -2412,6 +2629,7 @@ export function init(newCallbacks = {}) {
     stopRunBtn = document.getElementById('psStopRunBtn');
     replayBestBtn = document.getElementById('psReplayBestBtn');
     verifyBestBtn = document.getElementById('psVerifyBestBtn');
+    applySelectedBtn = document.getElementById('psApplySelectedBtn');
     downloadResultsBtn = document.getElementById('psDownloadResultsBtn');
     refreshBtn = document.getElementById('psRefreshBtn');
     cancelBtn = document.getElementById('psCancelBtn');
@@ -2423,6 +2641,7 @@ export function init(newCallbacks = {}) {
     if (stopRunBtn) stopRunBtn.addEventListener('click', _handleStopActiveRun);
     if (replayBestBtn) replayBestBtn.addEventListener('click', _handleReplayBest);
     if (verifyBestBtn) verifyBestBtn.addEventListener('click', _handleVerifyBest);
+    if (applySelectedBtn) applySelectedBtn.addEventListener('click', _handleApplySelectedCandidate);
     if (reviewVerifyBtn) reviewVerifyBtn.addEventListener('click', _handleVerifyBest);
     if (reviewApplyBtn) reviewApplyBtn.addEventListener('click', _handleReplayBest);
     if (reviewCopyTokenBtn) reviewCopyTokenBtn.addEventListener('click', _handleCopyReviewToken);
@@ -2449,7 +2668,12 @@ export function init(newCallbacks = {}) {
         });
     }
 
-    if (paramsInput) paramsInput.addEventListener('input', _renderFormulaVariableHints);
+    if (paramsInput) {
+        const ev = paramsInput.tagName === 'SELECT' ? 'change' : 'input';
+        paramsInput.addEventListener(ev, _renderFormulaVariableHints);
+    }
+    if (paramAddBtn) paramAddBtn.addEventListener('click', _handleAddSelectedParameter);
+    if (paramRemoveBtn) paramRemoveBtn.addEventListener('click', _handleRemoveSelectedParameter);
     if (obCostKeyInput) obCostKeyInput.addEventListener('input', _renderFormulaVariableHints);
     if (obScoreExprInput) obScoreExprInput.addEventListener('input', _renderFormulaVariableHints);
 
@@ -2474,43 +2698,122 @@ export function init(newCallbacks = {}) {
     });
 }
 
-export async function show(initialStudies = {}) {
-    activeName = null;
-    lastRunResult = null;
-    lastVerificationResult = null;
-    _clearReviewToken();
-    _resetRollbackConfirmation();
-    lastObjectiveBuilderBuild = null;
-    lastObjectiveBuilderLaunch = null;
-    applyAuditHistory = [];
-    applyAuditDiagnostics = null;
-    applyAuditHistoryLoading = false;
-    applyAuditHistoryError = null;
-    applyAuditDiagnosticsLoading = false;
-    applyAuditDiagnosticsError = null;
-    runLifecycleState = {
-        status: 'idle',
-        action: '-',
-        actionDetail: '',
-        startedAtMs: null,
-        endedAtMs: null,
-        lastUpdateMs: Date.now(),
-        liveProgress: null,
+function _captureModalState() {
+    return {
+        activeName,
+        form: {
+            name: nameInput?.value || '',
+            mode: modeInput?.value || 'grid',
+            parameters: _getSelectedParameters(),
+            gridSteps: gridStepsInput?.value || '3',
+            samples: samplesInput?.value || '10',
+            seed: seedInput?.value || '42',
+            maxRuns: maxRunsInput?.value || '',
+            template: obTemplateInput?.value || 'weighted_tradeoff',
+            datasetPath: obDatasetPathInput?.value || 'default_ntuples/Hits/Edep',
+            costKey: obCostKeyInput?.value || '',
+            scoreExpr: obScoreExprInput?.value || 'edep_sum',
+            method: optMethodInput?.value || 'surrogate_gp',
+            budget: optBudgetInput?.value || '20',
+            optSeed: optSeedInput?.value || '42',
+            viewMode: viewModeInput?.value || 'basic',
+        },
+        selectedRankedRunIndex: selectedRankedRun?.run?.run_index ?? null,
+        lastRunResult,
+        lastVerificationResult,
+        lastObjectiveBuilderBuild,
+        lastObjectiveBuilderLaunch,
+        runOutput: runOutput?.value || '',
+        obOutput: obOutput?.value || '',
+        runLifecycleState,
+        runTimelineEvents,
+        activeLaunchRunControlId,
     };
-    runTimelineEvents = [];
-    stopRunRequestPending = false;
-    lastRunProgressSignature = '';
+}
+
+function _restoreModalState(state) {
+    if (!state || typeof state !== 'object') return false;
+    activeName = state.activeName || null;
+
+    nameInput.value = state.form?.name || '';
+    modeInput.value = state.form?.mode || 'grid';
+    _setSelectedParameters(state.form?.parameters || []);
+    _refreshParameterPicker();
+    gridStepsInput.value = state.form?.gridSteps ?? '3';
+    samplesInput.value = state.form?.samples ?? '10';
+    seedInput.value = state.form?.seed ?? '42';
+    maxRunsInput.value = state.form?.maxRuns ?? '';
+
+    if (obTemplateInput && state.form?.template) obTemplateInput.value = state.form.template;
+    if (obDatasetPathInput) obDatasetPathInput.value = state.form?.datasetPath || 'default_ntuples/Hits/Edep';
+    if (obCostKeyInput) obCostKeyInput.value = state.form?.costKey || '';
+    if (obScoreExprInput) obScoreExprInput.value = state.form?.scoreExpr || 'edep_sum';
+    if (optMethodInput && state.form?.method) optMethodInput.value = state.form.method;
+    if (optBudgetInput) optBudgetInput.value = state.form?.budget || '20';
+    if (optSeedInput) optSeedInput.value = state.form?.optSeed || '42';
+
+    if (viewModeInput) viewModeInput.value = state.form?.viewMode || 'basic';
+    _setParamStudiesViewMode(viewModeInput?.value || 'basic');
+
+    lastRunResult = state.lastRunResult || null;
+    lastVerificationResult = state.lastVerificationResult || null;
+    lastObjectiveBuilderBuild = state.lastObjectiveBuilderBuild || null;
+    lastObjectiveBuilderLaunch = state.lastObjectiveBuilderLaunch || null;
+
+    runLifecycleState = state.runLifecycleState || runLifecycleState;
+    runTimelineEvents = Array.isArray(state.runTimelineEvents) ? state.runTimelineEvents : [];
+    activeLaunchRunControlId = state.activeLaunchRunControlId || null;
+
+    if (runOutput) runOutput.value = state.runOutput || '';
+    if (obOutput) obOutput.value = state.obOutput || '';
+
+    return true;
+}
+
+export async function show(initialStudies = {}) {
     _stopRunLifecycleTimer();
     _stopRunStatusPoller();
+    _stopLaunchStatusPoller();
+    stopRunRequestPending = false;
+    lastRunProgressSignature = '';
 
-    _setForm();
-    if (viewModeInput) viewModeInput.value = 'basic';
-    _setParamStudiesViewMode('basic');
-    runOutput.value = '';
-    if (obOutput) obOutput.value = '';
-    _showNotice('', 'info', 0);
+    const restored = _restoreModalState(persistedModalState);
+    if (!restored) {
+        activeName = null;
+        selectedRankedRun = null;
+        lastRunResult = null;
+        lastVerificationResult = null;
+        _clearReviewToken();
+        _resetRollbackConfirmation();
+        lastObjectiveBuilderBuild = null;
+        lastObjectiveBuilderLaunch = null;
+        applyAuditHistory = [];
+        applyAuditDiagnostics = null;
+        applyAuditHistoryLoading = false;
+        applyAuditHistoryError = null;
+        applyAuditDiagnosticsLoading = false;
+        applyAuditDiagnosticsError = null;
+        runLifecycleState = {
+            status: 'idle',
+            action: '-',
+            actionDetail: '',
+            startedAtMs: null,
+            endedAtMs: null,
+            lastUpdateMs: Date.now(),
+            liveProgress: null,
+        };
+        runTimelineEvents = [];
+
+        _setForm();
+        if (viewModeInput) viewModeInput.value = 'basic';
+        _setParamStudiesViewMode('basic');
+        runOutput.value = '';
+        if (obOutput) obOutput.value = '';
+        _showNotice('', 'info', 0);
+        _renderObjectiveBuilderFeedback('idle', { success: true, validation: { errors: [], warnings: [] } });
+    }
+
     _renderFormulaVariableHints();
-    _renderObjectiveBuilderFeedback('idle', { success: true, validation: { errors: [], warnings: [] } });
     _renderApplyAuditPanel();
     _renderTable(initialStudies);
     _updateObjectiveSelector();
@@ -2521,9 +2824,16 @@ export async function show(initialStudies = {}) {
     if (modal) modal.style.display = 'block';
     await _refreshAndRender();
     await _refreshApplyAuditHistory();
+
+    if (runLifecycleState?.status === 'running') {
+        _startRunLifecycleTimer();
+        _startRunStatusPoller();
+        _startLaunchStatusPoller();
+    }
 }
 
 export function hide() {
+    persistedModalState = _captureModalState();
     if (modal) modal.style.display = 'none';
     if (noticeTimer) {
         clearTimeout(noticeTimer);
@@ -2531,6 +2841,7 @@ export function hide() {
     }
     _stopRunLifecycleTimer();
     _stopRunStatusPoller();
+    _stopLaunchStatusPoller();
     _stopTokenExpiryTimer();
     stopRunRequestPending = false;
     _updateStopRunButtonState();

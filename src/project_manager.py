@@ -1601,6 +1601,55 @@ class ProjectManager:
             'runs': runs,
         }, None
 
+    def apply_study_candidate_values(self, study_name, values):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        studies = self.current_geometry_state.param_studies or {}
+        if study_name not in studies:
+            return None, f"Study '{study_name}' not found."
+
+        if not isinstance(values, dict) or not values:
+            return None, "values must be a non-empty object/dict."
+
+        study = studies[study_name]
+        study_params = list(study.get('parameters', []) or [])
+
+        sim_options = {}
+        applied_values = {}
+        for param_name in study_params:
+            if param_name not in values:
+                continue
+            param_entry = self.current_geometry_state.parameter_registry.get(param_name)
+            if not param_entry:
+                return None, f"Parameter '{param_name}' not found in registry."
+
+            raw_v = values.get(param_name)
+            try:
+                v = float(raw_v)
+            except (TypeError, ValueError):
+                return None, f"Parameter '{param_name}' value must be numeric."
+
+            ok, err = self._apply_param_value(param_entry, v, sim_options)
+            if not ok:
+                return None, err
+            applied_values[param_name] = v
+
+        if not applied_values:
+            return None, "No matching study parameters found in values payload."
+
+        ok, err = self.recalculate_geometry_state()
+        if not ok:
+            return None, err
+
+        self._capture_history_state(f"Applied candidate values for study '{study_name}'")
+
+        return {
+            'study_name': study_name,
+            'applied_values': applied_values,
+            'sim_options': sim_options,
+        }, None
+
     def _evaluate_param_sample(self, study, sample, run_index=0, evaluator=None):
         sim_options = {}
         apply_error = None

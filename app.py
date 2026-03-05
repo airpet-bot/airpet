@@ -1246,6 +1246,10 @@ def _finish_managed_optimizer_run(pm, *, status='completed', details=None):
         pass
 
 
+OBJECTIVE_BUILDER_LAUNCH_JOBS = {}
+OBJECTIVE_BUILDER_LAUNCH_LOCK = threading.Lock()
+
+
 # Track running LOR computation
 LOR_PROCESSING_STATUS = {}
 LOR_PROCESSING_LOCK = threading.Lock()
@@ -2326,6 +2330,9 @@ def objective_builder_launch_route():
         }), 400
 
     method = (run_payload.get('method') or 'surrogate_gp').strip().lower()
+    if method not in {'surrogate_gp', 'random_search', 'cmaes'}:
+        return jsonify({"success": False, "error": f"Unsupported method '{method}'."}), 400
+
     sim_params = run_payload.get('sim_params') or {}
 
     evaluator = _build_simulation_candidate_evaluator(
@@ -2337,7 +2344,7 @@ def objective_builder_launch_route():
         candidate_runs_root=run_payload.get('candidate_runs_root'),
     )
 
-    _, response, status = _start_managed_optimizer_run(
+    control, response, status = _start_managed_optimizer_run(
         pm,
         run_payload,
         kind='objective_builder_launch',
@@ -2346,65 +2353,145 @@ def objective_builder_launch_route():
     if response is not None:
         return response, status
 
-    final_status = 'completed'
-    result, err = None, None
-    try:
-        if method == 'surrogate_gp':
-            result, err = pm.run_simulation_in_loop_optimizer(
-                study_name=study_name,
-                method='surrogate_gp',
-                budget=run_payload.get('budget', 20),
-                seed=run_payload.get('seed', 42),
-                objective_name=run_payload.get('objective_name'),
-                direction=run_payload.get('direction'),
-                surrogate_config=run_payload.get('surrogate') or {},
-                evaluator=evaluator,
-            )
-        elif method in {'random_search', 'cmaes'}:
-            result, err = pm.run_simulation_in_loop_optimizer(
-                study_name=study_name,
-                method=method,
-                budget=run_payload.get('budget', 20),
-                seed=run_payload.get('seed', 42),
-                objective_name=run_payload.get('objective_name'),
-                direction=run_payload.get('direction'),
-                cmaes_config=run_payload.get('cmaes'),
-                evaluator=evaluator,
-            )
-        else:
-            final_status = 'failed'
-            return jsonify({"success": False, "error": f"Unsupported method '{method}'."}), 400
+    pm.update_managed_run_progress(
+        total_evaluations=run_payload.get('budget', 20),
+        evaluations_completed=0,
+        success_count=0,
+        failure_count=0,
+        phase='starting',
+        message=f"Objective Builder launch started ({method}).",
+    )
 
-        if err:
-            final_status = 'failed'
-        elif isinstance(result, dict) and result.get('stop_reason') in {'user_requested_stop', 'wall_time_exceeded'}:
-            final_status = 'stopped'
-    finally:
-        details = {
-            'study_name': study_name,
-            'method': method,
-            'stop_reason': (result or {}).get('stop_reason') if isinstance(result, dict) else None,
-            'run_id': (result or {}).get('run_id') if isinstance(result, dict) else None,
-            'evaluations_used': (result or {}).get('evaluations_used') if isinstance(result, dict) else None,
-        }
-        _finish_managed_optimizer_run(pm, status=final_status, details=details)
+    def _run_launch_job():
+        final_status = 'completed'
+        result, err = None, None
+        try:
+            if method == 'surrogate_gp':
+                result, err = pm.run_simulation_in_loop_optimizer(
+                    study_name=study_name,
+                    method='surrogate_gp',
+                    budget=run_payload.get('budget', 20),
+                    seed=run_payload.get('seed', 42),
+                    objective_name=run_payload.get('objective_name'),
+                    direction=run_payload.get('direction'),
+                    surrogate_config=run_payload.get('surrogate') or {},
+                    evaluator=evaluator,
+                )
+            else:
+                result, err = pm.run_simulation_in_loop_optimizer(
+                    study_name=study_name,
+                    method=method,
+                    budget=run_payload.get('budget', 20),
+                    seed=run_payload.get('seed', 42),
+                    objective_name=run_payload.get('objective_name'),
+                    direction=run_payload.get('direction'),
+                    cmaes_config=run_payload.get('cmaes'),
+                    evaluator=evaluator,
+                )
 
-    if not result:
-        return jsonify({"success": False, "error": err}), 400
+            if err:
+                final_status = 'failed'
+            elif isinstance(result, dict) and result.get('stop_reason') in {'user_requested_stop', 'wall_time_exceeded'}:
+                final_status = 'stopped'
+        except Exception as ex:
+            err = str(ex)
+            final_status = 'failed'
+        finally:
+            details = {
+                'study_name': study_name,
+                'method': method,
+                'stop_reason': (result or {}).get('stop_reason') if isinstance(result, dict) else None,
+                'run_id': (result or {}).get('run_id') if isinstance(result, dict) else None,
+                'evaluations_used': (result or {}).get('evaluations_used') if isinstance(result, dict) else None,
+            }
+            _finish_managed_optimizer_run(pm, status=final_status, details=details)
+
+            with OBJECTIVE_BUILDER_LAUNCH_LOCK:
+                rec = OBJECTIVE_BUILDER_LAUNCH_JOBS.get(control['run_control_id'], {})
+                rec.update({
+                    'job_status': final_status,
+                    'completed_at': datetime.utcnow().isoformat() + 'Z',
+                    'result': {
+                        "success": bool(result),
+                        "dry_run": False,
+                        "launched": True,
+                        "source": source,
+                        "study_action": "updated" if existed else "created",
+                        "study_name": study_name,
+                        "study": upserted,
+                        "optimizer_result": result,
+                        "preflight_summary": preflight_summary,
+                        "run_policy": run_payload.get('_run_policy'),
+                        "validation": validation,
+                        "schema_version": _objective_builder_schema().get('version'),
+                    } if result else None,
+                    'error': err,
+                })
+                OBJECTIVE_BUILDER_LAUNCH_JOBS[control['run_control_id']] = rec
+
+    run_async = bool(payload.get('run_async', True))
+    if run_async:
+        run_control_id = control['run_control_id']
+        with OBJECTIVE_BUILDER_LAUNCH_LOCK:
+            OBJECTIVE_BUILDER_LAUNCH_JOBS[run_control_id] = {
+                'job_status': 'running',
+                'created_at': datetime.utcnow().isoformat() + 'Z',
+                'study_name': study_name,
+                'method': method,
+                'result': None,
+                'error': None,
+            }
+
+        t = threading.Thread(target=_run_launch_job, daemon=True)
+        t.start()
+
+        return jsonify({
+            "success": True,
+            "dry_run": False,
+            "launched": True,
+            "async": True,
+            "run_control_id": run_control_id,
+            "source": source,
+            "study_action": "updated" if existed else "created",
+            "study_name": study_name,
+            "study": upserted,
+            "preflight_summary": preflight_summary,
+            "run_policy": run_payload.get('_run_policy'),
+            "validation": validation,
+            "schema_version": _objective_builder_schema().get('version'),
+        })
+
+    _run_launch_job()
+    with OBJECTIVE_BUILDER_LAUNCH_LOCK:
+        rec = OBJECTIVE_BUILDER_LAUNCH_JOBS.get(control['run_control_id'], {})
+    if rec.get('result'):
+        return jsonify(rec['result'])
+    return jsonify({"success": False, "error": rec.get('error') or 'Objective builder launch failed.'}), 400
+
+
+@app.route('/api/objective_builder/launch_status/<run_control_id>', methods=['GET'])
+def objective_builder_launch_status_route(run_control_id):
+    pm = get_project_manager_for_session()
+    managed = pm.get_managed_run_status()
+
+    with OBJECTIVE_BUILDER_LAUNCH_LOCK:
+        rec = OBJECTIVE_BUILDER_LAUNCH_JOBS.get(run_control_id)
+
+    if not rec:
+        return jsonify({"success": False, "error": f"No launch job found for run_control_id '{run_control_id}'."}), 404
 
     return jsonify({
         "success": True,
-        "dry_run": False,
-        "launched": True,
-        "source": source,
-        "study_action": "updated" if existed else "created",
-        "study_name": study_name,
-        "study": upserted,
-        "optimizer_result": result,
-        "preflight_summary": preflight_summary,
-        "run_policy": run_payload.get('_run_policy'),
-        "validation": validation,
-        "schema_version": _objective_builder_schema().get('version'),
+        "run_control_id": run_control_id,
+        "job_status": rec.get('job_status', 'unknown'),
+        "created_at": rec.get('created_at'),
+        "completed_at": rec.get('completed_at'),
+        "study_name": rec.get('study_name'),
+        "method": rec.get('method'),
+        "error": rec.get('error'),
+        "result": rec.get('result'),
+        "active_run": managed.get('active'),
+        "last_run": managed.get('last'),
     })
 
 
@@ -4325,6 +4412,29 @@ def param_study_run_route():
     if result:
         return jsonify({"success": True, "study_result": result, "run_policy": data.get('_run_policy')})
     return jsonify({"success": False, "error": err}), 400
+
+
+@app.route('/api/param_study/apply_candidate', methods=['POST'])
+def param_study_apply_candidate_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+
+    study_name = data.get('study_name') or data.get('name')
+    values = data.get('values')
+
+    if not study_name:
+        return jsonify({"success": False, "error": "study_name is required."}), 400
+    if not isinstance(values, dict) or not values:
+        return jsonify({"success": False, "error": "values must be a non-empty object/dict."}), 400
+
+    applied, err = pm.apply_study_candidate_values(study_name, values)
+    if not applied:
+        return jsonify({"success": False, "error": err}), 400
+
+    response = create_success_response(pm, f"Applied candidate values to study '{study_name}'.")
+    payload = response.get_json() or {}
+    payload['applied_candidate'] = applied
+    return jsonify(payload)
 
 
 @app.route('/api/param_optimizer/list', methods=['GET'])
