@@ -5742,7 +5742,10 @@ AI_TOOL_ARG_ALIASES = {
         "structured_logs": "include_log_entries",
         "max_logs": "max_lines",
         "line_limit": "max_lines",
-        "limit": "max_lines"
+        "limit": "max_lines",
+        "contains": "log_contains",
+        "filter": "log_contains",
+        "search": "log_contains"
     },
     "manage_particle_source": {
         "id": "source_id",
@@ -6631,6 +6634,14 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             include_log_summary = _coerce_bool(args.get('include_log_summary'), default=True)
             include_log_entries = _coerce_bool(args.get('include_log_entries'), default=False)
 
+            log_contains = args.get('log_contains')
+            if log_contains is not None:
+                log_contains = str(log_contains).strip()
+                if log_contains == "":
+                    log_contains = None
+                else:
+                    log_contains = log_contains.lower()
+
             since = None
             if args.get('since') is not None:
                 try:
@@ -6683,20 +6694,23 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                         log_source = "both"
 
                     selected_entries = []
+
+                    def _append_log_line(source: str, line: Any) -> None:
+                        text_line = str(line)
+                        if log_contains is not None and log_contains not in text_line.lower():
+                            return
+                        selected_entries.append({
+                            "cursor": len(selected_entries),
+                            "source": source,
+                            "line": text_line,
+                        })
+
                     if log_source in {"stdout", "both"}:
                         for line in stdout_lines:
-                            selected_entries.append({
-                                "cursor": len(selected_entries),
-                                "source": "stdout",
-                                "line": line,
-                            })
+                            _append_log_line("stdout", line)
                     if log_source in {"stderr", "both"}:
                         for line in stderr_raw:
-                            selected_entries.append({
-                                "cursor": len(selected_entries),
-                                "source": "stderr",
-                                "line": line,
-                            })
+                            _append_log_line("stderr", line)
 
                     total_lines = len(selected_entries)
                     cursor = 0

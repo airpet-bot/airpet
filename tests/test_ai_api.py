@@ -350,6 +350,35 @@ def test_ai_tool_get_simulation_status_log_source_filter(pm):
     assert res_stdout["log_total_lines"] == 2
 
 
+def test_ai_tool_get_simulation_status_log_contains_filter(pm):
+    from app import SIMULATION_STATUS, SIMULATION_LOCK
+
+    job_id = "sim-log-contains"
+    with SIMULATION_LOCK:
+        SIMULATION_STATUS[job_id] = {
+            "status": "Running",
+            "progress": 42,
+            "total_events": 100,
+            "stdout": ["init", "Warning: drift"],
+            "stderr": ["fatal: overflow", "note: ignored"],
+        }
+
+    res = dispatch_ai_tool(pm, "get_simulation_status", {
+        "job_id": job_id,
+        "contains": "WARN",
+        "include_logs": True,
+        "include_log_entries": True,
+    })
+
+    assert res["success"], res
+    assert res["log_lines"] == ["Warning: drift"]
+    assert res["log_total_lines"] == 1
+    assert res["next_since"] == 1
+    assert res["log_entries"] == [
+        {"cursor": 0, "source": "stdout", "line": "Warning: drift"},
+    ]
+
+
 def test_ai_tool_get_simulation_status_include_log_entries(pm):
     from app import SIMULATION_STATUS, SIMULATION_LOCK
 
