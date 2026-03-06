@@ -552,6 +552,7 @@ AI_GEOMETRY_TOOLS = [
                 "job_id": {"type": "string", "description": "The unique ID of the simulation job."},
                 "include_logs": {"type": "boolean", "description": "Whether to include log output from the solver (default: true)."},
                 "include_log_summary": {"type": "boolean", "description": "Whether to include compact log diagnostics (line counts + latest lines, default: true)."},
+                "include_log_entries": {"type": "boolean", "description": "Whether to include structured log entries with source and cursor fields for reliable incremental parsing (default: false)."},
                 "tail_lines": {"type": "integer", "description": "How many lines from the end of the requested log stream to return when 'since' is not provided."},
                 "since": {"type": "integer", "description": "Return log lines starting from this line index (0-based)."},
                 "log_source": {

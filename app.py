@@ -5736,7 +5736,10 @@ AI_TOOL_ARG_ALIASES = {
         "include_summary": "include_log_summary",
         "logs": "log_source",
         "log_stream": "log_source",
-        "stream": "log_source"
+        "stream": "log_source",
+        "include_entries": "include_log_entries",
+        "with_entries": "include_log_entries",
+        "structured_logs": "include_log_entries"
     },
     "manage_particle_source": {
         "id": "source_id",
@@ -5792,7 +5795,7 @@ AI_TOOL_DEFAULTS = {
         "ring_spacing": "0"
     },
     "run_simulation": {"events": 1000, "threads": 1},
-    "get_simulation_status": {"include_logs": True, "include_log_summary": True, "tail_lines": 20, "log_source": "both"},
+    "get_simulation_status": {"include_logs": True, "include_log_summary": True, "include_log_entries": False, "tail_lines": 20, "log_source": "both"},
     "manage_ui_group": {"item_ids": []},
     "manage_particle_source": {
         "name": "gps_source",
@@ -6623,6 +6626,7 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
 
             include_logs = _coerce_bool(args.get('include_logs'), default=True)
             include_log_summary = _coerce_bool(args.get('include_log_summary'), default=True)
+            include_log_entries = _coerce_bool(args.get('include_log_entries'), default=False)
 
             since = None
             if args.get('since') is not None:
@@ -6644,7 +6648,6 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
 
                 stdout_lines = list(status.get("stdout") or [])
                 stderr_raw = list(status.get("stderr") or [])
-                stderr_lines = [f"stderr: {line}" for line in stderr_raw]
 
                 response = {
                     "success": True,
@@ -6667,27 +6670,44 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     if log_source not in {"stdout", "stderr", "both"}:
                         log_source = "both"
 
-                    selected_lines = []
+                    selected_entries = []
                     if log_source in {"stdout", "both"}:
-                        selected_lines.extend(stdout_lines)
+                        for line in stdout_lines:
+                            selected_entries.append({
+                                "cursor": len(selected_entries),
+                                "source": "stdout",
+                                "line": line,
+                            })
                     if log_source in {"stderr", "both"}:
-                        selected_lines.extend(stderr_lines)
+                        for line in stderr_raw:
+                            selected_entries.append({
+                                "cursor": len(selected_entries),
+                                "source": "stderr",
+                                "line": line,
+                            })
 
-                    total_lines = len(selected_lines)
+                    total_lines = len(selected_entries)
 
                     response["log_total_lines"] = total_lines
                     response["next_since"] = total_lines
 
                     if since is not None:
                         cursor = min(since, total_lines)
-                        log_lines = selected_lines[cursor:]
+                        log_entries = selected_entries[cursor:]
                     elif tail_lines > 0:
-                        log_lines = selected_lines[-tail_lines:]
+                        log_entries = selected_entries[-tail_lines:]
                     else:
-                        log_lines = []
+                        log_entries = []
+
+                    log_lines = [
+                        entry["line"] if entry["source"] == "stdout" else f"stderr: {entry['line']}"
+                        for entry in log_entries
+                    ]
 
                     response["log_lines"] = log_lines
                     response["returned_lines"] = len(log_lines)
+                    if include_log_entries:
+                        response["log_entries"] = log_entries
 
                 return response
 

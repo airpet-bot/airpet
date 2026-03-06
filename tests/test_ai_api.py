@@ -284,6 +284,33 @@ def test_ai_tool_get_simulation_status_log_source_filter(pm):
     assert res_stdout["log_total_lines"] == 2
 
 
+def test_ai_tool_get_simulation_status_include_log_entries(pm):
+    from app import SIMULATION_STATUS, SIMULATION_LOCK
+
+    job_id = "sim-log-entries"
+    with SIMULATION_LOCK:
+        SIMULATION_STATUS[job_id] = {
+            "status": "Running",
+            "progress": 55,
+            "total_events": 100,
+            "stdout": ["line-0", "line-1"],
+            "stderr": ["err-0"],
+        }
+
+    res = dispatch_ai_tool(pm, "get_simulation_status", {
+        "job_id": job_id,
+        "since": 1,
+        "include_log_entries": True,
+    })
+
+    assert res["success"], res
+    assert res["log_lines"] == ["line-1", "stderr: err-0"]
+    assert res["log_entries"] == [
+        {"cursor": 1, "source": "stdout", "line": "line-1"},
+        {"cursor": 2, "source": "stderr", "line": "err-0"},
+    ]
+
+
 def test_ai_tool_get_simulation_status_includes_log_summary_without_logs(pm):
     from app import SIMULATION_STATUS, SIMULATION_LOCK
 
