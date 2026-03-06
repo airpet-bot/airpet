@@ -5731,7 +5731,10 @@ AI_TOOL_ARG_ALIASES = {
         "since_line": "since",
         "from_line": "since",
         "tail": "tail_lines",
-        "include_output": "include_logs"
+        "include_output": "include_logs",
+        "logs": "log_source",
+        "log_stream": "log_source",
+        "stream": "log_source"
     },
     "manage_particle_source": {
         "id": "source_id",
@@ -5787,7 +5790,7 @@ AI_TOOL_DEFAULTS = {
         "ring_spacing": "0"
     },
     "run_simulation": {"events": 1000, "threads": 1},
-    "get_simulation_status": {"include_logs": True, "tail_lines": 20},
+    "get_simulation_status": {"include_logs": True, "tail_lines": 20, "log_source": "both"},
     "manage_ui_group": {"item_ids": []},
     "manage_particle_source": {
         "name": "gps_source",
@@ -6646,17 +6649,26 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 if include_logs:
                     stdout_lines = list(status.get("stdout") or [])
                     stderr_lines = [f"stderr: {line}" for line in list(status.get("stderr") or [])]
-                    all_lines = stdout_lines + stderr_lines
-                    total_lines = len(all_lines)
+                    log_source = (str(args.get("log_source", "both")) or "both").strip().lower()
+                    if log_source not in {"stdout", "stderr", "both"}:
+                        log_source = "both"
+
+                    selected_lines = []
+                    if log_source in {"stdout", "both"}:
+                        selected_lines.extend(stdout_lines)
+                    if log_source in {"stderr", "both"}:
+                        selected_lines.extend(stderr_lines)
+
+                    total_lines = len(selected_lines)
 
                     response["log_total_lines"] = total_lines
                     response["next_since"] = total_lines
 
                     if since is not None:
                         cursor = min(since, total_lines)
-                        log_lines = all_lines[cursor:]
+                        log_lines = selected_lines[cursor:]
                     elif tail_lines > 0:
-                        log_lines = all_lines[-tail_lines:]
+                        log_lines = selected_lines[-tail_lines:]
                     else:
                         log_lines = []
 

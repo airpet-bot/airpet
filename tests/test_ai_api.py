@@ -249,6 +249,40 @@ def test_ai_tool_get_simulation_status_tail_lines(pm):
     assert res["log_lines"] == ["stderr: err-a", "stderr: err-b"]
     assert res["returned_lines"] == 2
 
+
+def test_ai_tool_get_simulation_status_log_source_filter(pm):
+    from app import SIMULATION_STATUS, SIMULATION_LOCK
+
+    job_id = "sim-log-source"
+    with SIMULATION_LOCK:
+        SIMULATION_STATUS[job_id] = {
+            "status": "Running",
+            "progress": 42,
+            "total_events": 100,
+            "stdout": ["line-x", "line-y"],
+            "stderr": ["error-1"],
+        }
+
+    res_stderr = dispatch_ai_tool(pm, "get_simulation_status", {
+        "job_id": job_id,
+        "log_source": "stderr",
+        "include_logs": True,
+    })
+
+    assert res_stderr["success"], res_stderr
+    assert res_stderr["log_lines"] == ["stderr: error-1"]
+    assert res_stderr["log_total_lines"] == 1
+
+    res_stdout = dispatch_ai_tool(pm, "get_simulation_status", {
+        "job_id": job_id,
+        "log_source": "stdout",
+        "include_logs": True,
+    })
+
+    assert res_stdout["success"], res_stdout
+    assert res_stdout["log_lines"] == ["line-x", "line-y"]
+    assert res_stdout["log_total_lines"] == 2
+
 def test_ai_analysis_summary(pm):
     # Mocking h5py File
     with patch('h5py.File') as MockFile:
