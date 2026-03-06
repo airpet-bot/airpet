@@ -856,6 +856,7 @@ def test_objective_builder_launch_endpoint_run_with_mock_evaluator():
             "run_seed": 7,
             "sim_params": {"events": 10, "threads": 1},
             "surrogate": {"warmup_runs": 4, "candidate_pool_size": 64},
+            "run_async": False,
         }
 
         def mock_builder(**kwargs):
