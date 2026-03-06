@@ -200,6 +200,55 @@ def test_ai_simulation_tools(pm):
         assert res_status['success']
         assert res_status['status'] == "Finished"
 
+
+def test_ai_tool_get_simulation_status_supports_since_cursor(pm):
+    from app import SIMULATION_STATUS, SIMULATION_LOCK
+
+    job_id = "sim-cursor-1"
+    with SIMULATION_LOCK:
+        SIMULATION_STATUS[job_id] = {
+            "status": "Running",
+            "progress": 20,
+            "total_events": 100,
+            "stdout": ["line-0", "line-1"],
+            "stderr": ["err-0"],
+        }
+
+    res = dispatch_ai_tool(pm, "get_simulation_status", {
+        "job_id": job_id,
+        "since": 1,
+        "include_logs": True,
+    })
+
+    assert res["success"], res
+    assert res["status"] == "Running"
+    assert res["log_total_lines"] == 3
+    assert res["next_since"] == 3
+    assert res["log_lines"] == ["line-1", "stderr: err-0"]
+
+
+def test_ai_tool_get_simulation_status_tail_lines(pm):
+    from app import SIMULATION_STATUS, SIMULATION_LOCK
+
+    job_id = "sim-tail-1"
+    with SIMULATION_LOCK:
+        SIMULATION_STATUS[job_id] = {
+            "status": "Running",
+            "progress": 2,
+            "total_events": 10,
+            "stdout": ["line-a", "line-b"],
+            "stderr": ["err-a", "err-b"],
+        }
+
+    res = dispatch_ai_tool(pm, "get_simulation_status", {
+        "job_id": job_id,
+        "tail_lines": 2,
+    })
+
+    assert res["success"], res
+    assert res["log_lines"] == ["stderr: err-a", "stderr: err-b"]
+    assert res["returned_lines"] == 2
+
 def test_ai_analysis_summary(pm):
     # Mocking h5py File
     with patch('h5py.File') as MockFile:
