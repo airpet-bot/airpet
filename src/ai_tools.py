@@ -549,7 +549,15 @@ AI_GEOMETRY_TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "job_id": {"type": "string", "description": "The unique ID of the simulation job."}
+                "job_id": {"type": "string", "description": "The unique ID of the simulation job."},
+                "include_logs": {"type": "boolean", "description": "Whether to include log output from the solver (default: true)."},
+                "tail_lines": {"type": "integer", "description": "How many lines from the end of the requested log stream to return when 'since' is not provided."},
+                "since": {"type": "integer", "description": "Return log lines starting from this line index (0-based)."},
+                "log_source": {
+                    "type": "string",
+                    "enum": ["stdout", "stderr", "both"],
+                    "description": "Whether to return stdout, stderr, or both streams (default: both)."
+                }
             },
             "required": ["job_id"]
         }
