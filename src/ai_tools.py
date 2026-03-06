@@ -556,6 +556,7 @@ AI_GEOMETRY_TOOLS = [
                 "tail_lines": {"type": "integer", "description": "How many lines from the end of the requested log stream to return when 'since' is not provided."},
                 "max_lines": {"type": "integer", "description": "Maximum number of log lines to return. With 'since', this enables chunked pagination; response.next_since advances by the returned count."},
                 "since": {"type": "integer", "description": "Return log lines starting from this line index (0-based)."},
+                "log_contains": {"type": "string", "description": "Optional case-insensitive substring filter applied before pagination. Useful for pulling only warnings/errors or keyword-matched lines."},
                 "log_source": {
                     "type": "string",
                     "enum": ["stdout", "stderr", "both"],
