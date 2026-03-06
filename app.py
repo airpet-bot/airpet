@@ -5727,6 +5727,12 @@ AI_TOOL_ARG_ALIASES = {
         "num_threads": "threads",
         "n_threads": "threads"
     },
+    "get_simulation_status": {
+        "since_line": "since",
+        "from_line": "since",
+        "tail": "tail_lines",
+        "include_output": "include_logs"
+    },
     "manage_particle_source": {
         "id": "source_id",
         "source": "source_id",
@@ -5781,6 +5787,7 @@ AI_TOOL_DEFAULTS = {
         "ring_spacing": "0"
     },
     "run_simulation": {"events": 1000, "threads": 1},
+    "get_simulation_status": {"include_logs": True, "tail_lines": 20},
     "manage_ui_group": {"item_ids": []},
     "manage_particle_source": {
         "name": "gps_source",
@@ -6593,16 +6600,70 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
 
         elif tool_name == "get_simulation_status":
             job_id = args['job_id']
+
+            def _coerce_bool(value: Any, default: bool = True) -> bool:
+                if value is None:
+                    return default
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, (int, float)):
+                    return bool(value)
+                if isinstance(value, str):
+                    v = value.strip().lower()
+                    if v in {"1", "true", "yes", "y", "on"}:
+                        return True
+                    if v in {"0", "false", "no", "n", "off"}:
+                        return False
+                return default
+
+            include_logs = _coerce_bool(args.get('include_logs'), default=True)
+
+            since = None
+            if args.get('since') is not None:
+                try:
+                    since = max(0, int(args.get('since')))
+                except Exception:
+                    return {"success": False, "error": "Argument 'since' must be an integer >= 0."}
+
+            try:
+                tail_lines = int(args.get('tail_lines', 20))
+            except Exception:
+                return {"success": False, "error": "Argument 'tail_lines' must be an integer."}
+            tail_lines = max(0, tail_lines)
+
             with SIMULATION_LOCK:
                 status = SIMULATION_STATUS.get(job_id)
                 if not status:
                     return {"success": False, "error": "Job ID not found."}
-                return {
+
+                response = {
                     "success": True,
                     "status": status["status"],
                     "progress": status["progress"],
                     "total": status["total_events"]
                 }
+
+                if include_logs:
+                    stdout_lines = list(status.get("stdout") or [])
+                    stderr_lines = [f"stderr: {line}" for line in list(status.get("stderr") or [])]
+                    all_lines = stdout_lines + stderr_lines
+                    total_lines = len(all_lines)
+
+                    response["log_total_lines"] = total_lines
+                    response["next_since"] = total_lines
+
+                    if since is not None:
+                        cursor = min(since, total_lines)
+                        log_lines = all_lines[cursor:]
+                    elif tail_lines > 0:
+                        log_lines = all_lines[-tail_lines:]
+                    else:
+                        log_lines = []
+
+                    response["log_lines"] = log_lines
+                    response["returned_lines"] = len(log_lines)
+
+                return response
 
         elif tool_name == "insert_physics_template":
             template_name = args['template_name']
