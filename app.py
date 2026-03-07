@@ -1885,24 +1885,157 @@ def run_simulation():
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"1", "true", "yes", "y", "on"}:
+            return True
+        if v in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
+
+
+def _normalize_sim_log_source(value: Any) -> str:
+    log_source = (str(value or "both")).strip().lower()
+    if log_source not in {"stdout", "stderr", "both"}:
+        return "both"
+    return log_source
+
+
+def _normalize_log_contains_term(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _normalize_log_contains_any_terms(raw_terms: Any, *, split_commas: bool = False) -> Optional[List[str]]:
+    if raw_terms is None:
+        return None
+
+    if isinstance(raw_terms, (list, tuple, set)):
+        items = list(raw_terms)
+    else:
+        items = [raw_terms]
+
+    normalized_terms: List[str] = []
+    for term in items:
+        parts = str(term).split(',') if split_commas else [term]
+        for part in parts:
+            normalized = str(part).strip().lower()
+            if normalized and normalized not in normalized_terms:
+                normalized_terms.append(normalized)
+
+    if not normalized_terms:
+        return None
+    return normalized_terms
+
+
+def _build_simulation_log_payload(
+    stdout_lines: List[Any],
+    stderr_lines: List[Any],
+    *,
+    include_logs: bool,
+    include_log_summary: bool,
+    include_log_entries: bool,
+    log_source: str,
+    log_contains: Optional[str],
+    log_contains_any_terms: Optional[List[str]],
+    since: Optional[int],
+    tail_lines: Optional[int],
+    max_lines: Optional[int],
+    include_legacy_fields: bool,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+
+    if include_log_summary:
+        payload["log_summary"] = {
+            "stdout_lines": len(stdout_lines),
+            "stderr_lines": len(stderr_lines),
+            "has_errors": len(stderr_lines) > 0,
+            "latest_stdout": stdout_lines[-1] if stdout_lines else None,
+            "latest_stderr": stderr_lines[-1] if stderr_lines else None,
+        }
+
+    if not include_logs:
+        return payload
+
+    selected_entries = []
+
+    def _append_log_line(source: str, line: Any) -> None:
+        text_line = str(line)
+        text_line_lower = text_line.lower()
+        if log_contains is not None and log_contains not in text_line_lower:
+            return
+        if log_contains_any_terms is not None and not any(term in text_line_lower for term in log_contains_any_terms):
+            return
+        selected_entries.append({
+            "cursor": len(selected_entries),
+            "source": source,
+            "line": text_line,
+        })
+
+    if log_source in {"stdout", "both"}:
+        for line in stdout_lines:
+            _append_log_line("stdout", line)
+    if log_source in {"stderr", "both"}:
+        for line in stderr_lines:
+            _append_log_line("stderr", line)
+
+    total_lines = len(selected_entries)
+    cursor = 0
+
+    if since is not None:
+        cursor = min(since, total_lines)
+        log_entries = selected_entries[cursor:]
+    elif tail_lines and tail_lines > 0:
+        log_entries = selected_entries[-tail_lines:]
+    else:
+        log_entries = []
+
+    if max_lines is not None and len(log_entries) > max_lines:
+        if since is not None:
+            log_entries = log_entries[:max_lines]
+        else:
+            log_entries = log_entries[-max_lines:] if max_lines > 0 else []
+
+    log_lines = [
+        entry["line"] if entry["source"] == "stdout" else f"stderr: {entry['line']}"
+        for entry in log_entries
+    ]
+
+    if since is not None:
+        next_since = cursor + len(log_entries)
+        has_more_logs = next_since < total_lines
+    else:
+        next_since = total_lines
+        has_more_logs = total_lines > len(log_entries)
+
+    if include_legacy_fields:
+        payload['new_stdout'] = log_lines
+        payload['total_lines'] = total_lines
+
+    payload['log_total_lines'] = total_lines
+    payload['next_since'] = next_since
+    payload['has_more_logs'] = has_more_logs
+    payload['log_lines'] = log_lines
+    payload['returned_lines'] = len(log_lines)
+    if include_log_entries:
+        payload['log_entries'] = log_entries
+
+    return payload
+
+
 @app.route('/api/simulation/status/<job_id>', methods=['GET'])
 def get_simulation_status(job_id):
-
-    def _coerce_bool(value: Any, default: bool = True) -> bool:
-        if value is None:
-            return default
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            v = value.strip().lower()
-            if v in {"1", "true", "yes", "y", "on"}:
-                return True
-            if v in {"0", "false", "no", "n", "off"}:
-                return False
-        return default
-
     include_logs = _coerce_bool(request.args.get('include_logs'), default=True)
     include_log_summary = _coerce_bool(request.args.get('include_log_summary'), default=False)
     include_log_entries = _coerce_bool(request.args.get('include_log_entries'), default=False)
@@ -1935,15 +2068,11 @@ def get_simulation_status(job_id):
         if max_lines < 0:
             return jsonify({"success": False, "error": "Argument 'max_lines' must be an integer >= 0."}), 400
 
-    log_source = (str(request.args.get('log_source', 'both')) or 'both').strip().lower()
-    if log_source not in {"stdout", "stderr", "both"}:
-        log_source = "both"
+    log_source = _normalize_sim_log_source(request.args.get('log_source', 'both'))
 
-    log_contains = request.args.get('log_contains', request.args.get('contains'))
-    if log_contains is not None:
-        log_contains = str(log_contains).strip().lower()
-        if log_contains == "":
-            log_contains = None
+    log_contains = _normalize_log_contains_term(
+        request.args.get('log_contains', request.args.get('contains'))
+    )
 
     raw_contains_any = request.args.getlist('log_contains_any')
     if not raw_contains_any:
@@ -1954,16 +2083,7 @@ def get_simulation_status(job_id):
         elif request.args.get('search_any') is not None:
             raw_contains_any = [request.args.get('search_any')]
 
-    log_contains_any_terms = None
-    if raw_contains_any:
-        normalized_terms = []
-        for term in raw_contains_any:
-            for part in str(term).split(','):
-                norm = part.strip().lower()
-                if norm and norm not in normalized_terms:
-                    normalized_terms.append(norm)
-        if normalized_terms:
-            log_contains_any_terms = normalized_terms
+    log_contains_any_terms = _normalize_log_contains_any_terms(raw_contains_any, split_commas=True)
 
     with SIMULATION_LOCK:
         status = SIMULATION_STATUS.get(job_id)
@@ -1978,80 +2098,20 @@ def get_simulation_status(job_id):
             "progress": status["progress"],
             "total_events": status["total_events"],
         }
-
-        if include_log_summary:
-            status_copy["log_summary"] = {
-                "stdout_lines": len(stdout_lines),
-                "stderr_lines": len(stderr_raw),
-                "has_errors": len(stderr_raw) > 0,
-                "latest_stdout": stdout_lines[-1] if stdout_lines else None,
-                "latest_stderr": stderr_raw[-1] if stderr_raw else None,
-            }
-
-        if include_logs:
-            selected_entries = []
-
-            def _append_log_line(source: str, line: Any) -> None:
-                text_line = str(line)
-                text_line_lower = text_line.lower()
-                if log_contains is not None and log_contains not in text_line_lower:
-                    return
-                if log_contains_any_terms is not None and not any(term in text_line_lower for term in log_contains_any_terms):
-                    return
-                selected_entries.append({
-                    "cursor": len(selected_entries),
-                    "source": source,
-                    "line": text_line,
-                })
-
-            if log_source in {"stdout", "both"}:
-                for line in stdout_lines:
-                    _append_log_line("stdout", line)
-            if log_source in {"stderr", "both"}:
-                for line in stderr_raw:
-                    _append_log_line("stderr", line)
-
-            total_lines = len(selected_entries)
-            cursor = 0
-
-            if since is not None:
-                cursor = min(since, total_lines)
-                log_entries = selected_entries[cursor:]
-            elif tail_lines and tail_lines > 0:
-                log_entries = selected_entries[-tail_lines:]
-            else:
-                log_entries = []
-
-            if max_lines is not None and len(log_entries) > max_lines:
-                if since is not None:
-                    log_entries = log_entries[:max_lines]
-                else:
-                    log_entries = log_entries[-max_lines:] if max_lines > 0 else []
-
-            log_lines = [
-                entry["line"] if entry["source"] == "stdout" else f"stderr: {entry['line']}"
-                for entry in log_entries
-            ]
-
-            if since is not None:
-                next_since = cursor + len(log_entries)
-                has_more_logs = next_since < total_lines
-            else:
-                next_since = total_lines
-                has_more_logs = total_lines > len(log_entries)
-
-            # Legacy fields used by the browser UI polling path.
-            status_copy['new_stdout'] = log_lines
-            status_copy['total_lines'] = total_lines
-
-            # Extended diagnostics fields.
-            status_copy['log_total_lines'] = total_lines
-            status_copy['next_since'] = next_since
-            status_copy['has_more_logs'] = has_more_logs
-            status_copy['log_lines'] = log_lines
-            status_copy['returned_lines'] = len(log_lines)
-            if include_log_entries:
-                status_copy['log_entries'] = log_entries
+        status_copy.update(_build_simulation_log_payload(
+            stdout_lines,
+            stderr_raw,
+            include_logs=include_logs,
+            include_log_summary=include_log_summary,
+            include_log_entries=include_log_entries,
+            log_source=log_source,
+            log_contains=log_contains,
+            log_contains_any_terms=log_contains_any_terms,
+            since=since,
+            tail_lines=tail_lines,
+            max_lines=max_lines,
+            include_legacy_fields=True,
+        ))
 
         return jsonify({"success": True, "status": status_copy})
 
@@ -6761,47 +6821,14 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
         elif tool_name == "get_simulation_status":
             job_id = args['job_id']
 
-            def _coerce_bool(value: Any, default: bool = True) -> bool:
-                if value is None:
-                    return default
-                if isinstance(value, bool):
-                    return value
-                if isinstance(value, (int, float)):
-                    return bool(value)
-                if isinstance(value, str):
-                    v = value.strip().lower()
-                    if v in {"1", "true", "yes", "y", "on"}:
-                        return True
-                    if v in {"0", "false", "no", "n", "off"}:
-                        return False
-                return default
-
             include_logs = _coerce_bool(args.get('include_logs'), default=True)
             include_log_summary = _coerce_bool(args.get('include_log_summary'), default=True)
             include_log_entries = _coerce_bool(args.get('include_log_entries'), default=False)
 
-            log_contains = args.get('log_contains')
-            if log_contains is not None:
-                log_contains = str(log_contains).strip()
-                if log_contains == "":
-                    log_contains = None
-                else:
-                    log_contains = log_contains.lower()
+            log_contains = _normalize_log_contains_term(args.get('log_contains'))
 
-            log_contains_any_terms = None
             raw_contains_any = args.get('log_contains_any')
-            if raw_contains_any is not None:
-                if isinstance(raw_contains_any, (list, tuple, set)):
-                    raw_terms = list(raw_contains_any)
-                else:
-                    raw_terms = [raw_contains_any]
-                normalized_terms = []
-                for term in raw_terms:
-                    norm = str(term).strip().lower()
-                    if norm and norm not in normalized_terms:
-                        normalized_terms.append(norm)
-                if normalized_terms:
-                    log_contains_any_terms = normalized_terms
+            log_contains_any_terms = _normalize_log_contains_any_terms(raw_contains_any)
 
             since = None
             if args.get('since') is not None:
@@ -6839,79 +6866,20 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     "progress": status["progress"],
                     "total": status["total_events"]
                 }
-
-                if include_log_summary:
-                    response["log_summary"] = {
-                        "stdout_lines": len(stdout_lines),
-                        "stderr_lines": len(stderr_raw),
-                        "has_errors": len(stderr_raw) > 0,
-                        "latest_stdout": stdout_lines[-1] if stdout_lines else None,
-                        "latest_stderr": stderr_raw[-1] if stderr_raw else None,
-                    }
-
-                if include_logs:
-                    log_source = (str(args.get("log_source", "both")) or "both").strip().lower()
-                    if log_source not in {"stdout", "stderr", "both"}:
-                        log_source = "both"
-
-                    selected_entries = []
-
-                    def _append_log_line(source: str, line: Any) -> None:
-                        text_line = str(line)
-                        text_line_lower = text_line.lower()
-                        if log_contains is not None and log_contains not in text_line_lower:
-                            return
-                        if log_contains_any_terms is not None and not any(term in text_line_lower for term in log_contains_any_terms):
-                            return
-                        selected_entries.append({
-                            "cursor": len(selected_entries),
-                            "source": source,
-                            "line": text_line,
-                        })
-
-                    if log_source in {"stdout", "both"}:
-                        for line in stdout_lines:
-                            _append_log_line("stdout", line)
-                    if log_source in {"stderr", "both"}:
-                        for line in stderr_raw:
-                            _append_log_line("stderr", line)
-
-                    total_lines = len(selected_entries)
-                    cursor = 0
-
-                    if since is not None:
-                        cursor = min(since, total_lines)
-                        log_entries = selected_entries[cursor:]
-                    elif tail_lines > 0:
-                        log_entries = selected_entries[-tail_lines:]
-                    else:
-                        log_entries = []
-
-                    if max_lines is not None and len(log_entries) > max_lines:
-                        if since is not None:
-                            log_entries = log_entries[:max_lines]
-                        else:
-                            log_entries = log_entries[-max_lines:] if max_lines > 0 else []
-
-                    log_lines = [
-                        entry["line"] if entry["source"] == "stdout" else f"stderr: {entry['line']}"
-                        for entry in log_entries
-                    ]
-
-                    if since is not None:
-                        next_since = cursor + len(log_entries)
-                        has_more_logs = next_since < total_lines
-                    else:
-                        next_since = total_lines
-                        has_more_logs = total_lines > len(log_entries)
-
-                    response["log_total_lines"] = total_lines
-                    response["next_since"] = next_since
-                    response["has_more_logs"] = has_more_logs
-                    response["log_lines"] = log_lines
-                    response["returned_lines"] = len(log_lines)
-                    if include_log_entries:
-                        response["log_entries"] = log_entries
+                response.update(_build_simulation_log_payload(
+                    stdout_lines,
+                    stderr_raw,
+                    include_logs=include_logs,
+                    include_log_summary=include_log_summary,
+                    include_log_entries=include_log_entries,
+                    log_source=_normalize_sim_log_source(args.get("log_source", "both")),
+                    log_contains=log_contains,
+                    log_contains_any_terms=log_contains_any_terms,
+                    since=since,
+                    tail_lines=tail_lines,
+                    max_lines=max_lines,
+                    include_legacy_fields=False,
+                ))
 
                 return response
 
