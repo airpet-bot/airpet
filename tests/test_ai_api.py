@@ -409,6 +409,64 @@ def test_ai_tool_get_simulation_status_log_contains_any_filter(pm):
     ]
 
 
+def test_simulation_status_http_and_ai_share_log_payload_shape(pm):
+    from app import SIMULATION_STATUS, SIMULATION_LOCK
+
+    job_id = "sim-http-ai-parity"
+    with SIMULATION_LOCK:
+        SIMULATION_STATUS[job_id] = {
+            "status": "Running",
+            "progress": 77,
+            "total_events": 200,
+            "stdout": ["boot", "warning: drift", "done"],
+            "stderr": ["fatal: overflow", "note: ignored"],
+        }
+
+    try:
+        ai_res = dispatch_ai_tool(pm, "get_simulation_status", {
+            "job_id": job_id,
+            "since": 0,
+            "max_lines": 1,
+            "include_log_summary": True,
+            "include_log_entries": True,
+            "log_contains_any": ["warn", "fatal"],
+        })
+
+        with flask_app.test_client() as client:
+            http_res = client.get(
+                f"/api/simulation/status/{job_id}"
+                "?since=0"
+                "&max_lines=1"
+                "&include_log_summary=true"
+                "&include_log_entries=true"
+                "&log_contains_any=warn"
+                "&log_contains_any=fatal"
+            )
+
+        assert ai_res["success"], ai_res
+        assert http_res.status_code == 200
+
+        http_status = http_res.get_json()["status"]
+
+        for key in [
+            "log_summary",
+            "log_total_lines",
+            "next_since",
+            "has_more_logs",
+            "log_lines",
+            "returned_lines",
+            "log_entries",
+        ]:
+            assert http_status[key] == ai_res[key]
+
+        # HTTP route keeps legacy polling keys while matching AI payload content.
+        assert http_status["new_stdout"] == ai_res["log_lines"]
+        assert http_status["total_lines"] == ai_res["log_total_lines"]
+    finally:
+        with SIMULATION_LOCK:
+            SIMULATION_STATUS.pop(job_id, None)
+
+
 def test_ai_tool_get_simulation_status_include_log_entries(pm):
     from app import SIMULATION_STATUS, SIMULATION_LOCK
 
