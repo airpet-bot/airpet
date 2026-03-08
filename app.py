@@ -1715,6 +1715,50 @@ def compare_preflight_versions(pm: ProjectManager, baseline_version_id: Any, can
     }
 
 
+def _list_saved_version_ids(pm: ProjectManager, project_name: str) -> List[str]:
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name, 'versions'))
+    if not os.path.isdir(versions_root):
+        return []
+
+    version_ids = [
+        version_id
+        for version_id in os.listdir(versions_root)
+        if version_id != AUTOSAVE_VERSION_ID and os.path.isdir(os.path.join(versions_root, version_id))
+    ]
+
+    return sorted(version_ids, reverse=True)
+
+
+def compare_latest_preflight_versions(pm: ProjectManager, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Compare preflight summaries for the latest two saved project versions."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare latest saved versions.")
+
+    version_ids = _list_saved_version_ids(pm, project_name_norm)
+    if len(version_ids) < 2:
+        raise ValueError(
+            f"Need at least two saved versions for project '{project_name_norm}' to compare latest preflight checks."
+        )
+
+    candidate_version_id = version_ids[0]
+    baseline_version_id = version_ids[1]
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=baseline_version_id,
+        candidate_version_id=candidate_version_id,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_two_saved_versions',
+        'selected_version_ids': [candidate_version_id, baseline_version_id],
+        'total_saved_versions': len(version_ids),
+    }
+    return result
+
+
 @app.route('/api/preflight/check', methods=['POST'])
 def preflight_check_route():
     pm = get_project_manager_for_session()
@@ -1787,6 +1831,25 @@ def preflight_compare_versions_route():
             candidate_version_id=candidate_version_id,
             project_name=project_name,
         )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_latest_versions', methods=['POST'])
+def preflight_compare_latest_versions_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    try:
+        result = compare_latest_preflight_versions(pm, project_name=project_name)
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
     except FileNotFoundError as exc:
@@ -6326,6 +6389,9 @@ AI_TOOL_ARG_ALIASES = {
         "new_version": "candidate_version_id",
         "project": "project_name"
     },
+    "compare_latest_preflight_versions": {
+        "project": "project_name"
+    },
     "manage_particle_source": {
         "id": "source_id",
         "source": "source_id",
@@ -7187,6 +7253,20 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     pm,
                     baseline_version_id=args.get("baseline_version_id"),
                     candidate_version_id=args.get("candidate_version_id"),
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_latest_preflight_versions":
+            try:
+                result = compare_latest_preflight_versions(
+                    pm,
                     project_name=args.get("project_name"),
                 )
             except (ValueError, FileNotFoundError) as exc:
