@@ -1816,6 +1816,108 @@ def compare_autosave_preflight_vs_saved_version(pm: ProjectManager, saved_versio
     return result
 
 
+def _parse_optional_nonnegative_limit(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("limit must be a non-negative integer.")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("limit must be a non-negative integer.")
+
+    try:
+        limit = int(value)
+    except Exception as exc:
+        raise ValueError("limit must be a non-negative integer.") from exc
+
+    if limit < 0:
+        raise ValueError("limit must be a non-negative integer.")
+    return limit
+
+
+def list_preflight_versions(
+    pm: ProjectManager,
+    project_name: Optional[str] = None,
+    include_autosave: Any = True,
+    limit: Any = None,
+) -> Dict[str, Any]:
+    """List version ids and metadata that can be used for deterministic preflight comparisons."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to list preflight versions.")
+
+    include_autosave_norm = bool(include_autosave)
+    limit_norm = _parse_optional_nonnegative_limit(limit)
+
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name_norm, 'versions'))
+    if not os.path.isdir(versions_root):
+        return {
+            'project_name': project_name_norm,
+            'total_versions': 0,
+            'returned_versions': 0,
+            'has_autosave': False,
+            'versions': [],
+        }
+
+    version_dirs = [
+        version_id
+        for version_id in os.listdir(versions_root)
+        if os.path.isdir(os.path.join(versions_root, version_id))
+    ]
+
+    manual_version_ids = sorted(
+        [version_id for version_id in version_dirs if version_id != AUTOSAVE_VERSION_ID],
+        reverse=True,
+    )
+
+    versions: List[Dict[str, Any]] = []
+    autosave_exists = False
+
+    if include_autosave_norm and AUTOSAVE_VERSION_ID in version_dirs:
+        autosave_json_path = os.path.join(versions_root, AUTOSAVE_VERSION_ID, 'version.json')
+        if os.path.exists(autosave_json_path):
+            autosave_exists = True
+            autosave_mtime = os.path.getmtime(autosave_json_path)
+            versions.append({
+                'version_id': AUTOSAVE_VERSION_ID,
+                'is_autosave': True,
+                'timestamp': datetime.fromtimestamp(autosave_mtime).strftime('%Y-%m-%dT%H-%M-%S'),
+                'description': 'Latest Autosave',
+                'has_version_json': True,
+                'sim_run_count': 0,
+            })
+
+    for version_id in manual_version_ids:
+        version_dir = os.path.join(versions_root, version_id)
+        version_json_path = os.path.join(version_dir, 'version.json')
+        sim_runs_path = os.path.join(version_dir, 'sim_runs')
+
+        description = version_id.split('_', 1)[1] if '_' in version_id else ''
+        timestamp = version_id.split('_', 1)[0] if '_' in version_id else version_id
+        normalized_desc = re.sub(r'[^a-z0-9]+', '_', description.lower()).strip('_')
+
+        versions.append({
+            'version_id': version_id,
+            'is_autosave': False,
+            'timestamp': timestamp,
+            'description': description,
+            'is_autosave_snapshot': ('autosave' in normalized_desc and 'snapshot' in normalized_desc),
+            'has_version_json': os.path.exists(version_json_path),
+            'sim_run_count': len(os.listdir(sim_runs_path)) if os.path.isdir(sim_runs_path) else 0,
+        })
+
+    total_versions = len(versions)
+    if limit_norm is not None:
+        versions = versions[:limit_norm]
+
+    return {
+        'project_name': project_name_norm,
+        'total_versions': total_versions,
+        'returned_versions': len(versions),
+        'has_autosave': autosave_exists,
+        'versions': versions,
+    }
+
+
 @app.route('/api/preflight/check', methods=['POST'])
 def preflight_check_route():
     pm = get_project_manager_for_session()
@@ -1967,6 +2069,31 @@ def preflight_compare_autosave_vs_saved_version_route():
         return jsonify({"success": False, "error": str(exc)}), 400
     except FileNotFoundError as exc:
         return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/list_versions', methods=['POST'])
+def preflight_list_versions_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+
+    project_name = data.get('project_name') or pm.project_name
+    include_autosave = data.get('include_autosave', True)
+    limit = data.get('limit')
+
+    try:
+        result = list_preflight_versions(
+            pm,
+            project_name=project_name,
+            include_autosave=include_autosave,
+            limit=limit,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
 
     return jsonify({
         "success": True,
@@ -6515,6 +6642,12 @@ AI_TOOL_ARG_ALIASES = {
         "version_id": "saved_version_id",
         "baseline_version": "saved_version_id"
     },
+    "list_preflight_versions": {
+        "project": "project_name",
+        "max_versions": "limit",
+        "count": "limit",
+        "include_latest_autosave": "include_autosave"
+    },
     "manage_particle_source": {
         "id": "source_id",
         "source": "source_id",
@@ -7422,6 +7555,22 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     project_name=args.get("project_name"),
                 )
             except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "list_preflight_versions":
+            try:
+                result = list_preflight_versions(
+                    pm,
+                    project_name=args.get("project_name"),
+                    include_autosave=args.get("include_autosave", True),
+                    limit=args.get("limit"),
+                )
+            except ValueError as exc:
                 return {"success": False, "error": str(exc)}
 
             return {

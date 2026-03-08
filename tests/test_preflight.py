@@ -9,6 +9,7 @@ from app import (
     compare_latest_preflight_versions,
     compare_preflight_summaries,
     compare_preflight_versions,
+    list_preflight_versions,
 )
 from src.project_manager import ProjectManager
 from src.expression_evaluator import ExpressionEvaluator
@@ -378,6 +379,87 @@ def test_compare_autosave_preflight_vs_saved_version_requires_saved_version_id()
             assert False, 'Expected compare_autosave_preflight_vs_saved_version to require saved_version_id.'
         except ValueError as exc:
             assert 'saved_version_id' in str(exc)
+
+
+def test_list_preflight_versions_returns_autosave_and_saved_metadata():
+    pm = _make_pm()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pm.projects_dir = tmpdir
+        pm.project_name = 'preflight_version_list_project'
+
+        first_version_id, _ = pm.save_project_version('manual_old')
+        second_version_id, _ = pm.save_project_version('autosave_snapshot_manual_newer')
+
+        autosave_dir = pm._get_version_dir('autosave')
+        os.makedirs(autosave_dir, exist_ok=True)
+        with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+            handle.write(pm.save_project_to_json_string())
+
+        result = list_preflight_versions(pm)
+
+    assert result['project_name'] == 'preflight_version_list_project'
+    assert result['has_autosave'] is True
+    assert result['total_versions'] == 3
+    assert result['returned_versions'] == 3
+
+    versions = result['versions']
+    assert versions[0]['version_id'] == 'autosave'
+    assert versions[0]['is_autosave'] is True
+
+    manual_ids = [entry['version_id'] for entry in versions[1:]]
+    assert manual_ids == sorted([first_version_id, second_version_id], reverse=True)
+
+    snapshot_entry = next(entry for entry in versions if entry['version_id'] == second_version_id)
+    assert snapshot_entry['is_autosave_snapshot'] is True
+
+
+def test_preflight_list_versions_route_supports_limit_and_include_autosave_toggle():
+    app.config['TESTING'] = True
+    with app.test_client() as client, tempfile.TemporaryDirectory() as tmpdir:
+        pm = _make_pm()
+        pm.projects_dir = tmpdir
+        pm.project_name = 'route_preflight_version_list_project'
+
+        pm.save_project_version('manual_old')
+        pm.save_project_version('manual_new')
+
+        autosave_dir = pm._get_version_dir('autosave')
+        os.makedirs(autosave_dir, exist_ok=True)
+        with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+            handle.write(pm.save_project_to_json_string())
+
+        with patch('app.get_project_manager_for_session', return_value=pm):
+            resp = client.post('/api/preflight/list_versions', json={
+                'project_name': pm.project_name,
+                'include_autosave': False,
+                'limit': 1,
+            })
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['success'] is True
+    assert data['has_autosave'] is False
+    assert data['returned_versions'] == 1
+    assert data['versions'][0]['is_autosave'] is False
+
+
+def test_preflight_list_versions_route_rejects_negative_limit():
+    app.config['TESTING'] = True
+    with app.test_client() as client:
+        pm = _make_pm()
+        pm.project_name = 'route_preflight_version_list_invalid_limit'
+
+        with patch('app.get_project_manager_for_session', return_value=pm):
+            resp = client.post('/api/preflight/list_versions', json={
+                'project_name': pm.project_name,
+                'limit': -1,
+            })
+
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data['success'] is False
+    assert 'limit' in data['error']
 
 
 def test_preflight_compare_versions_route_returns_comparison_payload():
