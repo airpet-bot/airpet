@@ -253,6 +253,38 @@ def test_ai_tool_compare_preflight_versions_runs_saved_version_checks(pm, tmp_pa
     assert comparison["status"]["improved_can_run"] is True
 
 
+def test_ai_tool_compare_latest_preflight_versions_uses_latest_two_saved_versions(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_latest_project"
+
+    pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+    _, _ = pm.save_project_version('a_old_ai')
+
+    pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'G4_Galactic'
+    pm.current_geometry_state.solids['box_solid'].raw_parameters['x'] = '1e-6'
+    pm.recalculate_geometry_state()
+    baseline_version_id, _ = pm.save_project_version('b_mid_ai')
+
+    pm.add_physical_volume(
+        'World',
+        'box_PV_overlap_ai',
+        'box_LV',
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '1', 'y': '1', 'z': '1'},
+    )
+    pm.recalculate_geometry_state()
+    candidate_version_id, _ = pm.save_project_version('c_latest_ai')
+
+    res = dispatch_ai_tool(pm, "compare_latest_preflight_versions", {})
+
+    assert res["success"] is True
+    assert res["baseline_version_id"] == baseline_version_id
+    assert res["candidate_version_id"] == candidate_version_id
+    assert res["comparison"]["added_issue_codes"] == ["possible_overlap_aabb"]
+    assert res["selection"]["strategy"] == "latest_two_saved_versions"
+
+
 def test_ai_simulation_tools(pm):
     # Setup for simulation
     with patch('threading.Thread') as MockThread, \

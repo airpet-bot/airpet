@@ -1,7 +1,8 @@
+import os
 import tempfile
 from unittest.mock import patch
 
-from app import app, compare_preflight_summaries, compare_preflight_versions
+from app import app, compare_latest_preflight_versions, compare_preflight_summaries, compare_preflight_versions
 from src.project_manager import ProjectManager
 from src.expression_evaluator import ExpressionEvaluator
 
@@ -228,6 +229,62 @@ def test_compare_preflight_versions_runs_checks_for_two_saved_versions():
     assert result['comparison']['status']['improved_can_run'] is True
 
 
+def test_compare_latest_preflight_versions_uses_latest_two_saved_versions():
+    pm = _make_pm()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pm.projects_dir = tmpdir
+        pm.project_name = 'preflight_latest_compare_project'
+
+        pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+        _, _ = pm.save_project_version('a_old_baseline')
+
+        pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'G4_Galactic'
+        pm.current_geometry_state.solids['box_solid'].raw_parameters['x'] = '1e-6'
+        pm.recalculate_geometry_state()
+        mid_version_id, _ = pm.save_project_version('b_mid_warning')
+
+        pm.add_physical_volume(
+            'World',
+            'box_PV_overlap_latest',
+            'box_LV',
+            {'x': '0', 'y': '0', 'z': '0'},
+            {'x': '0', 'y': '0', 'z': '0'},
+            {'x': '1', 'y': '1', 'z': '1'},
+        )
+        pm.recalculate_geometry_state()
+        latest_version_id, _ = pm.save_project_version('c_latest_overlap')
+
+        autosave_dir = pm._get_version_dir('autosave')
+        os.makedirs(autosave_dir, exist_ok=True)
+        with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+            handle.write(pm.save_project_to_json_string())
+
+        result = compare_latest_preflight_versions(pm)
+
+    assert result['baseline_version_id'] == mid_version_id
+    assert result['candidate_version_id'] == latest_version_id
+    assert result['comparison']['added_issue_codes'] == ['possible_overlap_aabb']
+    assert result['selection']['strategy'] == 'latest_two_saved_versions'
+    assert result['selection']['selected_version_ids'] == [latest_version_id, mid_version_id]
+
+
+def test_compare_latest_preflight_versions_requires_two_saved_versions():
+    pm = _make_pm()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pm.projects_dir = tmpdir
+        pm.project_name = 'preflight_latest_compare_missing'
+
+        _, _ = pm.save_project_version('only_one')
+
+        try:
+            compare_latest_preflight_versions(pm)
+            assert False, 'Expected compare_latest_preflight_versions to reject a single saved version.'
+        except ValueError as exc:
+            assert 'at least two saved versions' in str(exc)
+
+
 def test_preflight_compare_versions_route_returns_comparison_payload():
     app.config['TESTING'] = True
     with app.test_client() as client, tempfile.TemporaryDirectory() as tmpdir:
@@ -255,6 +312,65 @@ def test_preflight_compare_versions_route_returns_comparison_payload():
     assert data['success'] is True
     assert data['comparison']['resolved_issue_codes'] == ['unknown_material_reference']
     assert data['comparison']['added_issue_codes'] == ['tiny_dimension']
+
+
+def test_preflight_compare_latest_versions_route_returns_comparison_payload():
+    app.config['TESTING'] = True
+    with app.test_client() as client, tempfile.TemporaryDirectory() as tmpdir:
+        pm = _make_pm()
+        pm.projects_dir = tmpdir
+        pm.project_name = 'route_compare_latest_project'
+
+        pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+        _, _ = pm.save_project_version('a_old_route')
+
+        pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'G4_Galactic'
+        pm.current_geometry_state.solids['box_solid'].raw_parameters['x'] = '1e-6'
+        pm.recalculate_geometry_state()
+        baseline_version_id, _ = pm.save_project_version('b_mid_route')
+
+        pm.add_physical_volume(
+            'World',
+            'box_PV_overlap_route',
+            'box_LV',
+            {'x': '0', 'y': '0', 'z': '0'},
+            {'x': '0', 'y': '0', 'z': '0'},
+            {'x': '1', 'y': '1', 'z': '1'},
+        )
+        pm.recalculate_geometry_state()
+        candidate_version_id, _ = pm.save_project_version('c_latest_route')
+
+        with patch('app.get_project_manager_for_session', return_value=pm):
+            resp = client.post('/api/preflight/compare_latest_versions', json={
+                'project_name': pm.project_name,
+            })
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['success'] is True
+    assert data['baseline_version_id'] == baseline_version_id
+    assert data['candidate_version_id'] == candidate_version_id
+    assert data['comparison']['added_issue_codes'] == ['possible_overlap_aabb']
+
+
+def test_preflight_compare_latest_versions_route_requires_two_versions():
+    app.config['TESTING'] = True
+    with app.test_client() as client, tempfile.TemporaryDirectory() as tmpdir:
+        pm = _make_pm()
+        pm.projects_dir = tmpdir
+        pm.project_name = 'route_compare_latest_missing'
+
+        _, _ = pm.save_project_version('only_one')
+
+        with patch('app.get_project_manager_for_session', return_value=pm):
+            resp = client.post('/api/preflight/compare_latest_versions', json={
+                'project_name': pm.project_name,
+            })
+
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data['success'] is False
+    assert 'at least two saved versions' in data['error']
 
 
 def test_preflight_compare_versions_route_returns_404_for_missing_version():

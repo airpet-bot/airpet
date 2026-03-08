@@ -581,6 +581,19 @@ AI_GEOMETRY_TOOLS = [
         }
     },
     {
+        "name": "compare_latest_preflight_versions",
+        "description": "Compare deterministic preflight summaries for the latest two saved project versions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            }
+        }
+    },
+    {
         "name": "run_simulation",
         "description": "Start a Geant4 simulation run to test the current geometry.",
         "parameters": {
