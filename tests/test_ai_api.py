@@ -338,6 +338,52 @@ def test_ai_tool_compare_autosave_preflight_vs_saved_version(pm, tmp_path):
     assert res["selection"]["strategy"] == "latest_autosave_vs_selected_saved_version"
 
 
+def test_ai_tool_list_preflight_versions_supports_aliases(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_preflight_versions_project"
+
+    first_version_id, _ = pm.save_project_version('manual_old_ai')
+    second_version_id, _ = pm.save_project_version('autosave_snapshot_manual_newer_ai')
+
+    autosave_dir = pm._get_version_dir('autosave')
+    os.makedirs(autosave_dir, exist_ok=True)
+    with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+        handle.write(pm.save_project_to_json_string())
+
+    res = dispatch_ai_tool(pm, "list_preflight_versions", {
+        "project": pm.project_name,
+        "count": 2,
+    })
+
+    assert res["success"] is True
+    assert res["returned_versions"] == 2
+    assert res["versions"][0]["version_id"] == "autosave"
+
+    manual_candidates = [entry["version_id"] for entry in res["versions"] if not entry["is_autosave"]]
+    assert manual_candidates[0] == sorted([first_version_id, second_version_id], reverse=True)[0]
+
+
+def test_ai_tool_list_preflight_versions_can_exclude_autosave(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_preflight_versions_no_autosave"
+
+    pm.save_project_version('manual_old_ai')
+    pm.save_project_version('manual_new_ai')
+
+    autosave_dir = pm._get_version_dir('autosave')
+    os.makedirs(autosave_dir, exist_ok=True)
+    with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+        handle.write(pm.save_project_to_json_string())
+
+    res = dispatch_ai_tool(pm, "list_preflight_versions", {
+        "include_latest_autosave": False,
+    })
+
+    assert res["success"] is True
+    assert res["has_autosave"] is False
+    assert all(not entry["is_autosave"] for entry in res["versions"])
+
+
 def test_ai_simulation_tools(pm):
     # Setup for simulation
     with patch('threading.Thread') as MockThread, \

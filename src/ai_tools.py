@@ -625,6 +625,27 @@ AI_GEOMETRY_TOOLS = [
         }
     },
     {
+        "name": "list_preflight_versions",
+        "description": "List available autosave/manual version ids and metadata to support deterministic preflight comparisons.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                },
+                "include_autosave": {
+                    "type": "boolean",
+                    "description": "Whether to include the latest autosave entry when present (default: true)."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional maximum number of version entries to return."
+                }
+            }
+        }
+    },
+    {
         "name": "run_simulation",
         "description": "Start a Geant4 simulation run to test the current geometry.",
         "parameters": {
