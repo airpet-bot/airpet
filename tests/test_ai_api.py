@@ -338,6 +338,57 @@ def test_ai_tool_compare_autosave_preflight_vs_saved_version(pm, tmp_path):
     assert res["selection"]["strategy"] == "latest_autosave_vs_selected_saved_version"
 
 
+def test_ai_tool_compare_autosave_preflight_vs_snapshot_version(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_autosave_snapshot_project"
+
+    requested_snapshot_version_id, _ = pm.save_project_version('autosave_snapshot_manual_selected_ai')
+
+    pm.current_geometry_state.solids['box_solid'].raw_parameters['x'] = '1e-6'
+    pm.recalculate_geometry_state()
+    pm.save_project_version('manual_latest_ai')
+
+    pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+    pm.recalculate_geometry_state()
+
+    autosave_dir = pm._get_version_dir('autosave')
+    os.makedirs(autosave_dir, exist_ok=True)
+    with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+        handle.write(pm.save_project_to_json_string())
+
+    res = dispatch_ai_tool(pm, "compare_autosave_preflight_vs_snapshot_version", {
+        "snapshot_version": requested_snapshot_version_id,
+    })
+
+    assert res["success"] is True
+    assert res["baseline_version_id"] == requested_snapshot_version_id
+    assert res["candidate_version_id"] == "autosave"
+    assert "unknown_material_reference" in res["comparison"]["added_issue_codes"]
+    assert res["selection"]["strategy"] == "latest_autosave_vs_selected_autosave_snapshot"
+
+
+def test_ai_tool_compare_autosave_preflight_vs_snapshot_version_rejects_non_snapshot_version(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_autosave_snapshot_invalid"
+
+    manual_version_id, _ = pm.save_project_version('manual_selected_ai')
+
+    pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+    pm.recalculate_geometry_state()
+
+    autosave_dir = pm._get_version_dir('autosave')
+    os.makedirs(autosave_dir, exist_ok=True)
+    with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+        handle.write(pm.save_project_to_json_string())
+
+    res = dispatch_ai_tool(pm, "compare_autosave_preflight_vs_snapshot_version", {
+        "autosave_snapshot_version_id": manual_version_id,
+    })
+
+    assert res["success"] is False
+    assert "autosave snapshot" in res["error"]
+
+
 def test_ai_tool_list_preflight_versions_supports_aliases(pm, tmp_path):
     pm.projects_dir = str(tmp_path)
     pm.project_name = "ai_preflight_versions_project"

@@ -625,6 +625,24 @@ AI_GEOMETRY_TOOLS = [
         }
     },
     {
+        "name": "compare_autosave_preflight_vs_snapshot_version",
+        "description": "Compare deterministic preflight summaries for the latest autosave version against a selected saved autosave snapshot version.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "autosave_snapshot_version_id": {
+                    "type": "string",
+                    "description": "Saved autosave snapshot version id to use as baseline for comparison. Use list_preflight_versions metadata to discover valid snapshot ids."
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            },
+            "required": ["autosave_snapshot_version_id"]
+        }
+    },
+    {
         "name": "list_preflight_versions",
         "description": "List available autosave/manual version ids and metadata to support deterministic preflight comparisons.",
         "parameters": {
