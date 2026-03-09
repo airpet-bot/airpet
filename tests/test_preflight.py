@@ -6,6 +6,7 @@ from app import (
     app,
     compare_autosave_preflight_vs_latest_saved,
     compare_autosave_preflight_vs_saved_version,
+    compare_autosave_preflight_vs_snapshot_version,
     compare_latest_preflight_versions,
     compare_preflight_summaries,
     compare_preflight_versions,
@@ -381,6 +382,60 @@ def test_compare_autosave_preflight_vs_saved_version_requires_saved_version_id()
             assert 'saved_version_id' in str(exc)
 
 
+def test_compare_autosave_preflight_vs_snapshot_version_uses_requested_snapshot_baseline():
+    pm = _make_pm()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pm.projects_dir = tmpdir
+        pm.project_name = 'preflight_autosave_snapshot_compare_project'
+
+        requested_snapshot_version_id, _ = pm.save_project_version('autosave_snapshot_manual_requested')
+
+        pm.current_geometry_state.solids['box_solid'].raw_parameters['x'] = '1e-6'
+        pm.recalculate_geometry_state()
+        pm.save_project_version('manual_latest')
+
+        pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+        pm.recalculate_geometry_state()
+
+        autosave_dir = pm._get_version_dir('autosave')
+        os.makedirs(autosave_dir, exist_ok=True)
+        with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+            handle.write(pm.save_project_to_json_string())
+
+        result = compare_autosave_preflight_vs_snapshot_version(pm, requested_snapshot_version_id)
+
+    assert result['baseline_version_id'] == requested_snapshot_version_id
+    assert result['candidate_version_id'] == 'autosave'
+    assert 'unknown_material_reference' in result['comparison']['added_issue_codes']
+    assert result['selection']['strategy'] == 'latest_autosave_vs_selected_autosave_snapshot'
+    assert result['selection']['autosave_snapshot_version_id'] == requested_snapshot_version_id
+
+
+def test_compare_autosave_preflight_vs_snapshot_version_rejects_non_snapshot_version():
+    pm = _make_pm()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pm.projects_dir = tmpdir
+        pm.project_name = 'preflight_autosave_snapshot_invalid_version'
+
+        manual_version_id, _ = pm.save_project_version('manual_only')
+
+        pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+        pm.recalculate_geometry_state()
+
+        autosave_dir = pm._get_version_dir('autosave')
+        os.makedirs(autosave_dir, exist_ok=True)
+        with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+            handle.write(pm.save_project_to_json_string())
+
+        try:
+            compare_autosave_preflight_vs_snapshot_version(pm, manual_version_id)
+            assert False, 'Expected compare_autosave_preflight_vs_snapshot_version to reject non-snapshot version ids.'
+        except ValueError as exc:
+            assert 'autosave snapshot' in str(exc)
+
+
 def test_list_preflight_versions_returns_autosave_and_saved_metadata():
     pm = _make_pm()
 
@@ -653,6 +708,61 @@ def test_preflight_compare_autosave_vs_saved_version_route_requires_saved_versio
     data = resp.get_json()
     assert data['success'] is False
     assert 'saved_version_id' in data['error']
+
+
+def test_preflight_compare_autosave_vs_snapshot_version_route_returns_comparison_payload():
+    app.config['TESTING'] = True
+    with app.test_client() as client, tempfile.TemporaryDirectory() as tmpdir:
+        pm = _make_pm()
+        pm.projects_dir = tmpdir
+        pm.project_name = 'route_compare_autosave_snapshot_project'
+
+        requested_snapshot_version_id, _ = pm.save_project_version('autosave_snapshot_manual_selected_route')
+
+        pm.current_geometry_state.solids['box_solid'].raw_parameters['x'] = '1e-6'
+        pm.recalculate_geometry_state()
+        pm.save_project_version('manual_latest_route')
+
+        pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+        pm.recalculate_geometry_state()
+
+        autosave_dir = pm._get_version_dir('autosave')
+        os.makedirs(autosave_dir, exist_ok=True)
+        with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+            handle.write(pm.save_project_to_json_string())
+
+        with patch('app.get_project_manager_for_session', return_value=pm):
+            resp = client.post('/api/preflight/compare_autosave_vs_snapshot_version', json={
+                'project_name': pm.project_name,
+                'snapshot_version_id': requested_snapshot_version_id,
+            })
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['success'] is True
+    assert data['baseline_version_id'] == requested_snapshot_version_id
+    assert data['candidate_version_id'] == 'autosave'
+    assert 'unknown_material_reference' in data['comparison']['added_issue_codes']
+
+
+def test_preflight_compare_autosave_vs_snapshot_version_route_requires_snapshot_id():
+    app.config['TESTING'] = True
+    with app.test_client() as client, tempfile.TemporaryDirectory() as tmpdir:
+        pm = _make_pm()
+        pm.projects_dir = tmpdir
+        pm.project_name = 'route_compare_autosave_snapshot_missing'
+
+        pm.save_project_version('autosave_snapshot_manual_only')
+
+        with patch('app.get_project_manager_for_session', return_value=pm):
+            resp = client.post('/api/preflight/compare_autosave_vs_snapshot_version', json={
+                'project_name': pm.project_name,
+            })
+
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert data['success'] is False
+    assert 'autosave_snapshot_version_id' in data['error']
 
 
 def test_preflight_compare_versions_route_returns_404_for_missing_version():
