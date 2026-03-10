@@ -1915,6 +1915,41 @@ def compare_autosave_preflight_vs_latest_snapshot(pm: ProjectManager, project_na
     return result
 
 
+def compare_autosave_preflight_vs_previous_snapshot(pm: ProjectManager, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Compare latest autosave preflight checks against the previous saved autosave snapshot version."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare autosave with the previous autosave snapshot version.")
+
+    version_ids = _list_saved_version_ids(pm, project_name_norm)
+    snapshot_version_ids = _list_autosave_snapshot_version_ids(pm, project_name_norm)
+    if len(snapshot_version_ids) < 2:
+        raise ValueError(
+            f"Need at least two saved autosave snapshot versions for project '{project_name_norm}' to compare autosave against the previous snapshot."
+        )
+
+    latest_snapshot_version_id = snapshot_version_ids[0]
+    previous_snapshot_version_id = snapshot_version_ids[1]
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=previous_snapshot_version_id,
+        candidate_version_id=AUTOSAVE_VERSION_ID,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_autosave_vs_previous_autosave_snapshot',
+        'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
+        'autosave_snapshot_version_id': result['baseline_version_id'],
+        'previous_snapshot_version_id': result['baseline_version_id'],
+        'latest_snapshot_version_id': latest_snapshot_version_id,
+        'total_saved_versions': len(version_ids),
+        'total_snapshot_versions': len(snapshot_version_ids),
+    }
+    return result
+
+
 def compare_latest_autosave_snapshot_preflight_versions(pm: ProjectManager, project_name: Optional[str] = None) -> Dict[str, Any]:
     """Compare deterministic preflight checks between the latest two saved autosave snapshot versions."""
     project_name_norm = str(project_name or pm.project_name or '').strip()
@@ -2308,6 +2343,28 @@ def preflight_compare_autosave_vs_latest_snapshot_route():
 
     try:
         result = compare_autosave_preflight_vs_latest_snapshot(
+            pm,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_autosave_vs_previous_snapshot', methods=['POST'])
+def preflight_compare_autosave_vs_previous_snapshot_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    try:
+        result = compare_autosave_preflight_vs_previous_snapshot(
             pm,
             project_name=project_name,
         )
@@ -6978,6 +7035,9 @@ AI_TOOL_ARG_ALIASES = {
     "compare_autosave_preflight_vs_latest_snapshot": {
         "project": "project_name"
     },
+    "compare_autosave_preflight_vs_previous_snapshot": {
+        "project": "project_name"
+    },
     "compare_autosave_snapshot_preflight_versions": {
         "project": "project_name",
         "baseline": "baseline_snapshot_version_id",
@@ -7930,6 +7990,20 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
         elif tool_name == "compare_autosave_preflight_vs_latest_snapshot":
             try:
                 result = compare_autosave_preflight_vs_latest_snapshot(
+                    pm,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_preflight_vs_previous_snapshot":
+            try:
+                result = compare_autosave_preflight_vs_previous_snapshot(
                     pm,
                     project_name=args.get("project_name"),
                 )

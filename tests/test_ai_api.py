@@ -434,6 +434,53 @@ def test_ai_tool_compare_autosave_preflight_vs_latest_snapshot_requires_snapshot
     assert "at least one saved autosave snapshot version" in res["error"]
 
 
+def test_ai_tool_compare_autosave_preflight_vs_previous_snapshot(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_autosave_previous_snapshot_project"
+
+    pm.save_project_version('autosave_snapshot_old_ai')
+    previous_snapshot_version_id, _ = pm.save_project_version('autosave_snapshot_previous_ai')
+    pm.save_project_version('autosave_snapshot_latest_ai')
+
+    pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+    pm.recalculate_geometry_state()
+
+    autosave_dir = pm._get_version_dir('autosave')
+    os.makedirs(autosave_dir, exist_ok=True)
+    with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+        handle.write(pm.save_project_to_json_string())
+
+    res = dispatch_ai_tool(pm, "compare_autosave_preflight_vs_previous_snapshot", {
+        "project": pm.project_name,
+    })
+
+    assert res["success"] is True
+    assert res["baseline_version_id"] == previous_snapshot_version_id
+    assert res["candidate_version_id"] == "autosave"
+    assert "unknown_material_reference" in res["comparison"]["added_issue_codes"]
+    assert res["selection"]["strategy"] == "latest_autosave_vs_previous_autosave_snapshot"
+
+
+def test_ai_tool_compare_autosave_preflight_vs_previous_snapshot_requires_two_snapshots(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_autosave_previous_snapshot_missing"
+
+    pm.save_project_version('autosave_snapshot_only_ai')
+
+    pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+    pm.recalculate_geometry_state()
+
+    autosave_dir = pm._get_version_dir('autosave')
+    os.makedirs(autosave_dir, exist_ok=True)
+    with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+        handle.write(pm.save_project_to_json_string())
+
+    res = dispatch_ai_tool(pm, "compare_autosave_preflight_vs_previous_snapshot", {})
+
+    assert res["success"] is False
+    assert "at least two saved autosave snapshot versions" in res["error"]
+
+
 def test_ai_tool_compare_autosave_snapshot_preflight_versions(pm, tmp_path):
     pm.projects_dir = str(tmp_path)
     pm.project_name = "ai_compare_snapshot_versions_project"
