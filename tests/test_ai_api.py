@@ -309,6 +309,51 @@ def test_ai_tool_compare_autosave_preflight_vs_latest_saved(pm, tmp_path):
     assert res["selection"]["strategy"] == "latest_autosave_vs_latest_saved"
 
 
+def test_ai_tool_compare_autosave_preflight_vs_previous_manual_saved(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_autosave_previous_manual_saved_project"
+
+    previous_manual_saved_version_id, _ = pm.save_project_version('manual_previous_ai')
+    pm.save_project_version('autosave_snapshot_latest_ai')
+
+    pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+    pm.recalculate_geometry_state()
+
+    autosave_dir = pm._get_version_dir('autosave')
+    os.makedirs(autosave_dir, exist_ok=True)
+    with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+        handle.write(pm.save_project_to_json_string())
+
+    res = dispatch_ai_tool(pm, "compare_autosave_preflight_vs_previous_manual_saved", {
+        "project": pm.project_name,
+    })
+
+    assert res["success"] is True
+    assert res["baseline_version_id"] == previous_manual_saved_version_id
+    assert res["candidate_version_id"] == "autosave"
+    assert res["selection"]["strategy"] == "latest_autosave_vs_previous_manual_saved"
+
+
+def test_ai_tool_compare_autosave_preflight_vs_previous_manual_saved_requires_non_snapshot_saved_version(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_autosave_previous_manual_saved_missing"
+
+    pm.save_project_version('autosave_snapshot_only_ai')
+
+    pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+    pm.recalculate_geometry_state()
+
+    autosave_dir = pm._get_version_dir('autosave')
+    os.makedirs(autosave_dir, exist_ok=True)
+    with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+        handle.write(pm.save_project_to_json_string())
+
+    res = dispatch_ai_tool(pm, "compare_autosave_preflight_vs_previous_manual_saved", {})
+
+    assert res["success"] is False
+    assert "manually saved non-snapshot version" in res["error"]
+
+
 def test_ai_tool_compare_autosave_preflight_vs_saved_version(pm, tmp_path):
     pm.projects_dir = str(tmp_path)
     pm.project_name = "ai_compare_autosave_selected_project"

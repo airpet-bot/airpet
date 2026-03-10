@@ -1788,6 +1788,48 @@ def compare_autosave_preflight_vs_latest_saved(pm: ProjectManager, project_name:
     return result
 
 
+def _list_saved_non_snapshot_version_ids(pm: ProjectManager, project_name: str) -> List[str]:
+    """Return saved version ids excluding autosave snapshots (newest-first)."""
+    return [
+        version_id
+        for version_id in _list_saved_version_ids(pm, project_name)
+        if not _is_autosave_snapshot_version_id(version_id)
+    ]
+
+
+def compare_autosave_preflight_vs_previous_manual_saved(pm: ProjectManager, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Compare autosave preflight checks against the latest non-snapshot manually saved project version."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare autosave with the previous manual saved version.")
+
+    version_ids = _list_saved_version_ids(pm, project_name_norm)
+    manual_version_ids = _list_saved_non_snapshot_version_ids(pm, project_name_norm)
+    if len(manual_version_ids) < 1:
+        raise ValueError(
+            f"Need at least one manually saved non-snapshot version for project '{project_name_norm}' to compare autosave preflight checks."
+        )
+
+    previous_manual_saved_version_id = manual_version_ids[0]
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=previous_manual_saved_version_id,
+        candidate_version_id=AUTOSAVE_VERSION_ID,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_autosave_vs_previous_manual_saved',
+        'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
+        'previous_manual_saved_version_id': result['baseline_version_id'],
+        'total_saved_versions': len(version_ids),
+        'total_snapshot_versions': len(version_ids) - len(manual_version_ids),
+        'total_manual_saved_versions': len(manual_version_ids),
+    }
+    return result
+
+
 def compare_autosave_preflight_vs_saved_version(pm: ProjectManager, saved_version_id: Any, project_name: Optional[str] = None) -> Dict[str, Any]:
     """Compare autosave preflight checks against a specific manually saved project version."""
     project_name_norm = str(project_name or pm.project_name or '').strip()
@@ -2248,6 +2290,28 @@ def preflight_compare_autosave_vs_latest_saved_route():
 
     try:
         result = compare_autosave_preflight_vs_latest_saved(pm, project_name=project_name)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_autosave_vs_previous_manual_saved', methods=['POST'])
+def preflight_compare_autosave_vs_previous_manual_saved_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    try:
+        result = compare_autosave_preflight_vs_previous_manual_saved(
+            pm,
+            project_name=project_name,
+        )
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
     except FileNotFoundError as exc:
@@ -7016,6 +7080,9 @@ AI_TOOL_ARG_ALIASES = {
     "compare_autosave_preflight_vs_latest_saved": {
         "project": "project_name"
     },
+    "compare_autosave_preflight_vs_previous_manual_saved": {
+        "project": "project_name"
+    },
     "compare_autosave_preflight_vs_saved_version": {
         "project": "project_name",
         "saved_version": "saved_version_id",
@@ -7946,6 +8013,20 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
         elif tool_name == "compare_autosave_preflight_vs_latest_saved":
             try:
                 result = compare_autosave_preflight_vs_latest_saved(
+                    pm,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_preflight_vs_previous_manual_saved":
+            try:
+                result = compare_autosave_preflight_vs_previous_manual_saved(
                     pm,
                     project_name=args.get("project_name"),
                 )
