@@ -6,6 +6,11 @@
 
 ## Recently Completed
 
+- **Placement hierarchy cycle detection now includes procedural-container edges** (2026-03-10)
+  - Extended `_build_preflight_hierarchy_adjacency(...)` so procedural logical volumes (`replica`, `division`, `parameterised`) contribute deterministic LV→LV edges for cycle detection.
+  - Added regression test `test_preflight_detects_procedural_placement_cycle` in `tests/test_preflight.py` covering recursive procedural-container loops.
+  - Why: prevents recursive topology faults from escaping cycle diagnostics when loops are introduced through procedural containers instead of `physvol` placements.
+
 - **Preflight guards for procedural placements (replica/division/parameterised)** (2026-03-10)
   - Added procedural preflight validation in `ProjectManager.run_preflight_checks()` for logical volumes using non-`physvol` content.
   - New checks include:
@@ -54,10 +59,10 @@
 
 ## Next Candidates
 
-1. **Include procedural-container edges in placement hierarchy cycle detection**
-   - Extend preflight cycle graph construction so replica/division/parameterised child references participate in cycle discovery (not only `physvol` + assembly placements).
-   - Impact: high (prevents recursive topology loops from escaping cycle diagnostics when introduced through procedural containers).
-
-2. **Selection metadata consistency coverage across all preflight compare routes**
+1. **Selection metadata consistency coverage across all preflight compare routes**
    - Add route-level regression checks to ensure `selection.ordering_basis` and source metadata remain stable across every compare endpoint variant.
    - Impact: medium (prevents drift/regression in reproducibility diagnostics contract).
+
+2. **Cycle-path diagnostics coverage for mixed physvol/procedural/assembly graphs**
+   - Add focused tests that lock deterministic cycle-path formatting and de-duplication when cycles traverse both `physvol` and procedural-container edges across LV/ASM nodes.
+   - Impact: medium (protects debugging quality as cycle logic evolves).

@@ -5374,16 +5374,23 @@ class ProjectManager:
             adjacency[f"ASM:{asm_name}"] = []
 
         for parent_lv in state.logical_volumes.values():
-            if parent_lv.content_type != 'physvol' or not parent_lv.content:
+            parent_node = f"LV:{parent_lv.name}"
+
+            if parent_lv.content_type == 'physvol':
+                if not parent_lv.content:
+                    continue
+                for pv in parent_lv.content:
+                    placed_ref = str(getattr(pv, 'volume_ref', '') or '').strip()
+                    if placed_ref in state.logical_volumes:
+                        adjacency[parent_node].append(f"LV:{placed_ref}")
+                    elif placed_ref in state.assemblies:
+                        adjacency[parent_node].append(f"ASM:{placed_ref}")
                 continue
 
-            parent_node = f"LV:{parent_lv.name}"
-            for pv in parent_lv.content:
-                placed_ref = str(getattr(pv, 'volume_ref', '') or '').strip()
+            if parent_lv.content_type in ['replica', 'division', 'parameterised'] and parent_lv.content:
+                placed_ref = str(getattr(parent_lv.content, 'volume_ref', '') or '').strip()
                 if placed_ref in state.logical_volumes:
                     adjacency[parent_node].append(f"LV:{placed_ref}")
-                elif placed_ref in state.assemblies:
-                    adjacency[parent_node].append(f"ASM:{placed_ref}")
 
         for asm in state.assemblies.values():
             parent_node = f"ASM:{asm.name}"
