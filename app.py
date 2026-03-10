@@ -1693,6 +1693,45 @@ def _run_preflight_for_saved_version_json(version_json_path: str) -> Dict[str, A
     return version_pm.run_preflight_checks()
 
 
+def _is_path_within_root(path: str, root: str) -> bool:
+    path_real = os.path.realpath(path)
+    root_real = os.path.realpath(root)
+    return path_real == root_real or path_real.startswith(root_real + os.sep)
+
+
+def _read_file_mtime_utc(path: str) -> Optional[str]:
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    return datetime.utcfromtimestamp(mtime).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _build_version_source_metadata(pm: ProjectManager, project_name: str, version_id: str) -> Dict[str, Any]:
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name, 'versions'))
+    version_dir = os.path.realpath(os.path.join(versions_root, version_id))
+    version_json_path = os.path.realpath(os.path.join(version_dir, 'version.json'))
+
+    timestamp, description = _extract_version_timestamp_and_description(version_id)
+    is_autosave = version_id == AUTOSAVE_VERSION_ID
+
+    return {
+        'version_id': version_id,
+        'is_autosave': is_autosave,
+        'is_autosave_snapshot': _is_autosave_snapshot_version_id(version_id),
+        'timestamp_from_version_id': None if is_autosave else timestamp,
+        'description_from_version_id': None if is_autosave else description,
+        'version_json_path': version_json_path,
+        'version_json_exists': os.path.exists(version_json_path),
+        'version_json_mtime_utc': _read_file_mtime_utc(version_json_path),
+        'source_path_checks': {
+            'versions_root_exists': os.path.isdir(versions_root),
+            'version_dir_within_versions_root': _is_path_within_root(version_dir, versions_root),
+            'version_json_within_versions_root': _is_path_within_root(version_json_path, versions_root),
+        },
+    }
+
+
 def compare_preflight_versions(pm: ProjectManager, baseline_version_id: Any, candidate_version_id: Any, project_name: Optional[str] = None) -> Dict[str, Any]:
     """Run preflight checks on two saved versions and compare their deterministic summaries."""
     project_name_norm = str(project_name or pm.project_name or '').strip()
@@ -1705,6 +1744,8 @@ def compare_preflight_versions(pm: ProjectManager, baseline_version_id: Any, can
 
     comparison = compare_preflight_summaries(baseline_report, candidate_report)
 
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name_norm, 'versions'))
+
     return {
         'project_name': project_name_norm,
         'baseline_version_id': baseline_id,
@@ -1712,6 +1753,14 @@ def compare_preflight_versions(pm: ProjectManager, baseline_version_id: Any, can
         'baseline_report': baseline_report,
         'candidate_report': candidate_report,
         'comparison': comparison,
+        'ordering_metadata': {
+            'ordering_basis': 'explicit_version_ids',
+            'versions_root': versions_root,
+        },
+        'version_sources': {
+            'baseline': _build_version_source_metadata(pm, project_name_norm, baseline_id),
+            'candidate': _build_version_source_metadata(pm, project_name_norm, candidate_id),
+        },
     }
 
 
@@ -1753,7 +1802,9 @@ def compare_latest_preflight_versions(pm: ProjectManager, project_name: Optional
 
     result['selection'] = {
         'strategy': 'latest_two_saved_versions',
+        'ordering_basis': 'manual_saved_versions_sorted_desc_lexicographic',
         'selected_version_ids': [candidate_version_id, baseline_version_id],
+        'ordered_manual_saved_version_ids': version_ids,
         'total_saved_versions': len(version_ids),
     }
     return result
@@ -1782,7 +1833,9 @@ def compare_autosave_preflight_vs_latest_saved(pm: ProjectManager, project_name:
 
     result['selection'] = {
         'strategy': 'latest_autosave_vs_latest_saved',
+        'ordering_basis': 'manual_saved_versions_sorted_desc_lexicographic',
         'selected_version_ids': [AUTOSAVE_VERSION_ID, latest_saved_version_id],
+        'ordered_manual_saved_version_ids': version_ids,
         'total_saved_versions': len(version_ids),
     }
     return result
@@ -1858,7 +1911,9 @@ def compare_autosave_preflight_vs_manual_saved_index(
 
     result['selection'] = {
         'strategy': 'latest_autosave_vs_manual_saved_index',
+        'ordering_basis': 'manual_saved_versions_sorted_desc_lexicographic',
         'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
+        'ordered_manual_saved_version_ids': manual_version_ids,
         'manual_saved_index': manual_saved_index_norm,
         'selected_manual_saved_version_id': result['baseline_version_id'],
         'total_saved_versions': len(version_ids),
@@ -1937,11 +1992,13 @@ def compare_autosave_preflight_vs_manual_saved_for_simulation_run_index(
 
     result['selection'] = {
         'strategy': 'latest_autosave_vs_manual_saved_for_simulation_run_index',
+        'ordering_basis': 'matching_manual_saved_versions_sorted_desc_lexicographic',
         'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
         'simulation_run_id': simulation_run_id_norm,
         'manual_saved_index': manual_saved_index_norm,
         'selected_manual_saved_version_id': result['baseline_version_id'],
         'matching_manual_saved_version_ids': matching_manual_version_ids,
+        'ordered_manual_saved_version_ids': manual_version_ids,
         'total_matching_manual_saved_versions': len(matching_manual_version_ids),
         'total_saved_versions': len(version_ids),
         'total_snapshot_versions': len(version_ids) - len(manual_version_ids),
@@ -1990,13 +2047,17 @@ def list_manual_saved_versions_for_simulation_run(
         if os.path.isdir(os.path.join(versions_root, version_id, 'sim_runs', simulation_run_id_norm))
     ]
 
-    matching_versions = [
-        {
+    matching_versions: List[Dict[str, Any]] = []
+    for index, version_id in enumerate(matching_manual_version_ids):
+        source = _build_version_source_metadata(pm, project_name_norm, version_id)
+        matching_versions.append({
             'manual_saved_index': index,
             'version_id': version_id,
-        }
-        for index, version_id in enumerate(matching_manual_version_ids)
-    ]
+            'timestamp': source['timestamp_from_version_id'],
+            'timestamp_source': 'version_id_prefix',
+            'version_json_mtime_utc': source['version_json_mtime_utc'],
+            'source_path_checks': source['source_path_checks'],
+        })
 
     if limit_norm is not None:
         matching_versions = matching_versions[:limit_norm]
@@ -2004,6 +2065,8 @@ def list_manual_saved_versions_for_simulation_run(
     return {
         'project_name': project_name_norm,
         'simulation_run_id': simulation_run_id_norm,
+        'ordering_basis': 'matching_manual_saved_versions_sorted_desc_lexicographic',
+        'ordered_manual_saved_version_ids': manual_version_ids,
         'total_saved_versions': len(version_ids),
         'total_snapshot_versions': len(version_ids) - len(manual_version_ids),
         'total_manual_saved_versions': len(manual_version_ids),
@@ -2075,11 +2138,13 @@ def compare_manual_preflight_versions_for_simulation_run_indices(
 
     result['selection'] = {
         'strategy': 'manual_saved_versions_for_simulation_run_indices',
+        'ordering_basis': 'matching_manual_saved_versions_sorted_desc_lexicographic',
         'simulation_run_id': simulation_run_id_norm,
         'baseline_manual_saved_index': baseline_manual_saved_index_norm,
         'candidate_manual_saved_index': candidate_manual_saved_index_norm,
         'selected_version_ids': [result['baseline_version_id'], result['candidate_version_id']],
         'matching_manual_saved_version_ids': matching_manual_version_ids,
+        'ordered_manual_saved_version_ids': manual_version_ids,
         'total_matching_manual_saved_versions': total_matching,
         'total_saved_versions': len(version_ids),
         'total_snapshot_versions': len(version_ids) - len(manual_version_ids),
@@ -2109,6 +2174,7 @@ def compare_autosave_preflight_vs_saved_version(pm: ProjectManager, saved_versio
 
     result['selection'] = {
         'strategy': 'latest_autosave_vs_selected_saved_version',
+        'ordering_basis': 'explicit_saved_version_id',
         'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
         'saved_version_id': result['baseline_version_id'],
         'total_saved_versions': len(_list_saved_version_ids(pm, project_name_norm)),
@@ -2156,6 +2222,7 @@ def compare_autosave_preflight_vs_snapshot_version(pm: ProjectManager, autosave_
 
     result['selection'] = {
         'strategy': 'latest_autosave_vs_selected_autosave_snapshot',
+        'ordering_basis': 'explicit_autosave_snapshot_version_id',
         'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
         'autosave_snapshot_version_id': result['baseline_version_id'],
         'total_saved_versions': len(_list_saved_version_ids(pm, project_name_norm)),
@@ -2207,7 +2274,9 @@ def compare_autosave_preflight_vs_latest_snapshot(pm: ProjectManager, project_na
 
     result['selection'] = {
         'strategy': 'latest_autosave_vs_latest_autosave_snapshot',
+        'ordering_basis': 'autosave_snapshot_versions_sorted_by_mtime_then_version_id_desc',
         'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
+        'ordered_snapshot_version_ids': snapshot_version_ids,
         'autosave_snapshot_version_id': result['baseline_version_id'],
         'total_saved_versions': len(version_ids),
         'total_snapshot_versions': len(snapshot_version_ids),
@@ -2240,7 +2309,9 @@ def compare_autosave_preflight_vs_previous_snapshot(pm: ProjectManager, project_
 
     result['selection'] = {
         'strategy': 'latest_autosave_vs_previous_autosave_snapshot',
+        'ordering_basis': 'autosave_snapshot_versions_sorted_by_mtime_then_version_id_desc',
         'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
+        'ordered_snapshot_version_ids': snapshot_version_ids,
         'autosave_snapshot_version_id': result['baseline_version_id'],
         'previous_snapshot_version_id': result['baseline_version_id'],
         'latest_snapshot_version_id': latest_snapshot_version_id,
@@ -2274,7 +2345,9 @@ def compare_latest_autosave_snapshot_preflight_versions(pm: ProjectManager, proj
 
     result['selection'] = {
         'strategy': 'latest_two_autosave_snapshot_versions',
+        'ordering_basis': 'autosave_snapshot_versions_sorted_by_mtime_then_version_id_desc',
         'selected_version_ids': [result['candidate_version_id'], result['baseline_version_id']],
+        'ordered_snapshot_version_ids': snapshot_version_ids,
         'baseline_snapshot_version_id': result['baseline_version_id'],
         'candidate_snapshot_version_id': result['candidate_version_id'],
         'total_snapshot_versions': len(snapshot_version_ids),
@@ -2330,7 +2403,9 @@ def compare_autosave_snapshot_preflight_versions(
 
     result['selection'] = {
         'strategy': 'selected_autosave_snapshot_versions',
+        'ordering_basis': 'explicit_autosave_snapshot_version_ids',
         'selected_version_ids': [result['candidate_version_id'], result['baseline_version_id']],
+        'available_snapshot_version_ids_sorted_desc_lexicographic': sorted(snapshot_version_ids, reverse=True),
         'baseline_snapshot_version_id': result['baseline_version_id'],
         'candidate_snapshot_version_id': result['candidate_version_id'],
         'total_snapshot_versions': len(snapshot_version_ids),
@@ -2374,6 +2449,10 @@ def list_preflight_versions(
     if not os.path.isdir(versions_root):
         return {
             'project_name': project_name_norm,
+            'ordering_basis': 'autosave_first_then_manual_saved_desc_lexicographic',
+            'manual_saved_ordering_basis': 'manual_saved_versions_sorted_desc_lexicographic',
+            'versions_root': versions_root,
+            'versions_root_exists': False,
             'total_versions': 0,
             'returned_versions': 0,
             'has_autosave': False,
@@ -2395,33 +2474,37 @@ def list_preflight_versions(
     autosave_exists = False
 
     if include_autosave_norm and AUTOSAVE_VERSION_ID in version_dirs:
-        autosave_json_path = os.path.join(versions_root, AUTOSAVE_VERSION_ID, 'version.json')
-        if os.path.exists(autosave_json_path):
+        autosave_source = _build_version_source_metadata(pm, project_name_norm, AUTOSAVE_VERSION_ID)
+        if autosave_source['version_json_exists']:
             autosave_exists = True
-            autosave_mtime = os.path.getmtime(autosave_json_path)
+            autosave_timestamp = autosave_source['version_json_mtime_utc']
             versions.append({
                 'version_id': AUTOSAVE_VERSION_ID,
                 'is_autosave': True,
-                'timestamp': datetime.fromtimestamp(autosave_mtime).strftime('%Y-%m-%dT%H-%M-%S'),
+                'timestamp': datetime.strptime(autosave_timestamp, '%Y-%m-%dT%H:%M:%SZ').strftime('%Y-%m-%dT%H-%M-%S') if autosave_timestamp else None,
+                'timestamp_source': 'version_json_mtime_utc',
                 'description': 'Latest Autosave',
+                'is_autosave_snapshot': False,
                 'has_version_json': True,
+                'version_json_mtime_utc': autosave_timestamp,
+                'source_path_checks': autosave_source['source_path_checks'],
                 'sim_run_count': 0,
             })
 
     for version_id in manual_version_ids:
-        version_dir = os.path.join(versions_root, version_id)
-        version_json_path = os.path.join(version_dir, 'version.json')
-        sim_runs_path = os.path.join(version_dir, 'sim_runs')
-
-        timestamp, description = _extract_version_timestamp_and_description(version_id)
+        source = _build_version_source_metadata(pm, project_name_norm, version_id)
+        sim_runs_path = os.path.join(versions_root, version_id, 'sim_runs')
 
         versions.append({
             'version_id': version_id,
             'is_autosave': False,
-            'timestamp': timestamp,
-            'description': description,
-            'is_autosave_snapshot': _is_autosave_snapshot_version_id(version_id),
-            'has_version_json': os.path.exists(version_json_path),
+            'timestamp': source['timestamp_from_version_id'],
+            'timestamp_source': 'version_id_prefix',
+            'description': source['description_from_version_id'],
+            'is_autosave_snapshot': source['is_autosave_snapshot'],
+            'has_version_json': source['version_json_exists'],
+            'version_json_mtime_utc': source['version_json_mtime_utc'],
+            'source_path_checks': source['source_path_checks'],
             'sim_run_count': len(os.listdir(sim_runs_path)) if os.path.isdir(sim_runs_path) else 0,
         })
 
@@ -2431,6 +2514,10 @@ def list_preflight_versions(
 
     return {
         'project_name': project_name_norm,
+        'ordering_basis': 'autosave_first_then_manual_saved_desc_lexicographic',
+        'manual_saved_ordering_basis': 'manual_saved_versions_sorted_desc_lexicographic',
+        'versions_root': versions_root,
+        'versions_root_exists': True,
         'total_versions': total_versions,
         'returned_versions': len(versions),
         'has_autosave': autosave_exists,

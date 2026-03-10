@@ -371,6 +371,12 @@ def test_compare_preflight_versions_runs_checks_for_two_saved_versions():
     assert result['comparison']['added_issue_codes'] == ['tiny_dimension']
     assert result['comparison']['status']['improved_can_run'] is True
 
+    assert result['ordering_metadata']['ordering_basis'] == 'explicit_version_ids'
+    assert result['version_sources']['baseline']['version_id'] == baseline_version_id
+    assert result['version_sources']['candidate']['version_id'] == candidate_version_id
+    assert result['version_sources']['baseline']['source_path_checks']['version_json_within_versions_root'] is True
+    assert result['version_sources']['candidate']['source_path_checks']['version_json_within_versions_root'] is True
+
 
 def test_compare_latest_preflight_versions_uses_latest_two_saved_versions():
     pm = _make_pm()
@@ -409,7 +415,9 @@ def test_compare_latest_preflight_versions_uses_latest_two_saved_versions():
     assert result['candidate_version_id'] == latest_version_id
     assert result['comparison']['added_issue_codes'] == ['possible_overlap_aabb']
     assert result['selection']['strategy'] == 'latest_two_saved_versions'
+    assert result['selection']['ordering_basis'] == 'manual_saved_versions_sorted_desc_lexicographic'
     assert result['selection']['selected_version_ids'] == [latest_version_id, mid_version_id]
+    assert result['selection']['ordered_manual_saved_version_ids'][0] == latest_version_id
 
 
 def test_compare_latest_preflight_versions_requires_two_saved_versions():
@@ -1200,6 +1208,9 @@ def test_list_preflight_versions_returns_autosave_and_saved_metadata():
         result = list_preflight_versions(pm)
 
     assert result['project_name'] == 'preflight_version_list_project'
+    assert result['ordering_basis'] == 'autosave_first_then_manual_saved_desc_lexicographic'
+    assert result['manual_saved_ordering_basis'] == 'manual_saved_versions_sorted_desc_lexicographic'
+    assert result['versions_root_exists'] is True
     assert result['has_autosave'] is True
     assert result['total_versions'] == 3
     assert result['returned_versions'] == 3
@@ -1207,12 +1218,17 @@ def test_list_preflight_versions_returns_autosave_and_saved_metadata():
     versions = result['versions']
     assert versions[0]['version_id'] == 'autosave'
     assert versions[0]['is_autosave'] is True
+    assert versions[0]['timestamp_source'] == 'version_json_mtime_utc'
+    assert versions[0]['version_json_mtime_utc'] is not None
+    assert versions[0]['source_path_checks']['version_json_within_versions_root'] is True
 
     manual_ids = [entry['version_id'] for entry in versions[1:]]
     assert manual_ids == sorted([first_version_id, second_version_id], reverse=True)
 
     snapshot_entry = next(entry for entry in versions if entry['version_id'] == second_version_id)
     assert snapshot_entry['is_autosave_snapshot'] is True
+    assert snapshot_entry['timestamp_source'] == 'version_id_prefix'
+    assert snapshot_entry['source_path_checks']['version_json_within_versions_root'] is True
 
 
 def test_preflight_list_versions_route_supports_limit_and_include_autosave_toggle():
@@ -1291,10 +1307,13 @@ def test_preflight_list_manual_saved_versions_for_simulation_run_route_returns_i
     data = resp.get_json()
     assert data['success'] is True
     assert data['simulation_run_id'] == simulation_run_id
+    assert data['ordering_basis'] == 'matching_manual_saved_versions_sorted_desc_lexicographic'
     assert data['total_matching_manual_saved_versions'] == 2
     assert data['returned_matching_manual_saved_versions'] == 1
     assert data['matching_manual_saved_versions'][0]['manual_saved_index'] == 0
     assert data['matching_manual_saved_versions'][0]['version_id'] == expected_latest
+    assert data['matching_manual_saved_versions'][0]['timestamp_source'] == 'version_id_prefix'
+    assert data['matching_manual_saved_versions'][0]['source_path_checks']['version_json_within_versions_root'] is True
 
 
 def test_preflight_list_manual_saved_versions_for_simulation_run_route_rejects_invalid_limit():
