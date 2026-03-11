@@ -217,6 +217,97 @@ def test_preflight_detects_procedural_placement_cycle():
     assert report['summary']['can_run'] is False
 
 
+def test_preflight_mixed_cycle_path_is_deterministic_and_deduplicated():
+    pm = _make_pm()
+
+    loop_a, err = pm.add_logical_volume('mixed_loop_a_lv', 'box_solid', 'G4_Galactic')
+    assert err is None
+    loop_b, err = pm.add_logical_volume('mixed_loop_b_lv', 'box_solid', 'G4_Galactic')
+    assert err is None
+    loop_asm, err = pm.add_assembly('mixed_loop_asm', [])
+    assert err is None
+
+    ok, err = pm.update_assembly(
+        loop_asm['name'],
+        [
+            {
+                'name': 'mixed_asm_to_b_1',
+                'volume_ref': loop_b['name'],
+                'parent_lv_name': loop_asm['name'],
+                'position': {'x': '0', 'y': '0', 'z': '0'},
+                'rotation': {'x': '0', 'y': '0', 'z': '0'},
+                'scale': {'x': '1', 'y': '1', 'z': '1'},
+            },
+            {
+                'name': 'mixed_asm_to_b_2',
+                'volume_ref': loop_b['name'],
+                'parent_lv_name': loop_asm['name'],
+                'position': {'x': '5', 'y': '0', 'z': '0'},
+                'rotation': {'x': '0', 'y': '0', 'z': '0'},
+                'scale': {'x': '1', 'y': '1', 'z': '1'},
+            },
+        ],
+    )
+    assert ok is True
+    assert err is None
+
+    _, err = pm.add_physical_volume(
+        loop_a['name'],
+        'mixed_a_to_asm_1',
+        loop_asm['name'],
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '1', 'y': '1', 'z': '1'},
+    )
+    assert err is None
+    _, err = pm.add_physical_volume(
+        loop_a['name'],
+        'mixed_a_to_asm_2',
+        loop_asm['name'],
+        {'x': '10', 'y': '0', 'z': '0'},
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '1', 'y': '1', 'z': '1'},
+    )
+    assert err is None
+
+    loop_b_obj = pm.current_geometry_state.logical_volumes[loop_b['name']]
+    loop_b_obj.content_type = 'replica'
+    loop_b_obj.content = ReplicaVolume(
+        name='mixed_b_to_a',
+        volume_ref=loop_a['name'],
+        number='1',
+        direction={'x': '1', 'y': '0', 'z': '0'},
+        width='1',
+        offset='0',
+    )
+
+    report = pm.run_preflight_checks()
+
+    cycle_issues = [i for i in report['issues'] if i['code'] == 'placement_hierarchy_cycle']
+    assert len(cycle_issues) == 1
+
+    expected_cycle = (
+        f"ASM:{loop_asm['name']} -> LV:{loop_b['name']} -> LV:{loop_a['name']} -> ASM:{loop_asm['name']}"
+    )
+    assert cycle_issues[0]['message'] == f'Placement hierarchy contains a recursive cycle: {expected_cycle}.'
+    assert cycle_issues[0]['object_refs'] == [
+        f"ASM:{loop_asm['name']}",
+        f"LV:{loop_b['name']}",
+        f"LV:{loop_a['name']}",
+    ]
+    assert report['summary']['can_run'] is False
+
+
+def test_preflight_cycle_signature_normalization_deduplicates_rotations():
+    pm = _make_pm()
+
+    sig_a = pm._normalize_preflight_cycle_signature(['ASM:mix', 'LV:b', 'LV:a', 'ASM:mix'])
+    sig_b = pm._normalize_preflight_cycle_signature(['LV:b', 'LV:a', 'ASM:mix', 'LV:b'])
+    sig_c = pm._normalize_preflight_cycle_signature(['LV:a', 'ASM:mix', 'LV:b', 'LV:a'])
+
+    assert sig_a == sig_b == sig_c
+
+
 
 def test_preflight_detects_unknown_procedural_reference_and_invalid_replica_bounds():
     pm = _make_pm()

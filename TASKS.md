@@ -6,6 +6,15 @@
 
 ## Recently Completed
 
+- **Cycle-path diagnostics regression coverage for mixed physvol/procedural/assembly hierarchies** (2026-03-11)
+  - Added `test_preflight_mixed_cycle_path_is_deterministic_and_deduplicated` in `tests/test_preflight.py` to lock deterministic cycle reporting for a mixed-edge loop:
+    - `ASM → LV` via assembly placement
+    - `LV → LV` via procedural container (`replica`)
+    - `LV → ASM` via `physvol`
+  - Test intentionally creates duplicate placements that collapse to the same graph edge and asserts only one `placement_hierarchy_cycle` issue is emitted, protecting de-duplication behavior.
+  - Added `test_preflight_cycle_signature_normalization_deduplicates_rotations` to lock cycle-signature normalization for rotated representations of the same cycle.
+  - Why: preserves deterministic, high-signal preflight diagnostics as mixed hierarchy graphs grow in complexity.
+
 - **Placement hierarchy cycle detection now includes procedural-container edges** (2026-03-10)
   - Extended `_build_preflight_hierarchy_adjacency(...)` so procedural logical volumes (`replica`, `division`, `parameterised`) contribute deterministic LV→LV edges for cycle detection.
   - Added regression test `test_preflight_detects_procedural_placement_cycle` in `tests/test_preflight.py` covering recursive procedural-container loops.
@@ -63,6 +72,6 @@
    - Add route-level regression checks to ensure `selection.ordering_basis` and source metadata remain stable across every compare endpoint variant.
    - Impact: medium (prevents drift/regression in reproducibility diagnostics contract).
 
-2. **Cycle-path diagnostics coverage for mixed physvol/procedural/assembly graphs**
-   - Add focused tests that lock deterministic cycle-path formatting and de-duplication when cycles traverse both `physvol` and procedural-container edges across LV/ASM nodes.
-   - Impact: medium (protects debugging quality as cycle logic evolves).
+2. **Cycle-report truncation diagnostics coverage (`max_cycles`)**
+   - Add focused tests for `_find_preflight_hierarchy_cycles(..., max_cycles=...)` and `placement_hierarchy_cycle_report_truncated` so cycle truncation behavior remains deterministic and debuggable under high-cycle graphs.
+   - Impact: medium (guards failure-mode diagnostics quality for complex recursive hierarchies).
