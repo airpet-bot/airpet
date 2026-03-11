@@ -6,6 +6,22 @@
 
 ## Recently Completed
 
+- **Cycle-truncation metadata preservation coverage for explicit compare surfaces (route + AI)** (2026-03-11)
+  - Added shared truncation-assert helpers in `tests/test_preflight.py` and `tests/test_ai_api.py` to lock exact truncation diagnostics contract:
+    - code `placement_hierarchy_cycle_report_truncated`
+    - message text `Cycle reporting truncated at max_cycles=1; reported 1 cycle findings.`
+    - metadata payload (`max_cycles`, `reported_cycles`, `truncated`)
+  - Added route regression coverage in `tests/test_preflight.py` for:
+    - `POST /api/preflight/compare_versions`
+    - `POST /api/preflight/compare_snapshot_versions`
+    ensuring candidate reports preserve truncation metadata through explicit version/snapshot comparison surfaces.
+  - Added AI-dispatch regression coverage in `tests/test_ai_api.py` for:
+    - `compare_preflight_versions`
+    - `compare_autosave_snapshot_preflight_versions`
+    ensuring metadata stability through explicit-version AI wrappers.
+  - Forced deterministic truncation via patched `_find_preflight_hierarchy_cycles(..., max_cycles=1)` to make assertions reproducible.
+  - Why: broadens contract protection from autosave-vs-latest-only to explicit compare paths used by deterministic debugging workflows.
+
 - **Cycle-truncation metadata API-surface regression coverage (route + AI compare wrapper)** (2026-03-11)
   - Added route-level regression test in `tests/test_preflight.py` for `POST /api/preflight/compare_autosave_vs_latest_saved` to lock preservation of `placement_hierarchy_cycle_report_truncated` diagnostics emitted by core preflight logic.
   - Added AI-dispatch regression test in `tests/test_ai_api.py` for `compare_autosave_preflight_vs_latest_saved` to ensure wrapper responses keep truncation diagnostics unchanged.
@@ -101,6 +117,6 @@
    - Add route-level regression checks to ensure `selection.ordering_basis` and source metadata remain stable across every compare endpoint variant.
    - Impact: medium (prevents drift/regression in reproducibility diagnostics contract).
 
-2. **Expand cycle-truncation metadata preservation coverage across additional compare wrappers**
-   - Add regression checks for additional compare surfaces (`compare_versions`, snapshot compare routes, and run-id/manual-index compare wrappers) so truncation diagnostics remain stable beyond autosave-vs-latest-saved.
-   - Impact: medium (broadens contract protection for all deterministic preflight comparison entry points).
+2. **Expand cycle-truncation metadata preservation coverage across run-linked/manual-index compare wrappers**
+   - Add regression checks for simulation-run/manual-index surfaces (`compare_manual_preflight_versions_for_simulation_run_indices`, `compare_autosave_preflight_vs_manual_saved_index`, and run-id selectors) so truncation diagnostics remain stable on index-driven compare entry points.
+   - Impact: medium (completes contract protection for deterministic compare selectors not yet covered).

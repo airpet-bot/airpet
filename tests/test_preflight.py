@@ -339,6 +339,23 @@ def _build_multi_cycle_lv_triangle(pm):
     return loop_a, loop_b, loop_c
 
 
+def _assert_single_cycle_truncation_issue(issues):
+    truncation_issues = [
+        issue
+        for issue in issues
+        if issue['code'] == 'placement_hierarchy_cycle_report_truncated'
+    ]
+    assert len(truncation_issues) == 1
+    assert truncation_issues[0]['message'] == (
+        'Cycle reporting truncated at max_cycles=1; reported 1 cycle findings.'
+    )
+    assert truncation_issues[0]['metadata'] == {
+        'max_cycles': 1,
+        'reported_cycles': 1,
+        'truncated': True,
+    }
+
+
 def test_find_preflight_hierarchy_cycles_respects_max_cycles_cap_deterministically():
     pm = _make_pm()
     loop_a, loop_b, loop_c = _build_multi_cycle_lv_triangle(pm)
@@ -1728,6 +1745,39 @@ def test_preflight_compare_versions_route_returns_comparison_payload():
     assert data['comparison']['added_issue_codes'] == ['tiny_dimension']
 
 
+def test_preflight_compare_versions_route_preserves_cycle_truncation_metadata():
+    app.config['TESTING'] = True
+    with app.test_client() as client, tempfile.TemporaryDirectory() as tmpdir:
+        pm = _make_pm()
+        pm.projects_dir = tmpdir
+        pm.project_name = 'route_compare_versions_truncation_metadata'
+
+        baseline_version_id, _ = pm.save_project_version('baseline_route')
+        _build_multi_cycle_lv_triangle(pm)
+        candidate_version_id, _ = pm.save_project_version('candidate_route')
+
+        original_find_cycles = ProjectManager._find_preflight_hierarchy_cycles
+        with patch('app.get_project_manager_for_session', return_value=pm), patch.object(
+            ProjectManager,
+            '_find_preflight_hierarchy_cycles',
+            autospec=True,
+            side_effect=lambda self, state, max_cycles=20: original_find_cycles(self, state, max_cycles=1),
+        ):
+            resp = client.post('/api/preflight/compare_versions', json={
+                'baseline_version_id': baseline_version_id,
+                'candidate_version_id': candidate_version_id,
+                'project_name': pm.project_name,
+            })
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['success'] is True
+    assert data['baseline_version_id'] == baseline_version_id
+    assert data['candidate_version_id'] == candidate_version_id
+    assert 'placement_hierarchy_cycle_report_truncated' in data['comparison']['added_issue_codes']
+    _assert_single_cycle_truncation_issue(data['candidate_report']['issues'])
+
+
 def test_preflight_compare_latest_versions_route_returns_comparison_payload():
     app.config['TESTING'] = True
     with app.test_client() as client, tempfile.TemporaryDirectory() as tmpdir:
@@ -1848,20 +1898,7 @@ def test_preflight_compare_autosave_vs_latest_saved_route_preserves_cycle_trunca
     assert data['success'] is True
     assert 'placement_hierarchy_cycle_report_truncated' in data['comparison']['added_issue_codes']
 
-    truncation_issues = [
-        issue
-        for issue in data['candidate_report']['issues']
-        if issue['code'] == 'placement_hierarchy_cycle_report_truncated'
-    ]
-    assert len(truncation_issues) == 1
-    assert truncation_issues[0]['message'] == (
-        'Cycle reporting truncated at max_cycles=1; reported 1 cycle findings.'
-    )
-    assert truncation_issues[0]['metadata'] == {
-        'max_cycles': 1,
-        'reported_cycles': 1,
-        'truncated': True,
-    }
+    _assert_single_cycle_truncation_issue(data['candidate_report']['issues'])
 
 
 def test_preflight_compare_autosave_vs_latest_saved_route_requires_autosave():
@@ -2431,6 +2468,39 @@ def test_preflight_compare_snapshot_versions_route_returns_comparison_payload():
     assert data['candidate_version_id'] == candidate_snapshot_version_id
     assert data['comparison']['added_issue_codes'] == ['unknown_material_reference']
     assert data['selection']['strategy'] == 'selected_autosave_snapshot_versions'
+
+
+def test_preflight_compare_snapshot_versions_route_preserves_cycle_truncation_metadata():
+    app.config['TESTING'] = True
+    with app.test_client() as client, tempfile.TemporaryDirectory() as tmpdir:
+        pm = _make_pm()
+        pm.projects_dir = tmpdir
+        pm.project_name = 'route_compare_snapshot_versions_truncation_metadata'
+
+        baseline_snapshot_version_id, _ = pm.save_project_version('autosave_snapshot_baseline_route')
+        _build_multi_cycle_lv_triangle(pm)
+        candidate_snapshot_version_id, _ = pm.save_project_version('autosave_snapshot_candidate_route')
+
+        original_find_cycles = ProjectManager._find_preflight_hierarchy_cycles
+        with patch('app.get_project_manager_for_session', return_value=pm), patch.object(
+            ProjectManager,
+            '_find_preflight_hierarchy_cycles',
+            autospec=True,
+            side_effect=lambda self, state, max_cycles=20: original_find_cycles(self, state, max_cycles=1),
+        ):
+            resp = client.post('/api/preflight/compare_snapshot_versions', json={
+                'project_name': pm.project_name,
+                'baseline_snapshot_version_id': baseline_snapshot_version_id,
+                'candidate_snapshot_version_id': candidate_snapshot_version_id,
+            })
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['success'] is True
+    assert data['baseline_version_id'] == baseline_snapshot_version_id
+    assert data['candidate_version_id'] == candidate_snapshot_version_id
+    assert 'placement_hierarchy_cycle_report_truncated' in data['comparison']['added_issue_codes']
+    _assert_single_cycle_truncation_issue(data['candidate_report']['issues'])
 
 
 def test_preflight_compare_snapshot_versions_route_requires_both_snapshot_ids():

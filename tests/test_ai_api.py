@@ -43,6 +43,23 @@ def _build_multi_cycle_lv_triangle(pm):
         assert err is None
 
 
+def _assert_single_cycle_truncation_issue(issues):
+    truncation_issues = [
+        issue
+        for issue in issues
+        if issue['code'] == 'placement_hierarchy_cycle_report_truncated'
+    ]
+    assert len(truncation_issues) == 1
+    assert truncation_issues[0]['message'] == (
+        'Cycle reporting truncated at max_cycles=1; reported 1 cycle findings.'
+    )
+    assert truncation_issues[0]['metadata'] == {
+        'max_cycles': 1,
+        'reported_cycles': 1,
+        'truncated': True,
+    }
+
+
 def test_ai_tool_manage_define(pm):
     # Test creation
     res = dispatch_ai_tool(pm, "manage_define", {
@@ -284,6 +301,33 @@ def test_ai_tool_compare_preflight_versions_runs_saved_version_checks(pm, tmp_pa
     assert comparison["status"]["improved_can_run"] is True
 
 
+def test_ai_tool_compare_preflight_versions_preserves_cycle_truncation_metadata(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_versions_truncation_metadata"
+
+    baseline_version_id, _ = pm.save_project_version('baseline_ai')
+    _build_multi_cycle_lv_triangle(pm)
+    candidate_version_id, _ = pm.save_project_version('candidate_ai')
+
+    original_find_cycles = ProjectManager._find_preflight_hierarchy_cycles
+    with patch.object(
+        ProjectManager,
+        '_find_preflight_hierarchy_cycles',
+        autospec=True,
+        side_effect=lambda self, state, max_cycles=20: original_find_cycles(self, state, max_cycles=1),
+    ):
+        res = dispatch_ai_tool(pm, "compare_preflight_versions", {
+            "before_version": baseline_version_id,
+            "after_version": candidate_version_id,
+        })
+
+    assert res["success"] is True
+    assert res["baseline_version_id"] == baseline_version_id
+    assert res["candidate_version_id"] == candidate_version_id
+    assert 'placement_hierarchy_cycle_report_truncated' in res["comparison"]["added_issue_codes"]
+    _assert_single_cycle_truncation_issue(res['candidate_report']['issues'])
+
+
 def test_ai_tool_compare_latest_preflight_versions_uses_latest_two_saved_versions(pm, tmp_path):
     pm.projects_dir = str(tmp_path)
     pm.project_name = "ai_compare_latest_project"
@@ -363,20 +407,7 @@ def test_ai_tool_compare_autosave_preflight_vs_latest_saved_preserves_cycle_trun
     assert res["success"] is True
     assert 'placement_hierarchy_cycle_report_truncated' in res["comparison"]["added_issue_codes"]
 
-    truncation_issues = [
-        issue
-        for issue in res['candidate_report']['issues']
-        if issue['code'] == 'placement_hierarchy_cycle_report_truncated'
-    ]
-    assert len(truncation_issues) == 1
-    assert truncation_issues[0]['message'] == (
-        'Cycle reporting truncated at max_cycles=1; reported 1 cycle findings.'
-    )
-    assert truncation_issues[0]['metadata'] == {
-        'max_cycles': 1,
-        'reported_cycles': 1,
-        'truncated': True,
-    }
+    _assert_single_cycle_truncation_issue(res['candidate_report']['issues'])
 
 
 def test_ai_tool_compare_autosave_preflight_vs_previous_manual_saved(pm, tmp_path):
@@ -808,6 +839,33 @@ def test_ai_tool_compare_autosave_snapshot_preflight_versions(pm, tmp_path):
     assert res["candidate_version_id"] == candidate_snapshot_version_id
     assert res["comparison"]["added_issue_codes"] == ["unknown_material_reference"]
     assert res["selection"]["strategy"] == "selected_autosave_snapshot_versions"
+
+
+def test_ai_tool_compare_autosave_snapshot_preflight_versions_preserves_cycle_truncation_metadata(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_snapshot_versions_truncation_metadata"
+
+    baseline_snapshot_version_id, _ = pm.save_project_version('autosave_snapshot_baseline_ai')
+    _build_multi_cycle_lv_triangle(pm)
+    candidate_snapshot_version_id, _ = pm.save_project_version('autosave_snapshot_candidate_ai')
+
+    original_find_cycles = ProjectManager._find_preflight_hierarchy_cycles
+    with patch.object(
+        ProjectManager,
+        '_find_preflight_hierarchy_cycles',
+        autospec=True,
+        side_effect=lambda self, state, max_cycles=20: original_find_cycles(self, state, max_cycles=1),
+    ):
+        res = dispatch_ai_tool(pm, "compare_autosave_snapshot_preflight_versions", {
+            "baseline_snapshot_version_id": baseline_snapshot_version_id,
+            "candidate_snapshot_version_id": candidate_snapshot_version_id,
+        })
+
+    assert res["success"] is True
+    assert res["baseline_version_id"] == baseline_snapshot_version_id
+    assert res["candidate_version_id"] == candidate_snapshot_version_id
+    assert 'placement_hierarchy_cycle_report_truncated' in res["comparison"]["added_issue_codes"]
+    _assert_single_cycle_truncation_issue(res['candidate_report']['issues'])
 
 
 def test_ai_tool_compare_autosave_snapshot_preflight_versions_rejects_non_snapshot(pm, tmp_path):
