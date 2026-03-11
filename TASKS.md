@@ -6,6 +6,23 @@
 
 ## Recently Completed
 
+- **Snapshot/selected-compare failure-envelope metadata contract coverage (route + AI wrappers)** (2026-03-11)
+  - Extended regression assertions so representative snapshot/selected compare failures explicitly exclude success-only compare metadata fields (`comparison`, `selection`, `ordering_metadata`, `version_sources`, version ids/reports) while preserving `success/error` envelopes.
+  - Route-level negative-path contract assertions now cover:
+    - `POST /api/preflight/compare_autosave_vs_saved_version` (missing `saved_version_id`)
+    - `POST /api/preflight/compare_autosave_vs_snapshot_version` (missing snapshot id)
+    - `POST /api/preflight/compare_autosave_vs_latest_snapshot` (no snapshot versions)
+    - `POST /api/preflight/compare_autosave_vs_previous_snapshot` (fewer than two snapshot versions)
+    - `POST /api/preflight/compare_snapshot_versions` (missing candidate snapshot id)
+    - `POST /api/preflight/compare_latest_snapshot_versions` (fewer than two snapshot versions)
+  - AI-wrapper negative-path contract assertions now cover:
+    - `compare_autosave_preflight_vs_saved_version` (missing `saved_version_id`)
+    - `compare_autosave_preflight_vs_snapshot_version` (missing snapshot id + non-snapshot id rejection)
+    - `compare_autosave_preflight_vs_latest_snapshot` (no snapshot versions)
+    - `compare_autosave_preflight_vs_previous_snapshot` (fewer than two snapshot versions)
+    - `compare_latest_autosave_snapshot_preflight_versions` (fewer than two snapshot versions)
+  - Why: broadens deterministic failure contracts for snapshot/selected compare selectors used by debugging and automation workflows.
+
 - **Negative-path compare metadata contract checks (route + AI wrappers, representative 400/404 paths)** (2026-03-11)
   - Added shared helpers to lock error-envelope shape on compare failures:
     - `tests/test_preflight.py`: `_assert_compare_route_error_payload_excludes_success_metadata(...)`
@@ -189,6 +206,6 @@
    - Add table-driven tests that compare key payload fields (`selection`, `ordering_metadata`, `version_sources`, and error envelopes) between HTTP routes and `dispatch_ai_tool` wrappers for the same scenarios.
    - Impact: medium (prevents contract drift between human/API and AI tool entry points).
 
-2. **Expand negative-path metadata checks across the remaining compare selectors**
-   - Extend the new error-envelope contract assertions to additional compare endpoints/wrappers (simulation-run selectors, snapshot selectors, alias-missing paths) to complete matrix coverage.
+2. **Expand negative-path metadata checks across the remaining run/manual compare selectors**
+   - Extend error-envelope contract assertions to remaining compare endpoint/wrapper failures (simulation-run selectors, index/alias-required-field paths, and additional 404 variants) to complete matrix coverage.
    - Impact: medium (broadens deterministic failure contracts across the full compare surface).

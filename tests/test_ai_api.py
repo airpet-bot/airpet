@@ -880,6 +880,16 @@ def test_ai_tool_compare_autosave_preflight_vs_saved_version(pm, tmp_path):
     )
 
 
+def test_ai_tool_compare_autosave_preflight_vs_saved_version_requires_saved_version_id(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_autosave_selected_missing"
+
+    res = dispatch_ai_tool(pm, "compare_autosave_preflight_vs_saved_version", {})
+
+    _assert_compare_ai_error_payload_excludes_success_metadata(res)
+    assert "saved_version_id" in res["error"]
+
+
 def test_ai_tool_compare_autosave_preflight_vs_snapshot_version(pm, tmp_path):
     pm.projects_dir = str(tmp_path)
     pm.project_name = "ai_compare_autosave_snapshot_project"
@@ -915,6 +925,16 @@ def test_ai_tool_compare_autosave_preflight_vs_snapshot_version(pm, tmp_path):
     )
 
 
+def test_ai_tool_compare_autosave_preflight_vs_snapshot_version_requires_snapshot_id(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_autosave_snapshot_missing"
+
+    res = dispatch_ai_tool(pm, "compare_autosave_preflight_vs_snapshot_version", {})
+
+    _assert_compare_ai_error_payload_excludes_success_metadata(res)
+    assert "autosave_snapshot_version_id" in res["error"]
+
+
 def test_ai_tool_compare_autosave_preflight_vs_snapshot_version_rejects_non_snapshot_version(pm, tmp_path):
     pm.projects_dir = str(tmp_path)
     pm.project_name = "ai_compare_autosave_snapshot_invalid"
@@ -933,7 +953,7 @@ def test_ai_tool_compare_autosave_preflight_vs_snapshot_version_rejects_non_snap
         "autosave_snapshot_version_id": manual_version_id,
     })
 
-    assert res["success"] is False
+    _assert_compare_ai_error_payload_excludes_success_metadata(res)
     assert "autosave snapshot" in res["error"]
 
 
@@ -984,7 +1004,7 @@ def test_ai_tool_compare_autosave_preflight_vs_latest_snapshot_requires_snapshot
 
     res = dispatch_ai_tool(pm, "compare_autosave_preflight_vs_latest_snapshot", {})
 
-    assert res["success"] is False
+    _assert_compare_ai_error_payload_excludes_success_metadata(res)
     assert "at least one saved autosave snapshot version" in res["error"]
 
 
@@ -1037,7 +1057,7 @@ def test_ai_tool_compare_autosave_preflight_vs_previous_snapshot_requires_two_sn
 
     res = dispatch_ai_tool(pm, "compare_autosave_preflight_vs_previous_snapshot", {})
 
-    assert res["success"] is False
+    _assert_compare_ai_error_payload_excludes_success_metadata(res)
     assert "at least two saved autosave snapshot versions" in res["error"]
 
 
@@ -1147,7 +1167,7 @@ def test_ai_tool_compare_latest_autosave_snapshot_preflight_versions_requires_tw
 
     res = dispatch_ai_tool(pm, "compare_latest_autosave_snapshot_preflight_versions", {})
 
-    assert res["success"] is False
+    _assert_compare_ai_error_payload_excludes_success_metadata(res)
     assert "at least two saved autosave snapshot versions" in res["error"]
 
 

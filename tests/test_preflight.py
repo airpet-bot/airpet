@@ -2533,7 +2533,7 @@ def test_preflight_compare_autosave_vs_saved_version_route_requires_saved_versio
 
     assert resp.status_code == 400
     data = resp.get_json()
-    assert data['success'] is False
+    _assert_compare_route_error_payload_excludes_success_metadata(data)
     assert 'saved_version_id' in data['error']
 
 
@@ -2594,7 +2594,7 @@ def test_preflight_compare_autosave_vs_snapshot_version_route_requires_snapshot_
 
     assert resp.status_code == 400
     data = resp.get_json()
-    assert data['success'] is False
+    _assert_compare_route_error_payload_excludes_success_metadata(data)
     assert 'autosave_snapshot_version_id' in data['error']
 
 
@@ -2660,7 +2660,7 @@ def test_preflight_compare_autosave_vs_latest_snapshot_route_requires_snapshot_v
 
     assert resp.status_code == 400
     data = resp.get_json()
-    assert data['success'] is False
+    _assert_compare_route_error_payload_excludes_success_metadata(data)
     assert 'at least one saved autosave snapshot version' in data['error']
 
 
@@ -2726,7 +2726,7 @@ def test_preflight_compare_autosave_vs_previous_snapshot_route_requires_two_snap
 
     assert resp.status_code == 400
     data = resp.get_json()
-    assert data['success'] is False
+    _assert_compare_route_error_payload_excludes_success_metadata(data)
     assert 'at least two saved autosave snapshot versions' in data['error']
 
 
@@ -2815,7 +2815,7 @@ def test_preflight_compare_snapshot_versions_route_requires_both_snapshot_ids():
 
     assert resp.status_code == 400
     data = resp.get_json()
-    assert data['success'] is False
+    _assert_compare_route_error_payload_excludes_success_metadata(data)
     assert 'candidate_snapshot_version_id' in data['error']
 
 
@@ -2867,7 +2867,7 @@ def test_preflight_compare_latest_snapshot_versions_route_requires_two_snapshots
 
     assert resp.status_code == 400
     data = resp.get_json()
-    assert data['success'] is False
+    _assert_compare_route_error_payload_excludes_success_metadata(data)
     assert 'at least two saved autosave snapshot versions' in data['error']
 
 
