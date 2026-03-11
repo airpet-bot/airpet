@@ -343,9 +343,13 @@ def test_find_preflight_hierarchy_cycles_respects_max_cycles_cap_deterministical
     pm = _make_pm()
     loop_a, loop_b, loop_c = _build_multi_cycle_lv_triangle(pm)
 
-    cycles, truncated = pm._find_preflight_hierarchy_cycles(pm.current_geometry_state, max_cycles=2)
+    cycles, metadata = pm._find_preflight_hierarchy_cycles(pm.current_geometry_state, max_cycles=2)
 
-    assert truncated is True
+    assert metadata == {
+        'max_cycles': 2,
+        'reported_cycles': 2,
+        'truncated': True,
+    }
     assert len(cycles) == 2
     assert cycles[0] == [f"LV:{loop_a['name']}", f"LV:{loop_b['name']}", f"LV:{loop_a['name']}"]
     assert cycles[1] == [
@@ -376,7 +380,14 @@ def test_preflight_reports_cycle_truncation_issue_when_cycle_report_hits_cap():
     assert len(cycle_issues) == 1
     assert len(truncation_issues) == 1
     assert truncation_issues[0]['severity'] == 'info'
-    assert truncation_issues[0]['message'] == 'Cycle reporting truncated after 1 findings.'
+    assert truncation_issues[0]['message'] == (
+        'Cycle reporting truncated at max_cycles=1; reported 1 cycle findings.'
+    )
+    assert truncation_issues[0]['metadata'] == {
+        'max_cycles': 1,
+        'reported_cycles': 1,
+        'truncated': True,
+    }
 
 
 

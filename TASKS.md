@@ -6,6 +6,19 @@
 
 ## Recently Completed
 
+- **Cycle-report truncation metadata enrichment (`max_cycles`)** (2026-03-11)
+  - Updated `_find_preflight_hierarchy_cycles(...)` in `src/project_manager.py` to return structured metadata alongside cycles:
+    - `max_cycles`
+    - `reported_cycles`
+    - `truncated`
+  - Updated `run_preflight_checks()` truncation diagnostics to emit explicit cap metadata in both message text and issue payload:
+    - `placement_hierarchy_cycle_report_truncated`
+    - message now includes `max_cycles` + reported count
+    - issue now includes a `metadata` object for deterministic downstream parsing
+  - Extended preflight issue signature normalization to include optional issue `metadata`, keeping summary fingerprints aligned with enriched diagnostics payloads.
+  - Updated regression tests in `tests/test_preflight.py` to lock helper metadata and truncation issue metadata behavior.
+  - Why: improves machine-readable failure diagnostics and keeps helper/issue contracts consistent for debugging and AI automation.
+
 - **Cycle-report truncation diagnostics regression coverage (`max_cycles`)** (2026-03-11)
   - Added `_build_multi_cycle_lv_triangle(...)` test helper in `tests/test_preflight.py` to construct a deterministic multi-cycle LV graph for cap-behavior validation.
   - Added `test_find_preflight_hierarchy_cycles_respects_max_cycles_cap_deterministically` to lock `_find_preflight_hierarchy_cycles(..., max_cycles=...)` behavior:
@@ -81,6 +94,6 @@
    - Add route-level regression checks to ensure `selection.ordering_basis` and source metadata remain stable across every compare endpoint variant.
    - Impact: medium (prevents drift/regression in reproducibility diagnostics contract).
 
-2. **Cycle-diagnostics metadata enrichment for truncated reports**
-   - Extend truncation reporting to include explicit cap metadata (e.g., `max_cycles`) and align helper/issue payloads for easier downstream debugging and AI-tool interpretation.
-   - Impact: medium (improves failure-mode observability for complex recursive hierarchies).
+2. **Expose cycle-truncation metadata through compare/list API regression coverage**
+   - Add route-level checks ensuring `placement_hierarchy_cycle_report_truncated` metadata survives compare/list wrappers unchanged (message + `metadata.max_cycles` / `metadata.reported_cycles`).
+   - Impact: medium (prevents metadata loss between core preflight logic and API surfaces).

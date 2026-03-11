@@ -5230,7 +5230,7 @@ class ProjectManager:
         
         return shape_cmds, pv._evaluated_position, pv._evaluated_rotation
 
-    def _preflight_add_issue(self, report, severity, code, message, object_refs=None, hint=None):
+    def _preflight_add_issue(self, report, severity, code, message, object_refs=None, hint=None, metadata=None):
         issue = {
             'severity': severity,
             'code': code,
@@ -5239,6 +5239,8 @@ class ProjectManager:
         }
         if hint:
             issue['hint'] = hint
+        if metadata is not None:
+            issue['metadata'] = metadata
         report['issues'].append(issue)
 
     def _preflight_issue_signature(self, issue):
@@ -5252,6 +5254,7 @@ class ProjectManager:
             'message': str(issue.get('message', '')),
             'object_refs': [str(ref) for ref in refs],
             'hint': str(issue['hint']) if issue.get('hint') is not None else None,
+            'metadata': issue.get('metadata'),
         }
 
     def _preflight_finalize(self, report):
@@ -5275,6 +5278,7 @@ class ProjectManager:
                 item.get('message', ''),
                 tuple(item.get('object_refs', [])),
                 item.get('hint') or '',
+                json.dumps(item.get('metadata'), sort_keys=True, separators=(',', ':'), default=str),
             ),
         )
 
@@ -5430,6 +5434,14 @@ class ProjectManager:
         active_index = {}
         active_stack = []
 
+        try:
+            max_cycles = int(max_cycles)
+        except Exception:
+            max_cycles = 20
+
+        if max_cycles < 1:
+            max_cycles = 1
+
         cycles = []
         seen_signatures = set()
         truncated = False
@@ -5476,7 +5488,12 @@ class ProjectManager:
             if _dfs(node_name):
                 break
 
-        return cycles, truncated
+        metadata = {
+            'max_cycles': max_cycles,
+            'reported_cycles': len(cycles),
+            'truncated': truncated,
+        }
+        return cycles, metadata
 
     def run_preflight_checks(self):
         """Runs lightweight geometry preflight checks prior to simulation."""
@@ -5828,7 +5845,7 @@ class ProjectManager:
                     )
 
         # 3) Placement hierarchy cycle checks (LV <-> LV/ASM and ASM <-> LV/ASM).
-        hierarchy_cycles, hierarchy_cycles_truncated = self._find_preflight_hierarchy_cycles(state)
+        hierarchy_cycles, hierarchy_cycle_metadata = self._find_preflight_hierarchy_cycles(state)
         for cycle_path in hierarchy_cycles:
             cycle_str = ' -> '.join(cycle_path)
             self._preflight_add_issue(
@@ -5840,12 +5857,22 @@ class ProjectManager:
                 hint='Break recursive placement loops so the hierarchy becomes acyclic.',
             )
 
-        if hierarchy_cycles_truncated:
+        if hierarchy_cycle_metadata.get('truncated'):
+            max_cycles = hierarchy_cycle_metadata.get('max_cycles', len(hierarchy_cycles))
+            reported_cycles = hierarchy_cycle_metadata.get('reported_cycles', len(hierarchy_cycles))
             self._preflight_add_issue(
                 report,
                 'info',
                 'placement_hierarchy_cycle_report_truncated',
-                f'Cycle reporting truncated after {len(hierarchy_cycles)} findings.',
+                (
+                    f'Cycle reporting truncated at max_cycles={max_cycles}; '
+                    f'reported {reported_cycles} cycle findings.'
+                ),
+                metadata={
+                    'max_cycles': max_cycles,
+                    'reported_cycles': reported_cycles,
+                    'truncated': True,
+                },
             )
 
         # 4) Missing references and material checks.
