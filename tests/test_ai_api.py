@@ -13,6 +13,36 @@ def pm():
     pm.create_empty_project()
     return pm
 
+
+def _build_multi_cycle_lv_triangle(pm):
+    loop_a, err = pm.add_logical_volume('ai_trunc_cycle_a_lv', 'box_solid', 'G4_Galactic')
+    assert err is None
+    loop_b, err = pm.add_logical_volume('ai_trunc_cycle_b_lv', 'box_solid', 'G4_Galactic')
+    assert err is None
+    loop_c, err = pm.add_logical_volume('ai_trunc_cycle_c_lv', 'box_solid', 'G4_Galactic')
+    assert err is None
+
+    edges = [
+        (loop_a['name'], loop_b['name']),
+        (loop_a['name'], loop_c['name']),
+        (loop_b['name'], loop_a['name']),
+        (loop_b['name'], loop_c['name']),
+        (loop_c['name'], loop_a['name']),
+        (loop_c['name'], loop_b['name']),
+    ]
+
+    for idx, (parent_name, child_name) in enumerate(edges, start=1):
+        _, err = pm.add_physical_volume(
+            parent_name,
+            f'ai_trunc_edge_{idx}',
+            child_name,
+            {'x': '0', 'y': '0', 'z': '0'},
+            {'x': '0', 'y': '0', 'z': '0'},
+            {'x': '1', 'y': '1', 'z': '1'},
+        )
+        assert err is None
+
+
 def test_ai_tool_manage_define(pm):
     # Test creation
     res = dispatch_ai_tool(pm, "manage_define", {
@@ -307,6 +337,46 @@ def test_ai_tool_compare_autosave_preflight_vs_latest_saved(pm, tmp_path):
     assert res["candidate_version_id"] == "autosave"
     assert res["comparison"]["added_issue_codes"] == ["unknown_material_reference"]
     assert res["selection"]["strategy"] == "latest_autosave_vs_latest_saved"
+
+
+def test_ai_tool_compare_autosave_preflight_vs_latest_saved_preserves_cycle_truncation_metadata(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_compare_autosave_truncation_metadata"
+
+    _, _ = pm.save_project_version('manual_ai_baseline')
+    _build_multi_cycle_lv_triangle(pm)
+
+    autosave_dir = pm._get_version_dir('autosave')
+    os.makedirs(autosave_dir, exist_ok=True)
+    with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+        handle.write(pm.save_project_to_json_string())
+
+    original_find_cycles = ProjectManager._find_preflight_hierarchy_cycles
+    with patch.object(
+        ProjectManager,
+        '_find_preflight_hierarchy_cycles',
+        autospec=True,
+        side_effect=lambda self, state, max_cycles=20: original_find_cycles(self, state, max_cycles=1),
+    ):
+        res = dispatch_ai_tool(pm, "compare_autosave_preflight_vs_latest_saved", {})
+
+    assert res["success"] is True
+    assert 'placement_hierarchy_cycle_report_truncated' in res["comparison"]["added_issue_codes"]
+
+    truncation_issues = [
+        issue
+        for issue in res['candidate_report']['issues']
+        if issue['code'] == 'placement_hierarchy_cycle_report_truncated'
+    ]
+    assert len(truncation_issues) == 1
+    assert truncation_issues[0]['message'] == (
+        'Cycle reporting truncated at max_cycles=1; reported 1 cycle findings.'
+    )
+    assert truncation_issues[0]['metadata'] == {
+        'max_cycles': 1,
+        'reported_cycles': 1,
+        'truncated': True,
+    }
 
 
 def test_ai_tool_compare_autosave_preflight_vs_previous_manual_saved(pm, tmp_path):

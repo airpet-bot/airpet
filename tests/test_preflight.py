@@ -1817,6 +1817,53 @@ def test_preflight_compare_autosave_vs_latest_saved_route_returns_comparison_pay
     assert data['comparison']['added_issue_codes'] == ['unknown_material_reference']
 
 
+def test_preflight_compare_autosave_vs_latest_saved_route_preserves_cycle_truncation_metadata():
+    app.config['TESTING'] = True
+    with app.test_client() as client, tempfile.TemporaryDirectory() as tmpdir:
+        pm = _make_pm()
+        pm.projects_dir = tmpdir
+        pm.project_name = 'route_compare_autosave_truncation_metadata'
+
+        _, _ = pm.save_project_version('manual_route_baseline')
+        _build_multi_cycle_lv_triangle(pm)
+
+        autosave_dir = pm._get_version_dir('autosave')
+        os.makedirs(autosave_dir, exist_ok=True)
+        with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+            handle.write(pm.save_project_to_json_string())
+
+        original_find_cycles = ProjectManager._find_preflight_hierarchy_cycles
+        with patch('app.get_project_manager_for_session', return_value=pm), patch.object(
+            ProjectManager,
+            '_find_preflight_hierarchy_cycles',
+            autospec=True,
+            side_effect=lambda self, state, max_cycles=20: original_find_cycles(self, state, max_cycles=1),
+        ):
+            resp = client.post('/api/preflight/compare_autosave_vs_latest_saved', json={
+                'project_name': pm.project_name,
+            })
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data['success'] is True
+    assert 'placement_hierarchy_cycle_report_truncated' in data['comparison']['added_issue_codes']
+
+    truncation_issues = [
+        issue
+        for issue in data['candidate_report']['issues']
+        if issue['code'] == 'placement_hierarchy_cycle_report_truncated'
+    ]
+    assert len(truncation_issues) == 1
+    assert truncation_issues[0]['message'] == (
+        'Cycle reporting truncated at max_cycles=1; reported 1 cycle findings.'
+    )
+    assert truncation_issues[0]['metadata'] == {
+        'max_cycles': 1,
+        'reported_cycles': 1,
+        'truncated': True,
+    }
+
+
 def test_preflight_compare_autosave_vs_latest_saved_route_requires_autosave():
     app.config['TESTING'] = True
     with app.test_client() as client, tempfile.TemporaryDirectory() as tmpdir:

@@ -6,6 +6,13 @@
 
 ## Recently Completed
 
+- **Cycle-truncation metadata API-surface regression coverage (route + AI compare wrapper)** (2026-03-11)
+  - Added route-level regression test in `tests/test_preflight.py` for `POST /api/preflight/compare_autosave_vs_latest_saved` to lock preservation of `placement_hierarchy_cycle_report_truncated` diagnostics emitted by core preflight logic.
+  - Added AI-dispatch regression test in `tests/test_ai_api.py` for `compare_autosave_preflight_vs_latest_saved` to ensure wrapper responses keep truncation diagnostics unchanged.
+  - Added deterministic multi-cycle helper in `tests/test_ai_api.py` and constrained cycle discovery to `max_cycles=1` via patched `_find_preflight_hierarchy_cycles(...)` so truncation behavior is forced and reproducible.
+  - Locked both truncation message text and `metadata` payload contract (`max_cycles`, `reported_cycles`, `truncated`) in wrapper responses.
+  - Why: prevents accidental metadata loss between core preflight diagnostics and higher-level API/AI compare surfaces used for debugging and automation.
+
 - **Cycle-report truncation metadata enrichment (`max_cycles`)** (2026-03-11)
   - Updated `_find_preflight_hierarchy_cycles(...)` in `src/project_manager.py` to return structured metadata alongside cycles:
     - `max_cycles`
@@ -94,6 +101,6 @@
    - Add route-level regression checks to ensure `selection.ordering_basis` and source metadata remain stable across every compare endpoint variant.
    - Impact: medium (prevents drift/regression in reproducibility diagnostics contract).
 
-2. **Expose cycle-truncation metadata through compare/list API regression coverage**
-   - Add route-level checks ensuring `placement_hierarchy_cycle_report_truncated` metadata survives compare/list wrappers unchanged (message + `metadata.max_cycles` / `metadata.reported_cycles`).
-   - Impact: medium (prevents metadata loss between core preflight logic and API surfaces).
+2. **Expand cycle-truncation metadata preservation coverage across additional compare wrappers**
+   - Add regression checks for additional compare surfaces (`compare_versions`, snapshot compare routes, and run-id/manual-index compare wrappers) so truncation diagnostics remain stable beyond autosave-vs-latest-saved.
+   - Impact: medium (broadens contract protection for all deterministic preflight comparison entry points).
