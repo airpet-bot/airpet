@@ -6,6 +6,15 @@
 
 ## Recently Completed
 
+- **Cycle-report truncation diagnostics regression coverage (`max_cycles`)** (2026-03-11)
+  - Added `_build_multi_cycle_lv_triangle(...)` test helper in `tests/test_preflight.py` to construct a deterministic multi-cycle LV graph for cap-behavior validation.
+  - Added `test_find_preflight_hierarchy_cycles_respects_max_cycles_cap_deterministically` to lock `_find_preflight_hierarchy_cycles(..., max_cycles=...)` behavior:
+    - deterministic cycle ordering
+    - deterministic cap at `max_cycles`
+    - deterministic `truncated=True` signaling when the cap is reached
+  - Added `test_preflight_reports_cycle_truncation_issue_when_cycle_report_hits_cap` to lock emission of the `placement_hierarchy_cycle_report_truncated` info diagnostic from `run_preflight_checks()`.
+  - Why: preserves debuggable, predictable failure-mode reporting when recursive geometry graphs produce many cycles.
+
 - **Cycle-path diagnostics regression coverage for mixed physvol/procedural/assembly hierarchies** (2026-03-11)
   - Added `test_preflight_mixed_cycle_path_is_deterministic_and_deduplicated` in `tests/test_preflight.py` to lock deterministic cycle reporting for a mixed-edge loop:
     - `ASM → LV` via assembly placement
@@ -72,6 +81,6 @@
    - Add route-level regression checks to ensure `selection.ordering_basis` and source metadata remain stable across every compare endpoint variant.
    - Impact: medium (prevents drift/regression in reproducibility diagnostics contract).
 
-2. **Cycle-report truncation diagnostics coverage (`max_cycles`)**
-   - Add focused tests for `_find_preflight_hierarchy_cycles(..., max_cycles=...)` and `placement_hierarchy_cycle_report_truncated` so cycle truncation behavior remains deterministic and debuggable under high-cycle graphs.
-   - Impact: medium (guards failure-mode diagnostics quality for complex recursive hierarchies).
+2. **Cycle-diagnostics metadata enrichment for truncated reports**
+   - Extend truncation reporting to include explicit cap metadata (e.g., `max_cycles`) and align helper/issue payloads for easier downstream debugging and AI-tool interpretation.
+   - Impact: medium (improves failure-mode observability for complex recursive hierarchies).

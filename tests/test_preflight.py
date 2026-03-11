@@ -308,6 +308,77 @@ def test_preflight_cycle_signature_normalization_deduplicates_rotations():
     assert sig_a == sig_b == sig_c
 
 
+def _build_multi_cycle_lv_triangle(pm):
+    loop_a, err = pm.add_logical_volume('trunc_cycle_a_lv', 'box_solid', 'G4_Galactic')
+    assert err is None
+    loop_b, err = pm.add_logical_volume('trunc_cycle_b_lv', 'box_solid', 'G4_Galactic')
+    assert err is None
+    loop_c, err = pm.add_logical_volume('trunc_cycle_c_lv', 'box_solid', 'G4_Galactic')
+    assert err is None
+
+    edges = [
+        (loop_a['name'], loop_b['name']),
+        (loop_a['name'], loop_c['name']),
+        (loop_b['name'], loop_a['name']),
+        (loop_b['name'], loop_c['name']),
+        (loop_c['name'], loop_a['name']),
+        (loop_c['name'], loop_b['name']),
+    ]
+
+    for idx, (parent_name, child_name) in enumerate(edges, start=1):
+        _, err = pm.add_physical_volume(
+            parent_name,
+            f'trunc_edge_{idx}',
+            child_name,
+            {'x': '0', 'y': '0', 'z': '0'},
+            {'x': '0', 'y': '0', 'z': '0'},
+            {'x': '1', 'y': '1', 'z': '1'},
+        )
+        assert err is None
+
+    return loop_a, loop_b, loop_c
+
+
+def test_find_preflight_hierarchy_cycles_respects_max_cycles_cap_deterministically():
+    pm = _make_pm()
+    loop_a, loop_b, loop_c = _build_multi_cycle_lv_triangle(pm)
+
+    cycles, truncated = pm._find_preflight_hierarchy_cycles(pm.current_geometry_state, max_cycles=2)
+
+    assert truncated is True
+    assert len(cycles) == 2
+    assert cycles[0] == [f"LV:{loop_a['name']}", f"LV:{loop_b['name']}", f"LV:{loop_a['name']}"]
+    assert cycles[1] == [
+        f"LV:{loop_a['name']}",
+        f"LV:{loop_b['name']}",
+        f"LV:{loop_c['name']}",
+        f"LV:{loop_a['name']}",
+    ]
+
+
+def test_preflight_reports_cycle_truncation_issue_when_cycle_report_hits_cap():
+    pm = _make_pm()
+    _build_multi_cycle_lv_triangle(pm)
+
+    original_find_cycles = pm._find_preflight_hierarchy_cycles
+    with patch.object(
+        pm,
+        '_find_preflight_hierarchy_cycles',
+        side_effect=lambda state: original_find_cycles(state, max_cycles=1),
+    ):
+        report = pm.run_preflight_checks()
+
+    cycle_issues = [i for i in report['issues'] if i['code'] == 'placement_hierarchy_cycle']
+    truncation_issues = [
+        i for i in report['issues'] if i['code'] == 'placement_hierarchy_cycle_report_truncated'
+    ]
+
+    assert len(cycle_issues) == 1
+    assert len(truncation_issues) == 1
+    assert truncation_issues[0]['severity'] == 'info'
+    assert truncation_issues[0]['message'] == 'Cycle reporting truncated after 1 findings.'
+
+
 
 def test_preflight_detects_unknown_procedural_reference_and_invalid_replica_bounds():
     pm = _make_pm()
