@@ -6,6 +6,21 @@
 
 ## Recently Completed
 
+- **Snapshot/explicit compare route↔AI parity matrix expansion (success + stale-id/not-enough failure contracts)** (2026-03-12)
+  - Added snapshot/explicit parity fixture helpers in `tests/test_ai_api.py`:
+    - `_seed_preflight_snapshot_route_ai_parity_fixture(...)`
+    - `_seed_preflight_snapshot_insufficient_versions_fixture(...)`
+  - Added `test_preflight_compare_snapshot_and_explicit_routes_and_ai_wrappers_share_success_payloads` with table-driven route-vs-AI success parity assertions for remaining snapshot/explicit compare surfaces:
+    - `POST /api/preflight/compare_autosave_vs_saved_version` ↔ `compare_autosave_preflight_vs_saved_version`
+    - `POST /api/preflight/compare_autosave_vs_snapshot_version` ↔ `compare_autosave_preflight_vs_snapshot_version`
+    - `POST /api/preflight/compare_autosave_vs_latest_snapshot` ↔ `compare_autosave_preflight_vs_latest_snapshot`
+    - `POST /api/preflight/compare_autosave_vs_previous_snapshot` ↔ `compare_autosave_preflight_vs_previous_snapshot`
+    - `POST /api/preflight/compare_snapshot_versions` ↔ `compare_autosave_snapshot_preflight_versions`
+    - `POST /api/preflight/compare_latest_snapshot_versions` ↔ `compare_latest_autosave_snapshot_preflight_versions`
+  - Added `test_preflight_snapshot_selector_routes_and_ai_wrappers_share_stale_id_404_error_envelopes` to lock status-aware 404 parity for stale snapshot ids on explicit selector paths.
+  - Added `test_preflight_snapshot_selector_routes_and_ai_wrappers_share_not_enough_versions_400_error_envelopes` to lock status-aware 400 parity for snapshot selectors that require at least two saved snapshots.
+  - Why: closes the remaining snapshot/explicit route-vs-AI compare parity gap so deterministic clients and AI automation receive equivalent contracts on both success and key failure modes.
+
 - **Run/manual selector stale-id 404 envelope parity coverage (route + AI wrappers)** (2026-03-12)
   - Added `_seed_preflight_run_selector_stale_version_fixture(...)` in `tests/test_ai_api.py` to deterministically create run-linked selector fixtures where a selected manual version directory still exists but its `version.json` has been removed (stale-id scenario).
   - Added `test_preflight_run_selector_routes_and_ai_wrappers_share_stale_id_404_error_envelopes` with table-driven route-vs-AI parity assertions for stale selected-version lookups across run/manual selector surfaces:
@@ -281,14 +296,14 @@
 
 ## Next Candidates
 
-1. **Expand compare parity matrix to remaining snapshot/explicit selector surfaces**
-   - Extend route-vs-AI parity loops to include snapshot-specific compare selectors (`compare_autosave_vs_snapshot_version`, `compare_snapshot_versions`, `compare_latest_snapshot_versions`) and representative stale-id/not-enough-versions failures.
-   - Impact: medium (locks consistency for the remaining deterministic compare entry points used by snapshot-heavy workflows).
-
-2. **Route/AI parity matrix for preflight list/discovery failure envelopes**
+1. **Route/AI parity matrix for preflight list/discovery failure envelopes**
    - Add table-driven route-vs-AI parity checks for representative list/discovery failures (missing selectors, invalid limits), asserting status-aware envelope equality and exclusion of success-only metadata.
    - Impact: medium (completes deterministic parity guarantees across both success and failure list/discovery paths).
 
-3. **Stale-version metadata behavior for run-linked list selectors**
+2. **Stale-version metadata behavior for run-linked list selectors**
    - Add regression coverage for `list_manual_saved_versions_for_simulation_run` when matching version directories have missing `version.json`, locking deterministic `version_json_mtime_utc`/source-path metadata and clarifying expected behavior for partially deleted artifacts.
    - Impact: medium (improves diagnosability/reproducibility when project version directories drift).
+
+3. **Cross-surface parity for compare selector validation errors (400 aliases + required-field diagnostics)**
+   - Add route-vs-AI parity checks that intentionally exercise malformed selector aliases (e.g., conflicting/missing snapshot/saved fields) to lock equivalent validation messaging and metadata-clean error envelopes.
+   - Impact: medium (hardens deterministic client/agent branching for invalid-input recovery paths).

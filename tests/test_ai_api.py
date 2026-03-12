@@ -201,6 +201,39 @@ def _seed_preflight_run_selector_stale_version_fixture(pm, tmp_path):
         'stale_selected_version_id': stale_selected_version_id,
     }
 
+def _seed_preflight_snapshot_route_ai_parity_fixture(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_route_compare_snapshot_parity_project"
+
+    requested_saved_version_id, _ = pm.save_project_version('manual_ai_route_saved_selected')
+    baseline_snapshot_version_id, _ = pm.save_project_version('autosave_snapshot_ai_route_old')
+
+    pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'MissingMat'
+    pm.recalculate_geometry_state()
+    candidate_snapshot_version_id, _ = pm.save_project_version('autosave_snapshot_ai_route_new')
+
+    autosave_dir = pm._get_version_dir('autosave')
+    os.makedirs(autosave_dir, exist_ok=True)
+    with open(os.path.join(autosave_dir, 'version.json'), 'w') as handle:
+        handle.write(pm.save_project_to_json_string())
+
+    return {
+        'requested_saved_version_id': requested_saved_version_id,
+        'baseline_snapshot_version_id': baseline_snapshot_version_id,
+        'candidate_snapshot_version_id': candidate_snapshot_version_id,
+    }
+
+
+def _seed_preflight_snapshot_insufficient_versions_fixture(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_route_compare_snapshot_parity_insufficient_project"
+
+    only_snapshot_version_id, _ = pm.save_project_version('autosave_snapshot_ai_route_only')
+
+    return {
+        'only_snapshot_version_id': only_snapshot_version_id,
+    }
+
 
 def test_ai_tool_manage_define(pm):
     # Test creation
@@ -1875,6 +1908,203 @@ def test_preflight_run_selector_routes_and_ai_wrappers_share_stale_id_404_error_
         _assert_compare_ai_error_payload_excludes_success_metadata(route_data)
         assert "not found" in route_data["error"].lower()
         assert fixture["stale_selected_version_id"] in route_data["error"]
+
+
+
+def test_preflight_compare_snapshot_and_explicit_routes_and_ai_wrappers_share_success_payloads(pm, tmp_path):
+    fixture = _seed_preflight_snapshot_route_ai_parity_fixture(pm, tmp_path)
+
+    cases = [
+        {
+            "name": "compare_autosave_vs_saved_version",
+            "route": "/api/preflight/compare_autosave_vs_saved_version",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "version_id": fixture["requested_saved_version_id"],
+            },
+            "tool": "compare_autosave_preflight_vs_saved_version",
+            "ai_args": {
+                "project": pm.project_name,
+                "saved_version": fixture["requested_saved_version_id"],
+            },
+            "selection_ordering_basis": "explicit_saved_version_id",
+        },
+        {
+            "name": "compare_autosave_vs_snapshot_version",
+            "route": "/api/preflight/compare_autosave_vs_snapshot_version",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "snapshot_version_id": fixture["baseline_snapshot_version_id"],
+            },
+            "tool": "compare_autosave_preflight_vs_snapshot_version",
+            "ai_args": {
+                "project": pm.project_name,
+                "version_id": fixture["baseline_snapshot_version_id"],
+            },
+            "selection_ordering_basis": "explicit_autosave_snapshot_version_id",
+        },
+        {
+            "name": "compare_autosave_vs_latest_snapshot",
+            "route": "/api/preflight/compare_autosave_vs_latest_snapshot",
+            "route_payload": {
+                "project_name": pm.project_name,
+            },
+            "tool": "compare_autosave_preflight_vs_latest_snapshot",
+            "ai_args": {
+                "project": pm.project_name,
+            },
+            "selection_ordering_basis": "autosave_snapshot_versions_sorted_by_mtime_then_version_id_desc",
+        },
+        {
+            "name": "compare_autosave_vs_previous_snapshot",
+            "route": "/api/preflight/compare_autosave_vs_previous_snapshot",
+            "route_payload": {
+                "project_name": pm.project_name,
+            },
+            "tool": "compare_autosave_preflight_vs_previous_snapshot",
+            "ai_args": {
+                "project": pm.project_name,
+            },
+            "selection_ordering_basis": "autosave_snapshot_versions_sorted_by_mtime_then_version_id_desc",
+        },
+        {
+            "name": "compare_snapshot_versions",
+            "route": "/api/preflight/compare_snapshot_versions",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "baseline_version": fixture["baseline_snapshot_version_id"],
+                "candidate_version_id": fixture["candidate_snapshot_version_id"],
+            },
+            "tool": "compare_autosave_snapshot_preflight_versions",
+            "ai_args": {
+                "project": pm.project_name,
+                "baseline": fixture["baseline_snapshot_version_id"],
+                "candidate_version": fixture["candidate_snapshot_version_id"],
+            },
+            "selection_ordering_basis": "explicit_autosave_snapshot_version_ids",
+        },
+        {
+            "name": "compare_latest_snapshot_versions",
+            "route": "/api/preflight/compare_latest_snapshot_versions",
+            "route_payload": {
+                "project_name": pm.project_name,
+            },
+            "tool": "compare_latest_autosave_snapshot_preflight_versions",
+            "ai_args": {
+                "project": pm.project_name,
+            },
+            "selection_ordering_basis": "autosave_snapshot_versions_sorted_by_mtime_then_version_id_desc",
+        },
+    ]
+
+    for case in cases:
+        status_code, route_data = _call_preflight_route_with_pm(
+            pm,
+            case["route"],
+            case["route_payload"],
+        )
+        ai_data = dispatch_ai_tool(pm, case["tool"], case["ai_args"])
+
+        assert status_code == 200
+        assert route_data == ai_data
+        assert route_data["success"] is True
+        assert route_data["ordering_metadata"]["ordering_basis"] == "explicit_version_ids"
+        assert route_data["selection"]["ordering_basis"] == case["selection_ordering_basis"]
+
+
+
+def test_preflight_snapshot_selector_routes_and_ai_wrappers_share_stale_id_404_error_envelopes(pm, tmp_path):
+    fixture = _seed_preflight_snapshot_route_ai_parity_fixture(pm, tmp_path)
+
+    missing_snapshot_version_id = "20990101_autosave_snapshot_missing_for_route_ai_parity"
+
+    cases = [
+        {
+            "route": "/api/preflight/compare_autosave_vs_snapshot_version",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "snapshot_version": missing_snapshot_version_id,
+            },
+            "tool": "compare_autosave_preflight_vs_snapshot_version",
+            "ai_args": {
+                "project": pm.project_name,
+                "autosave_snapshot_version": missing_snapshot_version_id,
+            },
+            "expected_status": 404,
+        },
+        {
+            "route": "/api/preflight/compare_snapshot_versions",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "baseline_snapshot_version_id": fixture["baseline_snapshot_version_id"],
+                "candidate_snapshot_version": missing_snapshot_version_id,
+            },
+            "tool": "compare_autosave_snapshot_preflight_versions",
+            "ai_args": {
+                "project": pm.project_name,
+                "baseline_snapshot_version": fixture["baseline_snapshot_version_id"],
+                "candidate": missing_snapshot_version_id,
+            },
+            "expected_status": 404,
+        },
+    ]
+
+    for case in cases:
+        status_code, route_data = _call_preflight_route_with_pm(
+            pm,
+            case["route"],
+            case["route_payload"],
+        )
+        ai_data = dispatch_ai_tool(pm, case["tool"], case["ai_args"])
+
+        assert status_code == case["expected_status"]
+        assert route_data == ai_data
+        _assert_compare_ai_error_payload_excludes_success_metadata(route_data)
+        assert "not found" in route_data["error"].lower()
+        assert missing_snapshot_version_id in route_data["error"]
+
+
+
+def test_preflight_snapshot_selector_routes_and_ai_wrappers_share_not_enough_versions_400_error_envelopes(pm, tmp_path):
+    _seed_preflight_snapshot_insufficient_versions_fixture(pm, tmp_path)
+
+    cases = [
+        {
+            "route": "/api/preflight/compare_autosave_vs_previous_snapshot",
+            "route_payload": {
+                "project_name": pm.project_name,
+            },
+            "tool": "compare_autosave_preflight_vs_previous_snapshot",
+            "ai_args": {
+                "project": pm.project_name,
+            },
+            "error_substring": "at least two saved autosave snapshot versions",
+        },
+        {
+            "route": "/api/preflight/compare_latest_snapshot_versions",
+            "route_payload": {
+                "project_name": pm.project_name,
+            },
+            "tool": "compare_latest_autosave_snapshot_preflight_versions",
+            "ai_args": {
+                "project": pm.project_name,
+            },
+            "error_substring": "at least two saved autosave snapshot versions",
+        },
+    ]
+
+    for case in cases:
+        status_code, route_data = _call_preflight_route_with_pm(
+            pm,
+            case["route"],
+            case["route_payload"],
+        )
+        ai_data = dispatch_ai_tool(pm, case["tool"], case["ai_args"])
+
+        assert status_code == 400
+        assert route_data == ai_data
+        _assert_compare_ai_error_payload_excludes_success_metadata(route_data)
+        assert case["error_substring"] in route_data["error"].lower()
 
 
 def test_ai_simulation_tools(pm):
