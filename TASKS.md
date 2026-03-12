@@ -6,6 +6,15 @@
 
 ## Recently Completed
 
+- **Route/AI parity checks for preflight list/discovery success payloads** (2026-03-12)
+  - Added `test_preflight_list_routes_and_ai_wrappers_share_success_payloads` in `tests/test_ai_api.py`.
+  - Added table-driven route-vs-AI success parity assertions for:
+    - `POST /api/preflight/list_versions` ↔ `list_preflight_versions`
+    - `POST /api/preflight/list_manual_saved_versions_for_simulation_run` ↔ `list_manual_saved_versions_for_simulation_run`
+  - Locked equality with mixed alias usage on both route and AI sides (`project`/`project_name`, `run_id`/`job_id`, `count`/`max_versions`) so normalization paths remain contract-consistent.
+  - Added deterministic metadata assertions for ordering/source fields (`ordering_basis`, `manual_saved_ordering_basis`, `timestamp_source`, source-path checks, run-linked index metadata).
+  - Why: guards deterministic selector/discovery behavior across HTTP and AI workflows before compare selection, improving reproducibility and automation reliability.
+
 - **Route/AI preflight compare parity matrix coverage (table-driven success + failure contracts)** (2026-03-12)
   - Added shared route/fixture helpers in `tests/test_ai_api.py`:
     - `_call_preflight_route_with_pm(...)`
@@ -267,10 +276,10 @@
    - Add explicit stale-id regressions for run-linked/manual-index compare selector routes and AI wrappers where version lookups occur after selector expansion, ensuring `success/error` envelopes remain metadata-clean on not-found paths.
    - Impact: medium (completes deterministic stale-id handling coverage across simulation-run keyed compare surfaces).
 
-2. **Route/AI parity checks for preflight list/discovery success payloads**
-   - Add table-driven assertions that route and AI list surfaces (`list_preflight_versions`, `list_manual_saved_versions_for_simulation_run`) expose matching ordering/source metadata and counts for identical fixtures.
-   - Impact: medium (guards deterministic selector UX for both API and AI automation paths).
-
-3. **Expand compare parity matrix to remaining snapshot/explicit selector surfaces**
+2. **Expand compare parity matrix to remaining snapshot/explicit selector surfaces**
    - Extend new route-vs-AI parity loops to include snapshot-specific compare selectors (`compare_autosave_vs_snapshot_version`, `compare_snapshot_versions`, `compare_latest_snapshot_versions`) and representative stale-id/not-enough-versions failures.
    - Impact: medium (locks consistency for the remaining deterministic compare entry points used by snapshot-heavy workflows).
+
+3. **Route/AI parity matrix for preflight list/discovery failure envelopes**
+   - Add table-driven route-vs-AI parity checks for representative list/discovery failures (missing selectors, invalid limits), asserting status-aware envelope equality and exclusion of success-only metadata.
+   - Impact: medium (completes deterministic parity guarantees across both success and failure list/discovery paths).
