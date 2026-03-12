@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from flask import jsonify, session
 from src.project_manager import ProjectManager
 from src.expression_evaluator import ExpressionEvaluator
+from src.geometry_types import DivisionVolume, ReplicaVolume
 from app import dispatch_ai_tool, app as flask_app
 
 @pytest.fixture
@@ -233,6 +234,80 @@ def _seed_preflight_snapshot_insufficient_versions_fixture(pm, tmp_path):
     return {
         'only_snapshot_version_id': only_snapshot_version_id,
     }
+
+
+def _seed_preflight_corpus_missing_world_volume_reference(pm):
+    pm.current_geometry_state.world_volume_ref = ''
+
+
+def _seed_preflight_corpus_unknown_world_volume_reference(pm):
+    pm.current_geometry_state.world_volume_ref = 'MissingWorldLV'
+
+
+def _seed_preflight_corpus_bad_replica_reference_and_bounds(pm):
+    container_lv = pm.current_geometry_state.logical_volumes['box_LV']
+    container_lv.content_type = 'replica'
+    container_lv.content = ReplicaVolume(
+        name='bad_replica',
+        volume_ref='MissingReplicaTarget',
+        number='0',
+        direction={'x': '0', 'y': '0', 'z': '0'},
+        width='0',
+        offset='0',
+    )
+
+
+def _seed_preflight_corpus_bad_division_axis_and_bounds(pm):
+    child_lv, err = pm.add_logical_volume('division_child_lv', 'box_solid', 'G4_Galactic')
+    assert err is None
+
+    container_lv = pm.current_geometry_state.logical_volumes['box_LV']
+    container_lv.content_type = 'division'
+    container_lv.content = DivisionVolume(
+        name='bad_division',
+        volume_ref=child_lv['name'],
+        axis='kBadAxis',
+        number='0',
+        width='0',
+        offset='0',
+        unit='mm',
+    )
+
+
+def _seed_preflight_corpus_logical_volume_cycle(pm):
+    loop_a, err = pm.add_logical_volume('loop_a_LV', 'box_solid', 'G4_Galactic')
+    assert err is None
+    loop_b, err = pm.add_logical_volume('loop_b_LV', 'box_solid', 'G4_Galactic')
+    assert err is None
+
+    _, err = pm.add_physical_volume(
+        loop_a['name'],
+        'loop_a_to_b',
+        loop_b['name'],
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '1', 'y': '1', 'z': '1'},
+    )
+    assert err is None
+
+    _, err = pm.add_physical_volume(
+        loop_b['name'],
+        'loop_b_to_a',
+        loop_a['name'],
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '1', 'y': '1', 'z': '1'},
+    )
+    assert err is None
+
+
+def _save_seeded_preflight_corpus_version(pm, *, seed, description):
+    pm.create_empty_project()
+    seed(pm)
+    version_id, message = pm.save_project_version(description)
+    assert isinstance(version_id, str) and version_id
+    assert isinstance(message, str) and message
+    return version_id
 
 
 def test_ai_tool_manage_define(pm):
@@ -1766,6 +1841,143 @@ def test_preflight_list_manual_saved_versions_for_simulation_run_route_and_ai_wr
     assert older_entry["manual_saved_index"] == ordered_ids.index(fixture["oldest_matching_version_id"])
     assert older_entry["has_version_json"] is True
     assert older_entry["version_json_mtime_utc"] is not None
+
+
+def test_preflight_compare_versions_route_and_ai_wrappers_share_topology_reference_corpus_transition_matrix_payloads(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "ai_route_compare_corpus_transition_matrix"
+
+    cases = [
+        {
+            "name": "missing_world_to_unknown_world",
+            "baseline_seed": _seed_preflight_corpus_missing_world_volume_reference,
+            "candidate_seed": _seed_preflight_corpus_unknown_world_volume_reference,
+            "baseline_fingerprint": "e200719a2748b5a1257d7834478313d603069b4af59e02d1591b63198e9ad655",
+            "candidate_fingerprint": "4e1d1b9ae63ee52a7b0a79ab3eef17e34c2cbad316e97a07b2bc677af946943e",
+            "added_issue_codes": ["unknown_world_volume_reference"],
+            "resolved_issue_codes": ["missing_world_volume_reference"],
+            "counts_delta_by_code": {
+                "missing_world_volume_reference": -1,
+                "unknown_world_volume_reference": 1,
+            },
+            "issue_count_delta": 0,
+        },
+        {
+            "name": "replica_bounds_to_division_bounds",
+            "baseline_seed": _seed_preflight_corpus_bad_replica_reference_and_bounds,
+            "candidate_seed": _seed_preflight_corpus_bad_division_axis_and_bounds,
+            "baseline_fingerprint": "77e2b23966d15dedfd239104c5c0f9ded7f2097d26cc5553c337f9b1e102e9b5",
+            "candidate_fingerprint": "f5eb06213fb26a40c39308753c6a740665cd651994d73642dc440a9ca9ba6094",
+            "added_issue_codes": ["invalid_division_axis", "invalid_division_partition_bounds"],
+            "resolved_issue_codes": [
+                "invalid_replica_direction",
+                "invalid_replica_instance_count",
+                "invalid_replica_width",
+                "unknown_procedural_volume_reference",
+            ],
+            "counts_delta_by_code": {
+                "invalid_division_axis": 1,
+                "invalid_division_partition_bounds": 1,
+                "invalid_replica_direction": -1,
+                "invalid_replica_instance_count": -1,
+                "invalid_replica_width": -1,
+                "unknown_procedural_volume_reference": -1,
+            },
+            "issue_count_delta": -2,
+        },
+        {
+            "name": "division_bounds_to_lv_cycle",
+            "baseline_seed": _seed_preflight_corpus_bad_division_axis_and_bounds,
+            "candidate_seed": _seed_preflight_corpus_logical_volume_cycle,
+            "baseline_fingerprint": "f5eb06213fb26a40c39308753c6a740665cd651994d73642dc440a9ca9ba6094",
+            "candidate_fingerprint": "7401a86ee10d69b29b204e78a22a34ca7f8d481297c02193615ea33cb7e3d7d3",
+            "added_issue_codes": ["placement_hierarchy_cycle"],
+            "resolved_issue_codes": ["invalid_division_axis", "invalid_division_partition_bounds"],
+            "counts_delta_by_code": {
+                "invalid_division_axis": -1,
+                "invalid_division_partition_bounds": -1,
+                "placement_hierarchy_cycle": 1,
+            },
+            "issue_count_delta": -1,
+        },
+    ]
+
+    expected_status = {
+        "can_run_changed": False,
+        "regressed_can_run": False,
+        "improved_can_run": False,
+        "fingerprint_changed": True,
+    }
+
+    for case in cases:
+        baseline_version_id = _save_seeded_preflight_corpus_version(
+            pm,
+            seed=case["baseline_seed"],
+            description=f"{case['name']}_baseline",
+        )
+        candidate_version_id = _save_seeded_preflight_corpus_version(
+            pm,
+            seed=case["candidate_seed"],
+            description=f"{case['name']}_candidate",
+        )
+
+        status_code, route_data = _call_preflight_route_with_pm(
+            pm,
+            "/api/preflight/compare_versions",
+            {
+                "project_name": pm.project_name,
+                "baseline_version": baseline_version_id,
+                "candidate_version_id": candidate_version_id,
+            },
+        )
+        ai_data = dispatch_ai_tool(pm, "compare_preflight_versions", {
+            "project": pm.project_name,
+            "before_version": baseline_version_id,
+            "after_version": candidate_version_id,
+        })
+
+        assert status_code == 200, case["name"]
+        assert route_data == ai_data, case["name"]
+        assert route_data["success"] is True, case["name"]
+
+        comparison = route_data["comparison"]
+        assert comparison["baseline"]["issue_fingerprint"] == case["baseline_fingerprint"], case["name"]
+        assert comparison["candidate"]["issue_fingerprint"] == case["candidate_fingerprint"], case["name"]
+        assert comparison["added_issue_codes"] == case["added_issue_codes"], case["name"]
+        assert comparison["resolved_issue_codes"] == case["resolved_issue_codes"], case["name"]
+        assert comparison["counts_delta_by_code"] == case["counts_delta_by_code"], case["name"]
+        assert comparison["issue_count_delta"] == case["issue_count_delta"], case["name"]
+        assert comparison["status"] == expected_status, case["name"]
+
+        _assert_compare_ai_selection_and_source_metadata(
+            route_data,
+            baseline_version_id=baseline_version_id,
+            candidate_version_id=candidate_version_id,
+        )
+
+        replay_pm = ProjectManager(ExpressionEvaluator())
+        replay_pm.create_empty_project()
+        replay_pm.projects_dir = pm.projects_dir
+        replay_pm.project_name = pm.project_name
+
+        replay_status_code, replay_route_data = _call_preflight_route_with_pm(
+            replay_pm,
+            "/api/preflight/compare_versions",
+            {
+                "project_name": replay_pm.project_name,
+                "baseline_version_id": baseline_version_id,
+                "candidate_version": candidate_version_id,
+            },
+        )
+        replay_ai_data = dispatch_ai_tool(replay_pm, "compare_preflight_versions", {
+            "project_name": replay_pm.project_name,
+            "baseline_version_id": baseline_version_id,
+            "candidate": candidate_version_id,
+        })
+
+        assert replay_status_code == 200, case["name"]
+        assert replay_route_data == route_data, case["name"]
+        assert replay_ai_data == route_data, case["name"]
 
 
 def test_preflight_compare_routes_and_ai_wrappers_share_success_payloads(pm, tmp_path):
