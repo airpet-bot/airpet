@@ -2055,6 +2055,7 @@ def list_manual_saved_versions_for_simulation_run(
             'version_id': version_id,
             'timestamp': source['timestamp_from_version_id'],
             'timestamp_source': 'version_id_prefix',
+            'has_version_json': source['version_json_exists'],
             'version_json_mtime_utc': source['version_json_mtime_utc'],
             'source_path_checks': source['source_path_checks'],
         })

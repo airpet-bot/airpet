@@ -1171,6 +1171,51 @@ def test_list_manual_saved_versions_for_simulation_run_applies_limit():
     assert result['matching_manual_saved_versions'][0]['version_id'] == expected_latest
 
 
+def test_list_manual_saved_versions_for_simulation_run_preserves_stale_version_json_metadata():
+    pm = _make_pm()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        pm.projects_dir = tmpdir
+        pm.project_name = 'preflight_list_manual_saved_for_run_stale_metadata'
+
+        simulation_run_id = 'job_list_run_stale_metadata'
+
+        older_matching_version_id, _ = pm.save_project_version('manual_list_stale_old')
+        os.makedirs(os.path.join(pm._get_version_dir(older_matching_version_id), 'sim_runs', simulation_run_id), exist_ok=True)
+
+        stale_matching_version_id, _ = pm.save_project_version('manual_list_stale_latest')
+        os.makedirs(os.path.join(pm._get_version_dir(stale_matching_version_id), 'sim_runs', simulation_run_id), exist_ok=True)
+        os.remove(os.path.join(pm._get_version_dir(stale_matching_version_id), 'version.json'))
+
+        result = list_manual_saved_versions_for_simulation_run(
+            pm,
+            simulation_run_id=simulation_run_id,
+        )
+
+    expected_order = sorted([older_matching_version_id, stale_matching_version_id], reverse=True)
+    assert [entry['version_id'] for entry in result['matching_manual_saved_versions']] == expected_order
+
+    stale_entry = next(
+        entry
+        for entry in result['matching_manual_saved_versions']
+        if entry['version_id'] == stale_matching_version_id
+    )
+    assert stale_entry['manual_saved_index'] == expected_order.index(stale_matching_version_id)
+    assert stale_entry['has_version_json'] is False
+    assert stale_entry['version_json_mtime_utc'] is None
+    assert stale_entry['timestamp_source'] == 'version_id_prefix'
+    assert stale_entry['source_path_checks']['version_json_within_versions_root'] is True
+
+    older_entry = next(
+        entry
+        for entry in result['matching_manual_saved_versions']
+        if entry['version_id'] == older_matching_version_id
+    )
+    assert older_entry['manual_saved_index'] == expected_order.index(older_matching_version_id)
+    assert older_entry['has_version_json'] is True
+    assert older_entry['version_json_mtime_utc'] is not None
+
+
 def test_compare_autosave_preflight_vs_manual_saved_for_simulation_run_requires_matching_manual_version():
     pm = _make_pm()
 

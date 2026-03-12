@@ -1723,6 +1723,51 @@ def test_preflight_list_routes_and_ai_wrappers_share_success_payloads(pm, tmp_pa
             assert route_data["matching_manual_saved_versions"][0]["source_path_checks"]["version_json_within_versions_root"] is True
 
 
+def test_preflight_list_manual_saved_versions_for_simulation_run_route_and_ai_wrappers_share_stale_version_metadata_payloads(pm, tmp_path):
+    fixture = _seed_preflight_run_selector_stale_version_fixture(pm, tmp_path)
+
+    status_code, route_data = _call_preflight_route_with_pm(
+        pm,
+        "/api/preflight/list_manual_saved_versions_for_simulation_run",
+        {
+            "project_name": pm.project_name,
+            "run_id": fixture["simulation_run_id"],
+        },
+    )
+    ai_data = dispatch_ai_tool(pm, "list_manual_saved_versions_for_simulation_run", {
+        "project": pm.project_name,
+        "simulation_run_id": fixture["simulation_run_id"],
+    })
+
+    assert status_code == 200
+    assert route_data == ai_data
+    assert route_data["success"] is True
+    assert route_data["total_matching_manual_saved_versions"] == 2
+    assert route_data["returned_matching_manual_saved_versions"] == 2
+
+    ordered_ids = [entry["version_id"] for entry in route_data["matching_manual_saved_versions"]]
+
+    stale_entry = next(
+        entry
+        for entry in route_data["matching_manual_saved_versions"]
+        if entry["version_id"] == fixture["stale_selected_version_id"]
+    )
+    assert stale_entry["manual_saved_index"] == ordered_ids.index(fixture["stale_selected_version_id"])
+    assert stale_entry["has_version_json"] is False
+    assert stale_entry["version_json_mtime_utc"] is None
+    assert stale_entry["timestamp_source"] == "version_id_prefix"
+    assert stale_entry["source_path_checks"]["version_json_within_versions_root"] is True
+
+    older_entry = next(
+        entry
+        for entry in route_data["matching_manual_saved_versions"]
+        if entry["version_id"] == fixture["oldest_matching_version_id"]
+    )
+    assert older_entry["manual_saved_index"] == ordered_ids.index(fixture["oldest_matching_version_id"])
+    assert older_entry["has_version_json"] is True
+    assert older_entry["version_json_mtime_utc"] is not None
+
+
 def test_preflight_compare_routes_and_ai_wrappers_share_success_payloads(pm, tmp_path):
     fixture = _seed_preflight_compare_route_ai_parity_fixture(pm, tmp_path)
 

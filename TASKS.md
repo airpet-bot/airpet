@@ -6,6 +6,16 @@
 
 ## Recently Completed
 
+- **Run-linked list stale-version metadata parity (route + AI) and explicit `has_version_json` diagnostics** (2026-03-12)
+  - Extended `list_manual_saved_versions_for_simulation_run(...)` in `app.py` to include `has_version_json` for each returned match, aligning list output with existing version-source diagnostics used elsewhere in preflight selectors.
+  - Added regression test `test_list_manual_saved_versions_for_simulation_run_preserves_stale_version_json_metadata` in `tests/test_preflight.py` to lock behavior when a run-matching manual version directory exists but `version.json` has been deleted:
+    - stale entries remain listed in deterministic order
+    - `has_version_json == False`
+    - `version_json_mtime_utc == None`
+    - source-path check metadata remains present
+  - Added route↔AI parity regression test `test_preflight_list_manual_saved_versions_for_simulation_run_route_and_ai_wrappers_share_stale_version_metadata_payloads` in `tests/test_ai_api.py` to lock identical stale-metadata success payloads across HTTP and AI tool surfaces.
+  - Why: improves reproducibility/debuggability for partially deleted version artifacts while preserving deterministic selector behavior and cross-surface contract parity.
+
 - **Snapshot/explicit compare route↔AI parity matrix expansion (success + stale-id/not-enough failure contracts)** (2026-03-12)
   - Added snapshot/explicit parity fixture helpers in `tests/test_ai_api.py`:
     - `_seed_preflight_snapshot_route_ai_parity_fixture(...)`
@@ -296,14 +306,14 @@
 
 ## Next Candidates
 
-1. **Route/AI parity matrix for preflight list/discovery failure envelopes**
-   - Add table-driven route-vs-AI parity checks for representative list/discovery failures (missing selectors, invalid limits), asserting status-aware envelope equality and exclusion of success-only metadata.
-   - Impact: medium (completes deterministic parity guarantees across both success and failure list/discovery paths).
-
-2. **Stale-version metadata behavior for run-linked list selectors**
-   - Add regression coverage for `list_manual_saved_versions_for_simulation_run` when matching version directories have missing `version.json`, locking deterministic `version_json_mtime_utc`/source-path metadata and clarifying expected behavior for partially deleted artifacts.
-   - Impact: medium (improves diagnosability/reproducibility when project version directories drift).
-
-3. **Cross-surface parity for compare selector validation errors (400 aliases + required-field diagnostics)**
+1. **Cross-surface parity for compare selector validation errors (400 aliases + required-field diagnostics)**
    - Add route-vs-AI parity checks that intentionally exercise malformed selector aliases (e.g., conflicting/missing snapshot/saved fields) to lock equivalent validation messaging and metadata-clean error envelopes.
    - Impact: medium (hardens deterministic client/agent branching for invalid-input recovery paths).
+
+2. **Run-linked compare selector discovery preflight (`list → compare`) reproducibility fixture**
+   - Add end-to-end regression coverage that starts from `list_manual_saved_versions_for_simulation_run` and feeds returned indices/ids into compare selectors, asserting deterministic behavior under mixed valid/stale artifacts.
+   - Impact: medium-high (protects real workflow chaining that human + AI tools use in practice).
+
+3. **Geant4-oriented preflight confidence lane: topology/reference issue corpus fixture set**
+   - Add curated fixture matrix for high-impact topology/reference failures (world refs, procedural bounds, recursive loops) with deterministic expected issue signatures.
+   - Impact: high (moves toward stronger Geant4 compatibility confidence and reproducible diagnostics baselines).
