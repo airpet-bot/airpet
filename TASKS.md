@@ -6,6 +6,26 @@
 
 ## Recently Completed
 
+- **Cross-surface topology/reference corpus-transition compare parity (`compare_versions` route ↔ AI wrapper)** (2026-03-12)
+  - Added reusable topology/reference corpus seed helpers in `tests/test_ai_api.py` for transition-matrix fixtures:
+    - `_seed_preflight_corpus_missing_world_volume_reference(...)`
+    - `_seed_preflight_corpus_unknown_world_volume_reference(...)`
+    - `_seed_preflight_corpus_bad_replica_reference_and_bounds(...)`
+    - `_seed_preflight_corpus_bad_division_axis_and_bounds(...)`
+    - `_seed_preflight_corpus_logical_volume_cycle(...)`
+    - `_save_seeded_preflight_corpus_version(...)`
+  - Added `test_preflight_compare_versions_route_and_ai_wrappers_share_topology_reference_corpus_transition_matrix_payloads` with table-driven route-vs-AI parity coverage for explicit `compare_versions` transitions:
+    - missing world reference → unknown world reference
+    - replica reference/bounds failures → division axis/partition failures
+    - division axis/partition failures → placement hierarchy LV cycle
+  - Locked, per transition:
+    - route payload equality with AI wrapper payload (`POST /api/preflight/compare_versions` ↔ `compare_preflight_versions`)
+    - deterministic compare deltas (`added_issue_codes`, `resolved_issue_codes`, `counts_delta_by_code`, `issue_count_delta`)
+    - stable compare status contract (`fingerprint_changed` with unchanged `can_run` flags)
+    - deterministic ordering/source metadata via `_assert_compare_ai_selection_and_source_metadata(...)`
+    - replay determinism on fresh `ProjectManager` instances while exercising mixed alias forms across route/AI inputs.
+  - Why: closes a medium-high impact route/AI drift gap for explicit saved-version compare workflows now that topology/reference corpus transitions are locked.
+
 - **Topology/reference corpus compare-workflow determinism matrix (`check → save → compare`)** (2026-03-12)
   - Added `_save_seeded_preflight_corpus_version(...)` in `tests/test_preflight.py` to persist seeded topology/reference corpus states as concrete saved versions.
   - Added `test_compare_preflight_versions_topology_reference_corpus_transition_matrix_is_deterministic` to lock deterministic compare behavior across high-signal failure-family transitions:
@@ -344,6 +364,6 @@
    - Add end-to-end regression coverage that starts from `list_manual_saved_versions_for_simulation_run` and feeds returned indices/ids into compare selectors, asserting deterministic behavior under mixed valid/stale artifacts.
    - Impact: medium-high (protects real workflow chaining that human + AI tools use in practice).
 
-3. **Cross-surface corpus-transition compare parity (route + AI wrappers)**
-   - Mirror the new topology/reference transition matrix through `POST /api/preflight/compare_versions` and AI compare wrappers so HTTP and AI tooling keep identical deterministic contracts (including clean error envelopes) for the same saved-version transitions.
-   - Impact: medium-high (prevents route/AI drift now that core compare-transition determinism is locked).
+3. **Explicit `compare_versions` stale-id/error envelope parity matrix (route + AI wrappers)**
+   - Extend route-vs-AI parity coverage for `compare_versions` negative paths (missing baseline/candidate ids, stale baseline id, stale candidate id, mixed alias forms) and lock status-aware metadata-clean error envelopes.
+   - Impact: medium-high (completes deterministic failure-contract confidence for explicit saved-version compare flows).
