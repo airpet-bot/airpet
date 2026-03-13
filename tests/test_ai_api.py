@@ -3000,6 +3000,166 @@ def test_preflight_run_selector_routes_and_ai_wrappers_honor_run_id_aliases_when
 
 
 
+def test_preflight_run_selector_routes_and_ai_wrappers_share_canonical_alias_precedence_payloads(pm, tmp_path):
+    fixture = _seed_preflight_compare_route_ai_parity_fixture(pm, tmp_path)
+    conflicting_alias_run_id = "job_ai_route_compare_conflicting_alias"
+
+    cases = [
+        {
+            "name": "compare_for_run_canonical_simulation_run_id_overrides_conflicting_run_id_alias",
+            "route": "/api/preflight/compare_autosave_vs_manual_saved_for_simulation_run",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "simulation_run_id": fixture["simulation_run_id"],
+                "run_id": conflicting_alias_run_id,
+            },
+            "tool": "compare_autosave_preflight_vs_manual_saved_for_simulation_run",
+            "ai_args": {
+                "project": pm.project_name,
+                "simulation_run_id": fixture["simulation_run_id"],
+                "run_id": conflicting_alias_run_id,
+            },
+            "expected_status": 200,
+            "expected_simulation_run_id": fixture["simulation_run_id"],
+            "is_list_case": False,
+        },
+        {
+            "name": "compare_for_run_index_null_canonical_prefers_run_id_alias_over_job_id_alias",
+            "route": "/api/preflight/compare_autosave_vs_manual_saved_for_simulation_run_index",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "simulation_run_id": None,
+                "run_id": fixture["simulation_run_id"],
+                "job_id": conflicting_alias_run_id,
+                "manual_saved_index": 0,
+            },
+            "tool": "compare_autosave_preflight_vs_manual_saved_for_simulation_run_index",
+            "ai_args": {
+                "project": pm.project_name,
+                "simulation_run_id": None,
+                "run_id": fixture["simulation_run_id"],
+                "job_id": conflicting_alias_run_id,
+                "manual_saved_index": 0,
+            },
+            "expected_status": 200,
+            "expected_simulation_run_id": fixture["simulation_run_id"],
+            "is_list_case": False,
+        },
+        {
+            "name": "compare_manual_indices_canonical_simulation_run_id_overrides_conflicting_job_id_alias",
+            "route": "/api/preflight/compare_manual_saved_versions_for_simulation_run_indices",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "simulation_run_id": fixture["simulation_run_id"],
+                "job_id": conflicting_alias_run_id,
+                "baseline_manual_saved_index": 1,
+                "candidate_manual_saved_index": 0,
+            },
+            "tool": "compare_manual_preflight_versions_for_simulation_run_indices",
+            "ai_args": {
+                "project": pm.project_name,
+                "simulation_run_id": fixture["simulation_run_id"],
+                "job_id": conflicting_alias_run_id,
+                "baseline_manual_saved_index": 1,
+                "candidate_manual_saved_index": 0,
+            },
+            "expected_status": 200,
+            "expected_simulation_run_id": fixture["simulation_run_id"],
+            "is_list_case": False,
+        },
+        {
+            "name": "list_manual_saved_null_canonical_falls_back_to_job_id_alias_when_run_id_missing",
+            "route": "/api/preflight/list_manual_saved_versions_for_simulation_run",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "simulation_run_id": None,
+                "job_id": fixture["simulation_run_id"],
+                "count": 1,
+            },
+            "tool": "list_manual_saved_versions_for_simulation_run",
+            "ai_args": {
+                "project": pm.project_name,
+                "simulation_run_id": None,
+                "job_id": fixture["simulation_run_id"],
+                "count": 1,
+            },
+            "expected_status": 200,
+            "expected_simulation_run_id": fixture["simulation_run_id"],
+            "is_list_case": True,
+            "expected_returned_matching_manual_saved_versions": 1,
+        },
+        {
+            "name": "compare_for_run_empty_canonical_simulation_run_id_does_not_fall_back_to_alias",
+            "route": "/api/preflight/compare_autosave_vs_manual_saved_for_simulation_run",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "simulation_run_id": "",
+                "run_id": fixture["simulation_run_id"],
+            },
+            "tool": "compare_autosave_preflight_vs_manual_saved_for_simulation_run",
+            "ai_args": {
+                "project": pm.project_name,
+                "simulation_run_id": "",
+                "run_id": fixture["simulation_run_id"],
+            },
+            "expected_status": 400,
+            "is_list_case": False,
+            "assert_error_shape": _assert_compare_ai_error_payload_excludes_success_metadata,
+            "error_substrings": ["simulation_run_id", "required"],
+        },
+        {
+            "name": "list_manual_saved_whitespace_canonical_simulation_run_id_does_not_fall_back_to_alias",
+            "route": "/api/preflight/list_manual_saved_versions_for_simulation_run",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "simulation_run_id": "   ",
+                "job_id": fixture["simulation_run_id"],
+                "count": 1,
+            },
+            "tool": "list_manual_saved_versions_for_simulation_run",
+            "ai_args": {
+                "project": pm.project_name,
+                "simulation_run_id": "   ",
+                "job_id": fixture["simulation_run_id"],
+                "count": 1,
+            },
+            "expected_status": 400,
+            "is_list_case": True,
+            "assert_error_shape": _assert_preflight_list_ai_error_payload_excludes_success_metadata,
+            "error_substrings": ["simulation_run_id", "required"],
+        },
+    ]
+
+    for case in cases:
+        status_code, route_data = _call_preflight_route_with_pm(
+            pm,
+            case["route"],
+            case["route_payload"],
+        )
+        ai_data = dispatch_ai_tool(pm, case["tool"], case["ai_args"])
+
+        assert status_code == case["expected_status"], case["name"]
+        assert route_data == ai_data, case["name"]
+
+        if case["expected_status"] == 200:
+            assert route_data["success"] is True, case["name"]
+            expected_run_id = case["expected_simulation_run_id"]
+            if case["is_list_case"]:
+                assert route_data["simulation_run_id"] == expected_run_id, case["name"]
+                expected_count = case.get("expected_returned_matching_manual_saved_versions")
+                if expected_count is not None:
+                    assert route_data["returned_matching_manual_saved_versions"] == expected_count, case["name"]
+            else:
+                assert route_data["selection"]["simulation_run_id"] == expected_run_id, case["name"]
+            continue
+
+        case["assert_error_shape"](route_data)
+        error_lower = route_data["error"].lower()
+        for expected_substring in case["error_substrings"]:
+            assert expected_substring.lower() in error_lower, case["name"]
+
+
+
 def test_preflight_explicit_compare_selector_routes_and_ai_wrappers_honor_aliases_when_canonical_ids_are_null(pm, tmp_path):
     pm.projects_dir = str(tmp_path)
     pm.project_name = "ai_route_compare_null_canonical_alias_selector_parity_project"

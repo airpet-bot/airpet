@@ -6,6 +6,24 @@
 
 ## Recently Completed
 
+- **Run-linked selector canonical-vs-alias precedence parity matrix (`simulation_run_id` vs `run_id`/`job_id`, route ↔ AI wrappers)** (2026-03-13)
+  - Added `test_preflight_run_selector_routes_and_ai_wrappers_share_canonical_alias_precedence_payloads` in `tests/test_ai_api.py`.
+  - New table-driven parity coverage locks deterministic run-linked selector precedence for compare/list workflows:
+    - canonical `simulation_run_id` overrides conflicting `run_id`/`job_id` aliases
+    - explicit-null canonical `simulation_run_id` falls back to aliases
+    - when canonical is null and both aliases are present, `run_id` takes precedence over `job_id`
+    - canonical empty/whitespace `simulation_run_id` does not fall back to aliases, preserving deterministic 400 validation behavior
+  - Coverage spans all run-linked selector surfaces used by route and AI wrappers:
+    - `compare_autosave_vs_manual_saved_for_simulation_run`
+    - `compare_autosave_vs_manual_saved_for_simulation_run_index`
+    - `compare_manual_saved_versions_for_simulation_run_indices`
+    - `list_manual_saved_versions_for_simulation_run`
+  - Why: closes the remaining run-linked selector precedence regression gap so HTTP and AI automation resolve simulation-run selectors identically under mixed/conflicting payload shapes.
+  - Checks run:
+    - `pytest -q tests/test_ai_api.py -k "run_selector_routes_and_ai_wrappers_honor_run_id_aliases_when_canonical_ids_are_null or run_selector_routes_and_ai_wrappers_share_canonical_alias_precedence_payloads"`
+    - `pytest -q tests/test_ai_api.py`
+    - `pytest -q tests/test_preflight.py -k "list_manual_saved_versions_for_simulation_run or compare_autosave_vs_manual_saved_for_simulation_run or compare_manual_saved_versions_for_simulation_run_indices"`
+
 - **`list_versions` canonical-vs-alias precedence parity matrix (conflicts + explicit-null/empty canonical handling, route ↔ AI)** (2026-03-13)
   - Added `test_preflight_list_versions_route_and_ai_wrappers_share_canonical_alias_precedence_payloads` in `tests/test_ai_api.py`.
   - New table-driven route↔AI parity coverage locks deterministic input-precedence behavior for mixed canonical/alias `list_versions` payloads:
@@ -502,14 +520,10 @@
 
 ## Next Candidates
 
-1. **Run-linked selector canonical-vs-alias precedence matrix (`simulation_run_id` vs `run_id`/`job_id`)**
-   - Add parity coverage for mixed canonical/alias payload conflicts and explicit-null precedence across run-linked compare/list selector routes and AI wrappers to prevent future parsing drift.
-   - Impact: medium (locks deterministic selector input precedence after required-field parity hardening).
-
-2. **Snapshot/explicit selector canonical-vs-alias precedence matrix (`saved_version_id`, `autosave_snapshot_version_id`, snapshot baseline/candidate ids)**
+1. **Snapshot/explicit selector canonical-vs-alias precedence matrix (`saved_version_id`, `autosave_snapshot_version_id`, snapshot baseline/candidate ids)**
    - Add route + AI parity coverage for mixed canonical/alias conflicts and explicit-null precedence on explicit selector routes (`compare_autosave_vs_saved_version`, `compare_autosave_vs_snapshot_version`, `compare_snapshot_versions`) so selector resolution remains deterministic across wrappers and HTTP routes.
    - Impact: medium (extends precedence hardening beyond `compare_versions` to remaining explicit selector APIs).
 
-3. **Run-linked selector malformed-id validation parity matrix**
+2. **Run-linked selector malformed-id validation parity matrix**
    - Add route + AI parity coverage for empty/whitespace/path-escape simulation-run selector ids across run-linked list/compare routes and wrappers so validation/error-envelope behavior remains deterministic under hostile or malformed input.
    - Impact: medium (hardens reliability/security-facing selector validation contracts for automation workflows).
