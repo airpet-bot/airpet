@@ -9,8 +9,14 @@ from src.ai_backend_adapters import (
     AdapterSpec,
     BackendRequirements,
     DEFAULT_BACKEND_SPECS,
+    LlamaCppAdapterConfig,
+    LlamaCppTextAdapter,
+    TextGenerationRequest,
+    TextMessage,
     build_capability_matrix,
+    resolve_specs_with_runtime_overrides,
     select_backend,
+    select_backend_for_text_request,
 )
 
 
@@ -26,9 +32,11 @@ def test_default_capability_matrix_reports_expected_backends_and_contract_versio
     assert rows_by_id["gemini_remote"]["capabilities"]["supports_tools"] is True
 
     assert rows_by_id["llama_cpp"]["enabled"] is False
+    assert rows_by_id["llama_cpp"]["implementation_status"] == "implemented"
     assert rows_by_id["llama_cpp"]["capabilities"]["supports_json_mode"] is True
 
     assert rows_by_id["lm_studio"]["enabled"] is False
+    assert rows_by_id["lm_studio"]["implementation_status"] == "planned"
     assert rows_by_id["lm_studio"]["capabilities"]["supports_streaming"] is True
 
 
@@ -38,6 +46,23 @@ def test_docs_capability_matrix_matches_default_contract_matrix():
     docs_matrix = json.loads(docs_path.read_text())
 
     assert docs_matrix == matrix
+
+
+def test_runtime_overrides_can_enable_llama_cpp_and_override_context_window():
+    runtime_config = {
+        "backends": {
+            "llama_cpp": {
+                "enabled": True,
+                "max_context_tokens": 24576,
+            }
+        }
+    }
+
+    resolved = resolve_specs_with_runtime_overrides(runtime_config)
+    rows_by_id = {spec.backend_id: spec for spec in resolved}
+
+    assert rows_by_id["llama_cpp"].enabled is True
+    assert rows_by_id["llama_cpp"].capabilities.max_context_tokens == 24576
 
 
 def test_select_backend_prefers_explicit_backend_when_it_satisfies_requirements():
@@ -55,9 +80,16 @@ def test_select_backend_prefers_explicit_backend_when_it_satisfies_requirements(
 
 
 def test_select_backend_falls_back_when_preferred_backend_cannot_satisfy_requirements():
-    selection = select_backend(
-        requirements=BackendRequirements(require_tools=True),
-        specs=DEFAULT_BACKEND_SPECS,
+    runtime_config = {"backends": {"llama_cpp": {"enabled": True}}}
+    request = TextGenerationRequest(
+        messages=(TextMessage(role="user", content="hi"),),
+        require_tools=True,
+        require_json_mode=True,
+    )
+
+    selection = select_backend_for_text_request(
+        request=request,
+        runtime_config=runtime_config,
         preferred_backend_id="llama_cpp",
         allow_fallback=True,
     )
@@ -65,7 +97,35 @@ def test_select_backend_falls_back_when_preferred_backend_cannot_satisfy_require
     assert selection.backend_id == "gemini_remote"
     assert selection.used_fallback is True
     assert selection.tried[0]["backend_id"] == "llama_cpp"
-    assert "disabled" in selection.tried[0]["missing_capabilities"]
+    assert "tools" in selection.tried[0]["missing_capabilities"]
+
+
+def test_select_text_backend_routes_to_llama_cpp_when_enabled_and_capable():
+    runtime_config = {
+        "backends": {
+            "llama_cpp": {
+                "enabled": True,
+                "max_context_tokens": 24000,
+            }
+        }
+    }
+    request = TextGenerationRequest(
+        messages=(TextMessage(role="user", content="Return compact JSON only."),),
+        require_tools=False,
+        require_json_mode=True,
+        min_context_tokens=12000,
+    )
+
+    selection = select_backend_for_text_request(
+        request=request,
+        runtime_config=runtime_config,
+        preferred_backend_id="llama_cpp",
+        allow_fallback=False,
+    )
+
+    assert selection.backend_id == "llama_cpp"
+    assert selection.used_fallback is False
+    assert selection.tried == ({"backend_id": "llama_cpp", "missing_capabilities": []},)
 
 
 def test_select_backend_errors_when_fallback_is_disabled_and_preferred_backend_fails():
@@ -129,3 +189,99 @@ def test_select_backend_errors_on_unknown_preferred_backend():
             specs=DEFAULT_BACKEND_SPECS,
             preferred_backend_id="does_not_exist",
         )
+
+
+def test_llama_cpp_adapter_builds_openai_chat_payload_for_text_first_json_mode():
+    adapter = LlamaCppTextAdapter(
+        LlamaCppAdapterConfig(
+            base_url="http://localhost:8080",
+            model="meta-llama",
+            timeout_seconds=11,
+            max_retries=0,
+            retry_backoff_seconds=0,
+        )
+    )
+    request = TextGenerationRequest(
+        messages=(
+            TextMessage(role="system", content="You output JSON."),
+            TextMessage(role="user", content="Return object with ok=true"),
+        ),
+        require_json_mode=True,
+        max_output_tokens=128,
+        temperature=0.1,
+    )
+
+    payload = adapter.build_payload(request)
+
+    assert payload["model"] == "meta-llama"
+    assert payload["messages"] == [
+        {"role": "system", "content": "You output JSON."},
+        {"role": "user", "content": "Return object with ok=true"},
+    ]
+    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["max_tokens"] == 128
+    assert payload["temperature"] == 0.1
+
+
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+def test_llama_cpp_adapter_retries_then_returns_normalized_response():
+    adapter = LlamaCppTextAdapter(
+        LlamaCppAdapterConfig(
+            base_url="http://localhost:8080",
+            model="meta-llama",
+            timeout_seconds=2,
+            max_retries=1,
+            retry_backoff_seconds=0,
+        )
+    )
+    request = TextGenerationRequest(
+        messages=(TextMessage(role="user", content="hello"),),
+        require_json_mode=False,
+    )
+
+    calls = []
+
+    def fake_post(url, json, headers, timeout, verify):
+        calls.append({
+            "url": url,
+            "json": json,
+            "headers": headers,
+            "timeout": timeout,
+            "verify": verify,
+        })
+        if len(calls) == 1:
+            raise RuntimeError("temporary connection drop")
+        return _FakeResponse(
+            {
+                "model": "meta-llama",
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "{\"ok\": true}",
+                        }
+                    }
+                ],
+            }
+        )
+
+    response = adapter.invoke(request, http_post=fake_post)
+
+    assert len(calls) == 2
+    assert response.backend_id == "llama_cpp"
+    assert response.model == "meta-llama"
+    assert response.text == '{"ok": true}'
+    assert response.usage == {"prompt_tokens": 12, "completion_tokens": 3}

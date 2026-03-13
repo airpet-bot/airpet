@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+import time
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from urllib.parse import urljoin
 
-ADAPTER_CONTRACT_VERSION = "2026-03-13.checkpoint1"
+ADAPTER_CONTRACT_VERSION = "2026-03-13.checkpoint2"
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,149 @@ class AdapterSelection:
     tried: Tuple[Dict[str, Any], ...]
 
 
+@dataclass(frozen=True)
+class TextMessage:
+    role: str
+    content: str
+
+    def as_openai_message(self) -> Dict[str, str]:
+        return {"role": self.role, "content": self.content}
+
+
+@dataclass(frozen=True)
+class TextGenerationRequest:
+    """Normalized text-generation request for text-first adapter paths."""
+
+    messages: Tuple[TextMessage, ...]
+    require_tools: bool = False
+    require_json_mode: bool = True
+    require_streaming: bool = False
+    min_context_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    max_output_tokens: Optional[int] = None
+    stop: Optional[Tuple[str, ...]] = None
+
+
+@dataclass(frozen=True)
+class TextGenerationResponse:
+    backend_id: str
+    text: str
+    raw_response: Dict[str, Any]
+    model: Optional[str] = None
+    usage: Optional[Dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class LlamaCppAdapterConfig:
+    base_url: str = "http://127.0.0.1:8080"
+    endpoint_path: str = "/v1/chat/completions"
+    model: str = "local-model"
+    timeout_seconds: float = 45.0
+    max_retries: int = 1
+    retry_backoff_seconds: float = 0.25
+    verify_tls: bool = True
+    headers: Tuple[Tuple[str, str], ...] = ()
+
+    @staticmethod
+    def from_runtime_config(runtime_config: Optional[Mapping[str, Any]] = None) -> "LlamaCppAdapterConfig":
+        cfg = _runtime_backend_config(runtime_config, "llama_cpp")
+        headers_obj = cfg.get("headers")
+        header_items: Tuple[Tuple[str, str], ...] = ()
+        if isinstance(headers_obj, Mapping):
+            header_items = tuple((str(k), str(v)) for k, v in headers_obj.items())
+
+        return LlamaCppAdapterConfig(
+            base_url=str(cfg.get("base_url", "http://127.0.0.1:8080")),
+            endpoint_path=str(cfg.get("endpoint_path", "/v1/chat/completions")),
+            model=str(cfg.get("model", "local-model")),
+            timeout_seconds=float(cfg.get("timeout_seconds", 45.0)),
+            max_retries=max(0, int(cfg.get("max_retries", 1))),
+            retry_backoff_seconds=max(0.0, float(cfg.get("retry_backoff_seconds", 0.25))),
+            verify_tls=bool(cfg.get("verify_tls", True)),
+            headers=header_items,
+        )
+
+
+class LlamaCppTextAdapter:
+    """Text-first adapter for llama.cpp OpenAI-compatible chat endpoint."""
+
+    backend_id = "llama_cpp"
+
+    def __init__(self, config: Optional[LlamaCppAdapterConfig] = None):
+        self.config = config or LlamaCppAdapterConfig()
+
+    def endpoint_url(self) -> str:
+        return urljoin(self.config.base_url.rstrip("/") + "/", self.config.endpoint_path.lstrip("/"))
+
+    def build_payload(self, request: TextGenerationRequest) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "model": self.config.model,
+            "messages": [m.as_openai_message() for m in request.messages],
+            "stream": request.require_streaming,
+        }
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+        if request.max_output_tokens is not None:
+            payload["max_tokens"] = request.max_output_tokens
+        if request.stop:
+            payload["stop"] = list(request.stop)
+        if request.require_json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        return payload
+
+    def invoke(
+        self,
+        request: TextGenerationRequest,
+        http_post: Optional[Callable[..., Any]] = None,
+    ) -> TextGenerationResponse:
+        if http_post is None:
+            import requests
+
+            http_post = requests.post
+
+        payload = self.build_payload(request)
+        url = self.endpoint_url()
+        headers = {"Content-Type": "application/json"}
+        headers.update(dict(self.config.headers))
+
+        attempts_total = self.config.max_retries + 1
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, attempts_total + 1):
+            try:
+                response = http_post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=self.config.timeout_seconds,
+                    verify=self.config.verify_tls,
+                )
+                if hasattr(response, "raise_for_status"):
+                    response.raise_for_status()
+                body = response.json() if hasattr(response, "json") else {}
+                text = _extract_openai_style_text(body)
+                if not text:
+                    raise ValueError("llama_cpp response did not include a non-empty assistant message")
+
+                return TextGenerationResponse(
+                    backend_id=self.backend_id,
+                    text=text,
+                    raw_response=body,
+                    model=body.get("model") if isinstance(body, dict) else None,
+                    usage=body.get("usage") if isinstance(body, dict) else None,
+                )
+            except Exception as err:
+                last_error = err
+                if attempt >= attempts_total:
+                    break
+                if self.config.retry_backoff_seconds > 0:
+                    time.sleep(self.config.retry_backoff_seconds)
+
+        raise RuntimeError(
+            f"llama_cpp invocation failed after {attempts_total} attempt(s): {last_error}"
+        )
+
+
 DEFAULT_BACKEND_SPECS: Tuple[AdapterSpec, ...] = (
     AdapterSpec(
         backend_id="gemini_remote",
@@ -106,7 +251,7 @@ DEFAULT_BACKEND_SPECS: Tuple[AdapterSpec, ...] = (
         adapter_kind="local",
         priority=20,
         enabled=False,
-        implementation_status="planned",
+        implementation_status="implemented",
         capabilities=AdapterCapabilities(
             supports_tools=False,
             supports_json_mode=True,
@@ -139,6 +284,67 @@ def build_capability_matrix(specs: Sequence[AdapterSpec] = DEFAULT_BACKEND_SPECS
         "contract_version": ADAPTER_CONTRACT_VERSION,
         "backends": [spec.as_matrix_row() for spec in ordered],
     }
+
+
+def resolve_specs_with_runtime_overrides(
+    runtime_config: Optional[Mapping[str, Any]],
+    specs: Sequence[AdapterSpec] = DEFAULT_BACKEND_SPECS,
+) -> Tuple[AdapterSpec, ...]:
+    resolved: List[AdapterSpec] = []
+
+    for spec in specs:
+        backend_cfg = _runtime_backend_config(runtime_config, spec.backend_id)
+        if not backend_cfg:
+            resolved.append(spec)
+            continue
+
+        enabled = spec.enabled
+        if "enabled" in backend_cfg:
+            enabled = bool(backend_cfg.get("enabled"))
+
+        implementation_status = str(backend_cfg.get("implementation_status", spec.implementation_status))
+
+        max_context_tokens = spec.capabilities.max_context_tokens
+        if "max_context_tokens" in backend_cfg and backend_cfg.get("max_context_tokens") is not None:
+            max_context_tokens = int(backend_cfg.get("max_context_tokens"))
+
+        resolved_capabilities = replace(spec.capabilities, max_context_tokens=max_context_tokens)
+        resolved.append(
+            replace(
+                spec,
+                enabled=enabled,
+                implementation_status=implementation_status,
+                capabilities=resolved_capabilities,
+            )
+        )
+
+    return tuple(resolved)
+
+
+def text_requirements_for_request(request: TextGenerationRequest) -> BackendRequirements:
+    return BackendRequirements(
+        require_tools=request.require_tools,
+        require_json_mode=request.require_json_mode,
+        require_streaming=request.require_streaming,
+        min_context_tokens=request.min_context_tokens,
+    )
+
+
+def select_backend_for_text_request(
+    request: TextGenerationRequest,
+    *,
+    runtime_config: Optional[Mapping[str, Any]] = None,
+    specs: Sequence[AdapterSpec] = DEFAULT_BACKEND_SPECS,
+    preferred_backend_id: Optional[str] = None,
+    allow_fallback: bool = True,
+) -> AdapterSelection:
+    resolved_specs = resolve_specs_with_runtime_overrides(runtime_config, specs=specs)
+    return select_backend(
+        requirements=text_requirements_for_request(request),
+        specs=resolved_specs,
+        preferred_backend_id=preferred_backend_id,
+        allow_fallback=allow_fallback,
+    )
 
 
 def _ordered_candidates(
@@ -198,3 +404,48 @@ def select_backend(
         "No backend satisfies requirements "
         f"(preferred={preferred_backend_id}, allow_fallback={allow_fallback}, tried={tried})"
     )
+
+
+def _runtime_backend_config(
+    runtime_config: Optional[Mapping[str, Any]],
+    backend_id: str,
+) -> Dict[str, Any]:
+    if not isinstance(runtime_config, Mapping):
+        return {}
+
+    backends_map = runtime_config.get("backends")
+    if isinstance(backends_map, Mapping):
+        cfg = backends_map.get(backend_id)
+        if isinstance(cfg, Mapping):
+            return dict(cfg)
+
+    # Legacy shape fallback: runtime_config[backend_id] = {...}
+    legacy = runtime_config.get(backend_id)
+    if isinstance(legacy, Mapping):
+        return dict(legacy)
+
+    return {}
+
+
+def _extract_openai_style_text(body: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(body, dict):
+        return None
+
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return None
+
+    content = message.get("content")
+    if isinstance(content, str):
+        stripped = content.strip()
+        return stripped or None
+
+    return None
