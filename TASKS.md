@@ -6,6 +6,23 @@
 
 ## Recently Completed
 
+- **Explicit `compare_versions` invalid-id validation parity matrix (empty/whitespace/path-traversal forms, route + AI wrappers)** (2026-03-13)
+  - Added `test_preflight_compare_versions_route_and_ai_wrappers_share_invalid_id_validation_error_envelopes` in `tests/test_ai_api.py`.
+  - New table-driven parity coverage locks four malformed explicit selector input classes across route + AI surfaces:
+    - empty `baseline_version_id`
+    - whitespace-only `candidate_version_id`
+    - traversal-like baseline id (`../outside_versions_root`)
+    - absolute-path candidate id (`/tmp/airpet_escape_candidate`)
+  - Asserts deterministic 400 parity with metadata-clean error envelopes (`success/error` only) and route↔AI payload equality.
+  - Locks expected validation wording classes:
+    - non-empty id validation (`version_id` / `non-empty string`)
+    - path-escape rejection (`Invalid version_id ...`)
+  - Why: closes the malformed-id selector guardrail gap from Next Candidates so explicit compare validation behavior remains deterministic and security-conscious across HTTP and AI tooling.
+  - Checks run:
+    - `pytest -q tests/test_ai_api.py -k "compare_versions_route_and_ai_wrappers_share_missing_and_stale_error_envelopes or compare_versions_route_and_ai_wrappers_share_invalid_id_validation_error_envelopes"`
+    - `pytest -q tests/test_ai_api.py`
+    - `pytest -q tests/test_preflight.py -k "compare_versions_route"`
+
 - **Run-linked selector required-field diagnostics parity + null-canonical run-id alias fallback (route ↔ AI wrappers)** (2026-03-13)
   - Hardened AI dispatch required-field handling in `app.py` for run-linked preflight selector tools so missing `simulation_run_id` errors now mirror route wording/envelope contracts instead of generic schema-level validation text:
     - `compare_autosave_preflight_vs_manual_saved_for_simulation_run`
@@ -455,14 +472,14 @@
 
 ## Next Candidates
 
-1. **Explicit `compare_versions` invalid-id validation parity (empty/path-traversal forms, route + AI wrappers)**
-   - Add route-vs-AI parity coverage for explicit compare invalid-id inputs that should fail as 400 validation paths (empty string ids, whitespace-only ids, traversal-like ids), with metadata-clean envelopes and deterministic error messaging.
-   - Impact: medium (hardens preflight selector safety/diagnostics consistency for malformed-id recovery paths).
-
-2. **`list_versions` canonical-vs-alias precedence contract matrix**
+1. **`list_versions` canonical-vs-alias precedence contract matrix**
    - Add targeted route + AI parity coverage for mixed canonical/alias payloads (e.g., `limit` with `count`/`max_versions`, `include_autosave` with `include_latest_autosave`, explicit `null` values) so precedence rules remain deterministic and regression-safe.
    - Impact: medium (protects newly-added alias support from subtle parsing drift).
 
-3. **Run-linked selector canonical-vs-alias precedence matrix (`simulation_run_id` vs `run_id`/`job_id`)**
+2. **Run-linked selector canonical-vs-alias precedence matrix (`simulation_run_id` vs `run_id`/`job_id`)**
    - Add parity coverage for mixed canonical/alias payload conflicts and explicit-null precedence across run-linked compare/list selector routes and AI wrappers to prevent future parsing drift.
    - Impact: medium (locks deterministic selector input precedence after required-field parity hardening).
+
+3. **Explicit compare selector canonical-vs-alias precedence matrix (`baseline_version_id`/`candidate_version_id`)**
+   - Add route + AI parity coverage for mixed canonical/alias conflicts and explicit-null precedence on `compare_versions` inputs (e.g., canonical key present as `null`/empty while alias key is set) so precedence behavior stays deterministic across wrappers and HTTP routes.
+   - Impact: medium (prevents future selector-resolution drift after invalid-id parity coverage).
