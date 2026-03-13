@@ -2,20 +2,39 @@
 
 ## In Progress
 
-- **Spike A: Local-model integration for AI operations (Checkpoint 2/5) — llama.cpp text-first adapter path**
+- **Spike A: Local-model integration for AI operations (Checkpoint 3/5) — LM Studio text-first adapter path**
   - Objective: enable AIRPET AI workflows to support local backends (llama.cpp / LM Studio) with deterministic behavior and clear fallback rules.
   - Current checkpoint scope:
-    - implement a llama.cpp text-first adapter path aligned with the normalized contract (request/response mapping, config knobs, timeout/retry policy)
-    - add deterministic selection plumbing so text-only flows can route to llama.cpp when enabled and capable
-    - extend contract tests to cover llama.cpp selection and fallback behavior
-  - Definition of done (Checkpoint 2):
-    - committed llama.cpp adapter scaffold with clear config surface
-    - selector can choose llama.cpp for text-first requirements (when enabled)
-    - baseline adapter/selection tests passing
-  - Next checkpoint (Checkpoint 3): implement LM Studio text-first adapter path.
+    - implement LM Studio text-first adapter scaffold aligned with the normalized contract used by Gemini/llama.cpp
+    - add deterministic routing parity tests across Gemini + llama.cpp + LM Studio capability profiles
+    - preserve deterministic fallback/error diagnostics under mixed local-backend availability
+  - Definition of done (Checkpoint 3):
+    - committed LM Studio adapter scaffold with explicit config knobs
+    - selector can deterministically choose LM Studio when enabled and capable
+    - parity selection tests passing across all three backend profiles
+  - Next checkpoint (Checkpoint 4): integrate backend selector into `/api/ai/chat` runtime path.
   - Note: selector parity/validation hardening remains in reserve unless a concrete bug/regression is found.
 
 ## Recently Completed
+
+- **Spike A Checkpoint 2/5 completed: llama.cpp text-first adapter scaffold + selection plumbing** (2026-03-13)
+  - Upgraded adapter contract to Checkpoint 2 in `src/ai_backend_adapters.py`:
+    - added normalized text-first request/response envelopes (`TextGenerationRequest`, `TextMessage`, `TextGenerationResponse`)
+    - implemented `LlamaCppAdapterConfig` runtime config surface (endpoint/model/timeout/retry/backoff/TLS/headers)
+    - implemented `LlamaCppTextAdapter` with OpenAI-compatible payload mapping + deterministic retry behavior
+    - added runtime backend override plumbing (`resolve_specs_with_runtime_overrides`) for deterministic enablement/context-window control
+    - added text-first selection helper (`select_backend_for_text_request`) so eligible text-only flows can route to llama.cpp when enabled/capable
+  - Updated contract docs/artifacts:
+    - `docs/AI_BACKEND_ADAPTER_CONTRACT.md` now documents Checkpoint 2 llama.cpp path + config knobs
+    - `docs/AI_BACKEND_CAPABILITY_MATRIX.json` regenerated with contract version `2026-03-13.checkpoint2` and llama.cpp marked implemented
+  - Expanded regression coverage in `tests/test_ai_backend_adapters.py`:
+    - runtime override behavior (enable + context override)
+    - llama.cpp routing success/fallback behavior under capability constraints
+    - OpenAI-style llama.cpp payload mapping
+    - retry-then-success response normalization for llama.cpp invocation
+  - Why: delivers the first usable local-backend adapter path and deterministic routing controls required for local-model optionality without introducing runtime ambiguity.
+  - Checks run:
+    - `pytest -q tests/test_ai_backend_adapters.py`
 
 - **Spike A Checkpoint 1/5 completed: backend adapter contract + capability matrix + selection invariant tests** (2026-03-13)
   - Added normalized adapter contract implementation in `src/ai_backend_adapters.py`:
@@ -565,15 +584,15 @@
 
 ## Next Candidates
 
-1. **Spike A Checkpoint 3/5: LM Studio adapter (text-first path)**
-   - Implement LM Studio backend using the normalized adapter contract.
-   - Add parity smoke selection tests across Gemini + llama.cpp + LM Studio capability profiles.
-   - Impact: high (completes first full local-model optionality milestone).
-
-2. **Spike A Checkpoint 4/5: `/api/ai/chat` backend-routing integration**
+1. **Spike A Checkpoint 4/5: `/api/ai/chat` backend-routing integration**
    - Integrate adapter selector into AI chat entrypoint with deterministic requirement derivation per request mode.
    - Preserve current Gemini behavior while adding explicit fallback/error diagnostics.
-   - Impact: high (moves contract from unit-test-only into user-visible runtime path).
+   - Impact: high (moves local-model routing into the user-visible runtime path).
+
+2. **Spike A Checkpoint 5/5: backend observability + operator diagnostics**
+   - Add lightweight runtime observability for selected backend/fallback reason/attempted-capability mismatches.
+   - Expose deterministic diagnostics for debugging local-backend availability/config issues.
+   - Impact: medium-high (improves reliability and reproducibility under mixed backend environments).
 
 3. **Spike B Checkpoint 1/5: multimodal drawing intake ingestion foundation**
    - Add PDF/image artifact intake + normalized metadata/provenance plumbing.
