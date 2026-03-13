@@ -2423,6 +2423,86 @@ def test_preflight_compare_versions_route_and_ai_wrappers_share_missing_and_stal
 
 
 
+def test_preflight_compare_versions_route_and_ai_wrappers_share_invalid_id_validation_error_envelopes(pm, tmp_path):
+    fixture = _seed_preflight_compare_versions_error_parity_fixture(pm, tmp_path)
+
+    cases = [
+        {
+            "name": "empty_baseline_id",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "baseline_version": "",
+                "candidate_version": fixture["candidate_version_id"],
+            },
+            "ai_args": {
+                "project": pm.project_name,
+                "before_version": "",
+                "new_version": fixture["candidate_version_id"],
+            },
+            "error_substrings": ["version_id", "non-empty string"],
+        },
+        {
+            "name": "whitespace_candidate_id",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "baseline_version_id": fixture["baseline_version_id"],
+                "candidate_version": "   ",
+            },
+            "ai_args": {
+                "project_name": pm.project_name,
+                "baseline_version_id": fixture["baseline_version_id"],
+                "candidate_version": "   ",
+            },
+            "error_substrings": ["version_id", "non-empty string"],
+        },
+        {
+            "name": "path_traversal_baseline_id",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "baseline_version_id": "../outside_versions_root",
+                "candidate_version_id": fixture["candidate_version_id"],
+            },
+            "ai_args": {
+                "project": pm.project_name,
+                "baseline": "../outside_versions_root",
+                "candidate": fixture["candidate_version_id"],
+            },
+            "error_substrings": ["invalid version_id", "outside_versions_root"],
+        },
+        {
+            "name": "absolute_path_candidate_id",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "baseline_version": fixture["baseline_version_id"],
+                "candidate_version_id": "/tmp/airpet_escape_candidate",
+            },
+            "ai_args": {
+                "project": pm.project_name,
+                "before_version": fixture["baseline_version_id"],
+                "new_version": "/tmp/airpet_escape_candidate",
+            },
+            "error_substrings": ["invalid version_id", "/tmp/airpet_escape_candidate"],
+        },
+    ]
+
+    for case in cases:
+        status_code, route_data = _call_preflight_route_with_pm(
+            pm,
+            "/api/preflight/compare_versions",
+            case["route_payload"],
+        )
+        ai_data = dispatch_ai_tool(pm, "compare_preflight_versions", case["ai_args"])
+
+        assert status_code == 400, case["name"]
+        assert route_data == ai_data, case["name"]
+        _assert_compare_ai_error_payload_excludes_success_metadata(route_data)
+
+        error_lower = route_data["error"].lower()
+        for expected_substring in case["error_substrings"]:
+            assert expected_substring.lower() in error_lower, case["name"]
+
+
+
 def test_preflight_explicit_compare_selector_routes_and_ai_wrappers_share_required_field_validation_error_envelopes(pm, tmp_path):
     pm.projects_dir = str(tmp_path)
     pm.project_name = "ai_route_compare_required_selector_parity_project"
