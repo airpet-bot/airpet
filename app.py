@@ -9727,13 +9727,15 @@ def ai_chat_route():
         pm.begin_transaction()
 
         try:
+            # Local backends (llama.cpp, LM Studio) don't support tool calling
+            # So we only use them for simple text generation without tools
             invocation_request = TextGenerationRequest(
                 messages=(
                     TextMessage(role="system", content=load_system_prompt()),
                     TextMessage(role="user", content=formatted_user_msg),
                 ),
-                require_tools=bool((selector_requirements or {}).get("require_tools", False)),
-                require_json_mode=bool((selector_requirements or {}).get("require_json_mode", True)),
+                require_tools=False,  # Local backends don't support tools
+                require_json_mode=False,
                 require_streaming=bool((selector_requirements or {}).get("require_streaming", False)),
                 min_context_tokens=_coerce_optional_int((selector_requirements or {}).get("min_context_tokens")),
             )
@@ -9763,6 +9765,7 @@ def ai_chat_route():
                 "model": adapter_response.model,
                 "usage": adapter_response.usage,
             }
+            local_extra_payload["warning"] = "Local backend (llama.cpp/LM Studio) does not support tool calling. For geometry operations, use Gemini or Ollama models."
 
             pm.end_transaction(f"AI: {user_message[:50]}")
             return create_success_response(pm, adapter_response.text, extra_payload=local_extra_payload)
@@ -9773,6 +9776,7 @@ def ai_chat_route():
             err_payload = {
                 "success": False,
                 "error": f"AI backend invocation failed ({selected_backend_id}): {e}",
+                "hint": "Local backends (llama.cpp/LM Studio) do not support tool calling. For geometry operations, please use Gemini or Ollama models."
             }
             if backend_selection_payload:
                 backend_selection_payload["execution_mode"] = "local_text_adapter"
