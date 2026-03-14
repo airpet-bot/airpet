@@ -559,9 +559,6 @@ def invoke_text_request_for_backend_with_tools(
 
     body = response.json() if hasattr(response, 'json') else {}
 
-    # Debug: print raw response
-    print(f"DEBUG invoke_text_request: Raw response = {body}")
-
     # Extract text and tool calls
     text = _extract_openai_style_text(body)
 

@@ -9741,12 +9741,9 @@ def ai_chat_route():
                 })
 
             # Tool loop for local backends (llama.cpp, LM Studio)
+            final_adapter_response = None
             for turn in range(turn_limit):
                 print(f"{selected_backend_id} Turn {turn+1}/{turn_limit}...")
-                print(f"DEBUG: selector_requirements = {selector_requirements}")
-                print(f"DEBUG: require_tools = {bool((selector_requirements or {}).get('require_tools', False))}")
-                print(f"DEBUG: Sending {len(local_tools)} tools")
-                print(f"DEBUG: First tool = {local_tools[0] if local_tools else 'NONE'}")
 
                 # Use full system prompt for proper tool usage
                 invocation_request = TextGenerationRequest(
@@ -9767,9 +9764,7 @@ def ai_chat_route():
                     runtime_config=selector_runtime_config,
                 )
                 
-                print(f"DEBUG: Response text = {adapter_response.text}")
-                print(f"DEBUG: Response tool_calls = {adapter_response.tool_calls}")
-                print(f"DEBUG: Response raw_response keys = {adapter_response.raw_response.keys() if adapter_response.raw_response else 'None'}")
+                print(f"DEBUG: Turn {turn+1} - text={adapter_response.text[:50] if adapter_response.text else 'None'}..., tool_calls={len(adapter_response.tool_calls) if adapter_response.tool_calls else 0}")
 
                 pm.chat_history.append({
                     "role": "assistant",
@@ -9784,11 +9779,11 @@ def ai_chat_route():
                 tool_calls = adapter_response.tool_calls if hasattr(adapter_response, 'tool_calls') else []
 
                 if not tool_calls:
-                    # No tool calls, we're done
+                    # No tool calls, we're done - save this response
+                    final_adapter_response = adapter_response
                     break
 
                 # Execute tool calls
-                tool_results_parts = []
                 for tool_call in tool_calls:
                     tool_name = tool_call.get("name") or tool_call.get("function", {}).get("name")
                     tool_args = tool_call.get("arguments") or tool_call.get("function", {}).get("arguments", {})
@@ -9800,14 +9795,8 @@ def ai_chat_route():
                         pm.chat_history.append({
                             "role": "tool",
                             "name": tool_name,
-                            "content": tool_result,
+                            "content": json.dumps(tool_result),
                             "tool_call_id": tool_call.get("id") or tool_call.get("function", {}).get("id", f"call_{turn}_{tool_name}")
-                        })
-
-                        # Add to next request
-                        pm.chat_history.append({
-                            "role": "user",
-                            "content": f"Tool '{tool_name}' result: {tool_result}"
                         })
 
                     except Exception as e:
@@ -9822,20 +9811,24 @@ def ai_chat_route():
                 context_summary = pm.get_summarized_context()
                 formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nContinue processing..."
 
+            # If no tool calls were made at all, use the last response
+            if final_adapter_response is None:
+                final_adapter_response = adapter_response
+
             # Return final response
-            final_response = pm.chat_history[-1]
-            final_text = final_response.get("content", "") if isinstance(final_response, dict) else str(final_response)
+            final_text = final_adapter_response.text if final_adapter_response else ""
 
             if backend_selection_payload is not None:
                 backend_selection_payload["execution_mode"] = "local_text_adapter"
-                backend_selection_payload["resolved_model"] = adapter_response.model
+                backend_selection_payload["resolved_model"] = final_adapter_response.model if final_adapter_response else None
 
             local_extra_payload = dict(chat_extra_payload or {})
-            local_extra_payload["backend_execution"] = {
-                "backend_id": adapter_response.backend_id,
-                "model": adapter_response.model,
-                "usage": adapter_response.usage,
-            }
+            if final_adapter_response:
+                local_extra_payload["backend_execution"] = {
+                    "backend_id": final_adapter_response.backend_id,
+                    "model": final_adapter_response.model,
+                    "usage": final_adapter_response.usage,
+                }
 
             pm.end_transaction(f"AI: {user_message[:50]}")
             return create_success_response(pm, final_text, extra_payload=local_extra_payload)
