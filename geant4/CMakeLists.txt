@@ -19,7 +19,8 @@ include(${Geant4_USE_FILE})
 # Locate sources and headers for this project
 #
 include_directories(${PROJECT_SOURCE_DIR}/include
-                     ${Geant4_INCLUDE_DIR} )
+                     ${Geant4_INCLUDE_DIR}
+                     ${Geant4_INSTALL}/include/Geant4)
 
 # Define the C++ standard (Geant4 requires at least C++17)
 set(CMAKE_CXX_STANDARD 17)

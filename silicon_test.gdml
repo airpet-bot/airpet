@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gdml>
+  <define name="cm" unit="cm"/>
+  <define name="g" unit="g"/>
+  <define name="mm" unit="mm"/>
+  <define name="um" unit="um"/>
+  
+  <materials>
+    <material name="G4_Si">
+      <D density="2.329"/>
+      <n>14</n>
+      <A>28.0855</A>
+    </material>
+    <material name="G4_AIR">
+      <D density="0.001205"/>
+      <n>1</n>
+      <A>14.0067</A>
+      <n>1</n>
+      <A>15.9994</A>
+      <fraction>78.084</fraction>
+      <fraction>21.946</fraction>
+      <fraction>0.084</fraction>
+    </material>
+    <material name="G4_Galactic">
+      <D density="1.e-27"/>
+      <n>1</n>
+      <A>1.00794</A>
+    </material>
+  </materials>
+  
+  <solids>
+    <box name="WorldBox" x="50" y="50" z="50" unit="cm"/>
+    <box name="SiliconBox" x="10" y="10" z="0.3" unit="cm"/>
+    <box name="DetectorBox" x="20" y="20" z="10" unit="cm"/>
+  </solids>
+  
+  <volumes>
+    <volume name="World">
+      <solidref ref="WorldBox"/>
+      <materialref ref="G4_Galactic"/>
+      <physvol name="DetectorVolume">
+        <solidref ref="DetectorBox"/>
+        <materialref ref="G4_AIR"/>
+        <position x="0" y="0" z="0" unit="cm"/>
+        <physvol name="SiliconDetector">
+          <solidref ref="SiliconBox"/>
+          <materialref ref="G4_Si"/>
+          <position x="0" y="0" z="0" unit="cm"/>
+        </physvol>
+      </physvol>
+    </volume>
+  </volumes>
+  
+  <setup>
+    <worldref ref="World"/>
+    <physics name="FTFP_BERT"/>
+  </setup>
+</gdml>

@@ -9727,33 +9727,99 @@ def ai_chat_route():
         pm.begin_transaction()
 
         try:
-            # Local backends (llama.cpp, LM Studio) don't support tool calling
-            # So we only use them for simple text generation without tools
-            invocation_request = TextGenerationRequest(
-                messages=(
-                    TextMessage(role="system", content=load_system_prompt()),
-                    TextMessage(role="user", content=formatted_user_msg),
-                ),
-                require_tools=False,  # Local backends don't support tools
-                require_json_mode=False,
-                require_streaming=bool((selector_requirements or {}).get("require_streaming", False)),
-                min_context_tokens=_coerce_optional_int((selector_requirements or {}).get("min_context_tokens")),
-            )
+            # Build OpenAI-compatible tool schema for llama.cpp/LM Studio
+            local_tools = []
+            for tool in AI_GEOMETRY_TOOLS:
+                local_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool["description"],
+                        "parameters": tool["parameters"]
+                    }
+                })
 
-            adapter_response = invoke_text_request_for_backend(
-                selected_backend_id,
-                invocation_request,
-                runtime_config=selector_runtime_config,
-            )
+            # Tool loop for local backends (llama.cpp, LM Studio)
+            for turn in range(turn_limit):
+                print(f"{selected_backend_id} Turn {turn+1}/{turn_limit}...")
 
-            pm.chat_history.append({
-                "role": "assistant",
-                "content": adapter_response.text,
-                "metadata": {
-                    "resolved_backend_id": adapter_response.backend_id,
-                    "provider_model": adapter_response.model,
-                },
-            })
+                invocation_request = TextGenerationRequest(
+                    messages=(
+                        TextMessage(role="system", content=load_system_prompt()),
+                        TextMessage(role="user", content=formatted_user_msg),
+                    ) + tuple(
+                        TextMessage(role=m["role"], content=m["content"])
+                        for m in pm.chat_history[2:]  # Skip system + first user
+                        if isinstance(m.get("content"), str)
+                    ),
+                    require_tools=bool((selector_requirements or {}).get("require_tools", False)),
+                    require_json_mode=bool((selector_requirements or {}).get("require_json_mode", False)),
+                    require_streaming=False,
+                    min_context_tokens=_coerce_optional_int((selector_requirements or {}).get("min_context_tokens")),
+                )
+
+                # Build request with tools if needed
+                adapter_response = invoke_text_request_for_backend_with_tools(
+                    selected_backend_id,
+                    invocation_request,
+                    local_tools if invocation_request.require_tools else [],
+                    runtime_config=selector_runtime_config,
+                )
+
+                pm.chat_history.append({
+                    "role": "assistant",
+                    "content": adapter_response.text,
+                    "metadata": {
+                        "resolved_backend_id": adapter_response.backend_id,
+                        "provider_model": adapter_response.model,
+                    },
+                })
+
+                # Check for tool calls in response
+                tool_calls = adapter_response.tool_calls if hasattr(adapter_response, 'tool_calls') else []
+
+                if not tool_calls:
+                    # No tool calls, we're done
+                    break
+
+                # Execute tool calls
+                tool_results_parts = []
+                for tool_call in tool_calls:
+                    tool_name = tool_call.get("name") or tool_call.get("function", {}).get("name")
+                    tool_args = tool_call.get("arguments") or tool_call.get("function", {}).get("arguments", {})
+
+                    try:
+                        # Execute the tool
+                        tool_result = execute_ai_tool(tool_name, tool_args, pm)
+
+                        pm.chat_history.append({
+                            "role": "tool",
+                            "name": tool_name,
+                            "content": tool_result,
+                            "tool_call_id": tool_call.get("id") or tool_call.get("function", {}).get("id", f"call_{turn}_{tool_name}")
+                        })
+
+                        # Add to next request
+                        pm.chat_history.append({
+                            "role": "user",
+                            "content": f"Tool '{tool_name}' result: {tool_result}"
+                        })
+
+                    except Exception as e:
+                        error_msg = f"Tool '{tool_name}' failed: {e}"
+                        pm.chat_history.append({
+                            "role": "tool",
+                            "name": tool_name,
+                            "content": error_msg
+                        })
+
+                # Update formatted message with tool results for next iteration
+                context_summary = pm.get_summarized_context()
+                formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nContinue processing..."
+
+            # Return final response
+            final_response = pm.chat_history[-1]
+            final_text = final_response.get("content", "") if isinstance(final_response, dict) else str(final_response)
 
             if backend_selection_payload is not None:
                 backend_selection_payload["execution_mode"] = "local_text_adapter"
@@ -9765,10 +9831,9 @@ def ai_chat_route():
                 "model": adapter_response.model,
                 "usage": adapter_response.usage,
             }
-            local_extra_payload["warning"] = "Local backend (llama.cpp/LM Studio) does not support tool calling. For geometry operations, use Gemini or Ollama models."
 
             pm.end_transaction(f"AI: {user_message[:50]}")
-            return create_success_response(pm, adapter_response.text, extra_payload=local_extra_payload)
+            return create_success_response(pm, final_text, extra_payload=local_extra_payload)
 
         except Exception as e:
             pm.end_transaction("AI Error")
@@ -9776,7 +9841,7 @@ def ai_chat_route():
             err_payload = {
                 "success": False,
                 "error": f"AI backend invocation failed ({selected_backend_id}): {e}",
-                "hint": "Local backends (llama.cpp/LM Studio) do not support tool calling. For geometry operations, please use Gemini or Ollama models."
+                "hint": "Ensure llama-server is running with --jinja flag for tool calling support."
             }
             if backend_selection_payload:
                 backend_selection_payload["execution_mode"] = "local_text_adapter"

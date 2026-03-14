@@ -116,6 +116,7 @@ class TextGenerationResponse:
     raw_response: Dict[str, Any]
     model: Optional[str] = None
     usage: Optional[Dict[str, Any]] = None
+    tool_calls: List[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -123,11 +124,12 @@ class LlamaCppAdapterConfig:
     base_url: str = "http://127.0.0.1:8080"
     endpoint_path: str = "/v1/chat/completions"
     model: str = "local-model"
-    timeout_seconds: float = 45.0
+    timeout_seconds: float = 120.0  # Increased for tool calling
     max_retries: int = 1
     retry_backoff_seconds: float = 0.25
     verify_tls: bool = True
     headers: Tuple[Tuple[str, str], ...] = ()
+    supports_tools: bool = True  # llama.cpp supports tools when --jinja flag is used
 
     @staticmethod
     def from_runtime_config(runtime_config: Optional[Mapping[str, Any]] = None) -> "LlamaCppAdapterConfig":
@@ -141,11 +143,12 @@ class LlamaCppAdapterConfig:
             base_url=str(cfg.get("base_url", "http://127.0.0.1:8080")),
             endpoint_path=str(cfg.get("endpoint_path", "/v1/chat/completions")),
             model=str(cfg.get("model", "local-model")),
-            timeout_seconds=float(cfg.get("timeout_seconds", 45.0)),
+            timeout_seconds=float(cfg.get("timeout_seconds", 120.0)),  # Increased for tool calls
             max_retries=max(0, int(cfg.get("max_retries", 1))),
             retry_backoff_seconds=max(0.0, float(cfg.get("retry_backoff_seconds", 0.25))),
             verify_tls=bool(cfg.get("verify_tls", True)),
             headers=header_items,
+            supports_tools=bool(cfg.get("supports_tools", True)),
         )
 
 
@@ -364,7 +367,7 @@ DEFAULT_BACKEND_SPECS: Tuple[AdapterSpec, ...] = (
         enabled=True,
         implementation_status="implemented",
         capabilities=AdapterCapabilities(
-            supports_tools=False,
+            supports_tools=True,  # Requires --jinja flag on llama-server
             supports_json_mode=True,
             supports_vision=False,
             supports_streaming=True,
@@ -379,7 +382,7 @@ DEFAULT_BACKEND_SPECS: Tuple[AdapterSpec, ...] = (
         enabled=True,
         implementation_status="implemented",
         capabilities=AdapterCapabilities(
-            supports_tools=False,
+            supports_tools=True,  # LM Studio supports tools via OpenAI-compatible API
             supports_json_mode=True,
             supports_vision=False,
             supports_streaming=True,
@@ -479,6 +482,85 @@ def invoke_text_request_for_backend(
         raise ValueError(f"Unsupported text-first backend for adapter invocation: {backend_id}")
 
     return adapter.invoke(request, http_post=http_post)
+
+
+def invoke_text_request_for_backend_with_tools(
+    backend_id: str,
+    request: TextGenerationRequest,
+    tools: List[Dict[str, Any]],
+    *,
+    runtime_config: Optional[Mapping[str, Any]] = None,
+    http_post: Optional[Callable[..., Any]] = None,
+) -> TextGenerationResponse:
+    """Invoke a normalized text request with tool support for local backends."""
+
+    if http_post is None:
+        import requests
+        http_post = requests.post
+
+    # Build OpenAI-compatible request with tools
+    payload = {
+        "model": "local-model",  # Will be overridden by adapter
+        "messages": [m.as_openai_message() for m in request.messages],
+        "stream": False,
+        "temperature": request.temperature or 0.7,
+    }
+
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    if request.require_json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    if request.max_output_tokens:
+        payload["max_tokens"] = request.max_output_tokens
+
+    # Determine base URL
+    if backend_id == LlamaCppTextAdapter.backend_id:
+        config = LlamaCppAdapterConfig.from_runtime_config(runtime_config)
+        url = urljoin(config.base_url.rstrip("/") + "/", "/v1/chat/completions")
+    elif backend_id == LMStudioTextAdapter.backend_id:
+        config = LMStudioAdapterConfig.from_runtime_config(runtime_config)
+        url = urljoin(config.base_url.rstrip("/") + "/", "/v1/chat/completions")
+    else:
+        raise ValueError(f"Unsupported backend: {backend_id}")
+
+    headers = {"Content-Type": "application/json"}
+    if hasattr(config, 'headers'):
+        headers.update(dict(config.headers))
+
+    response = http_post(
+        url,
+        json=payload,
+        headers=headers,
+        timeout=getattr(config, 'timeout_seconds', 120.0),
+        verify=getattr(config, 'verify_tls', True),
+    )
+
+    if hasattr(response, 'raise_for_status'):
+        response.raise_for_status()
+
+    body = response.json() if hasattr(response, 'json') else {}
+
+    # Extract text and tool calls
+    text = _extract_openai_style_text(body)
+
+    # Extract tool calls if present
+    tool_calls = []
+    if "choices" in body and len(body["choices"]) > 0:
+        message = body["choices"][0].get("message", {})
+        if "tool_calls" in message:
+            tool_calls = message["tool_calls"]
+
+    return TextGenerationResponse(
+        backend_id=backend_id,
+        text=text,
+        raw_response=body,
+        model=body.get("model"),
+        usage=body.get("usage"),
+        tool_calls=tool_calls,
+    )
 
 
 def _ordered_candidates(

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gdml>
+  <!-- Simple Silicon Detector Geometry -->
+  
+  <define name="silicon" unit="cm">
+    <volume name="World" unit="cm">
+      <box x="50" y="50" z="50"/>
+      <materialref ref="G4_Galactic"/>
+    </volume>
+    
+    <volume name="SiliconDetector" unit="cm">
+      <box x="10" y="10" z="0.5"/>
+      <materialref ref="G4_Si"/>
+    </volume>
+    
+    <positionref ref="SiliconDetector" position="0 0 0" rot="1 0 0 0 1 0 0 0 1"/>
+    
+    <volume name="DetectorVolume" unit="cm">
+      <box x="20" y="20" z="10"/>
+      <materialref ref="G4_AIR"/>
+      <positionref ref="SiliconDetector" position="0 0 0"/>
+    </volume>
+    
+    <positionref ref="DetectorVolume" position="0 0 0" rot="1 0 0 0 1 0 0 0 1"/>
+    
+    <positionref ref="World" position="0 0 0" rot="1 0 0 0 1 0 0 0 1"/>
+  </define>
+  
+  <setup name="SimulationSetup" type="simulation">
+    <worldref ref="World"/>
+    <physics name="FTFP_BERT"/>
+  </setup>
+</gdml>
