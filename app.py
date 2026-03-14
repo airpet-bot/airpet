@@ -9746,6 +9746,7 @@ def ai_chat_route():
                 print(f"DEBUG: selector_requirements = {selector_requirements}")
                 print(f"DEBUG: require_tools = {bool((selector_requirements or {}).get('require_tools', False))}")
                 print(f"DEBUG: Sending {len(local_tools)} tools")
+                print(f"DEBUG: First tool = {local_tools[0] if local_tools else 'NONE'}")
 
                 # Use full system prompt for proper tool usage
                 invocation_request = TextGenerationRequest(
@@ -9765,6 +9766,9 @@ def ai_chat_route():
                     local_tools,  # Always send tools
                     runtime_config=selector_runtime_config,
                 )
+                
+                print(f"DEBUG: Response text (first 200 chars) = {adapter_response.text[:200]}")
+                print(f"DEBUG: Response tool_calls = {adapter_response.tool_calls}")
 
                 pm.chat_history.append({
                     "role": "assistant",
