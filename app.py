@@ -9767,8 +9767,9 @@ def ai_chat_route():
                     runtime_config=selector_runtime_config,
                 )
                 
-                print(f"DEBUG: Response text (first 200 chars) = {adapter_response.text[:200]}")
+                print(f"DEBUG: Response text = {adapter_response.text}")
                 print(f"DEBUG: Response tool_calls = {adapter_response.tool_calls}")
+                print(f"DEBUG: Response raw_response keys = {adapter_response.raw_response.keys() if adapter_response.raw_response else 'None'}")
 
                 pm.chat_history.append({
                     "role": "assistant",

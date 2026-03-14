@@ -498,9 +498,19 @@ def invoke_text_request_for_backend_with_tools(
         import requests
         http_post = requests.post
 
+    # Determine config and model
+    if backend_id == LlamaCppTextAdapter.backend_id:
+        config = LlamaCppAdapterConfig.from_runtime_config(runtime_config)
+        model_name = config.model
+    elif backend_id == LMStudioTextAdapter.backend_id:
+        config = LMStudioAdapterConfig.from_runtime_config(runtime_config)
+        model_name = config.model
+    else:
+        raise ValueError(f"Unsupported backend: {backend_id}")
+
     # Build OpenAI-compatible request with tools
     payload = {
-        "model": "local-model",  # Will be overridden by adapter
+        "model": model_name,  # Use the actual model name from config
         "messages": [m.as_openai_message() for m in request.messages],
         "stream": False,
         "temperature": request.temperature or 0.7,
@@ -510,6 +520,11 @@ def invoke_text_request_for_backend_with_tools(
         payload["tools"] = tools
         payload["tool_choice"] = "required"  # Force tool use when tools are available
         payload["parallel_tool_calls"] = False  # Disable parallel calls for better control
+        
+        # Debug: print the tools being sent
+        print(f"DEBUG: Sending {len(tools)} tools to {backend_id}")
+        for tool in tools[:3]:  # Print first 3 tools
+            print(f"  - {tool.get('function', {}).get('name', 'unknown')}")
 
     if request.require_json_mode:
         payload["response_format"] = {"type": "json_object"}
@@ -543,6 +558,9 @@ def invoke_text_request_for_backend_with_tools(
         response.raise_for_status()
 
     body = response.json() if hasattr(response, 'json') else {}
+
+    # Debug: print raw response
+    print(f"DEBUG invoke_text_request: Raw response = {body}")
 
     # Extract text and tool calls
     text = _extract_openai_style_text(body)
