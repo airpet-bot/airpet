@@ -9789,8 +9789,13 @@ def ai_chat_route():
                     tool_args = tool_call.get("arguments") or tool_call.get("function", {}).get("arguments", {})
 
                     try:
+                        # Debug: log the tool call
+                        print(f"DEBUG TOOL: {tool_name} with args={tool_args}")
+                        
                         # Execute the tool
                         tool_result = dispatch_ai_tool(pm, tool_name, tool_args)
+
+                        print(f"DEBUG TOOL RESULT: {tool_result}")
 
                         pm.chat_history.append({
                             "role": "tool",
@@ -9801,6 +9806,7 @@ def ai_chat_route():
 
                     except Exception as e:
                         error_msg = f"Tool '{tool_name}' failed: {e}"
+                        print(f"DEBUG TOOL ERROR: {error_msg}")
                         pm.chat_history.append({
                             "role": "tool",
                             "name": tool_name,
