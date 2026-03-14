@@ -9795,7 +9795,7 @@ def ai_chat_route():
 
                     try:
                         # Execute the tool
-                        tool_result = execute_ai_tool(tool_name, tool_args, pm)
+                        tool_result = dispatch_ai_tool(pm, tool_name, tool_args)
 
                         pm.chat_history.append({
                             "role": "tool",
