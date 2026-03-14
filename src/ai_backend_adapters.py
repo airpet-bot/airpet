@@ -508,7 +508,8 @@ def invoke_text_request_for_backend_with_tools(
 
     if tools:
         payload["tools"] = tools
-        payload["tool_choice"] = "auto"
+        payload["tool_choice"] = "required"  # Force tool use when tools are available
+        payload["parallel_tool_calls"] = False  # Disable parallel calls for better control
 
     if request.require_json_mode:
         payload["response_format"] = {"type": "json_object"}
