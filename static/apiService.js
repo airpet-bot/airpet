@@ -751,22 +751,30 @@ export async function sendAiChatMessage(message, model, turnLimit = 10) {
         // Gemini models start with "models/"
         if (model.startsWith('models/')) {
             preferred_backend = 'gemini_remote';
+            // Gemini supports tools
+            backend_selector = {
+                preferred_backend_id: preferred_backend,
+                requirements: {
+                    require_tools: true,
+                    require_json_mode: true,
+                    require_streaming: false
+                },
+                allow_fallback: true
+            };
         } else {
-            // For non-Gemini models, we need to determine if it's ollama, llama.cpp, or lm_studio
-            // We'll let the backend auto-detect by not specifying a preferred backend
-            // but the backend selector will help route to the right adapter
+            // For non-Gemini models (llama.cpp, LM Studio, Ollama), don't require tools
+            // since local backends may not support them
             preferred_backend = null; // Let backend auto-detect based on availability
+            backend_selector = {
+                preferred_backend_id: preferred_backend,
+                requirements: {
+                    require_tools: false,  // Local backends don't support tools yet
+                    require_json_mode: true,
+                    require_streaming: false
+                },
+                allow_fallback: true
+            };
         }
-        
-        backend_selector = {
-            preferred_backend_id: preferred_backend,
-            requirements: {
-                require_tools: true,
-                require_json_mode: true,
-                require_streaming: false
-            },
-            allow_fallback: true
-        };
     }
     
     const payload = { message, model, turn_limit: turnLimit };
