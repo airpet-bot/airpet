@@ -9744,18 +9744,23 @@ def ai_chat_route():
             for turn in range(turn_limit):
                 print(f"{selected_backend_id} Turn {turn+1}/{turn_limit}...")
 
-                # For local backends, use a simpler system prompt to reduce context size
-                simple_system_prompt = """You are AIRPET AI, a detector geometry assistant. You have access to tools for creating and manipulating Geant4 geometries. Use the tools to help the user build their detector design. Be concise and helpful."""
+                # For local backends, use minimal context to avoid timeouts
+                # Skip the full context summary on first turn - just use the user message
+                if turn == 0:
+                    user_msg = f"Current project: {pm.project_name}. User request: {user_message}"
+                else:
+                    user_msg = formatted_user_msg
+
+                simple_system_prompt = """You are AIRPET AI, a Geant4 geometry assistant. Use the available tools to help build detector geometries."""
                 
                 invocation_request = TextGenerationRequest(
                     messages=(
                         TextMessage(role="system", content=simple_system_prompt),
-                        TextMessage(role="user", content=formatted_user_msg),
+                        TextMessage(role="user", content=user_msg),
                     ),
                     require_tools=bool((selector_requirements or {}).get("require_tools", False)),
-                    require_json_mode=bool((selector_requirements or {}).get("require_json_mode", False)),
+                    require_json_mode=False,
                     require_streaming=False,
-                    min_context_tokens=_coerce_optional_int((selector_requirements or {}).get("min_context_tokens")),
                 )
 
                 # Build request with tools if needed
