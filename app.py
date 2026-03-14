@@ -9743,6 +9743,9 @@ def ai_chat_route():
             # Tool loop for local backends (llama.cpp, LM Studio)
             for turn in range(turn_limit):
                 print(f"{selected_backend_id} Turn {turn+1}/{turn_limit}...")
+                print(f"DEBUG: selector_requirements = {selector_requirements}")
+                print(f"DEBUG: require_tools = {bool((selector_requirements or {}).get('require_tools', False))}")
+                print(f"DEBUG: Sending {len(local_tools)} tools")
 
                 # Use full system prompt for proper tool usage
                 invocation_request = TextGenerationRequest(
@@ -9750,16 +9753,16 @@ def ai_chat_route():
                         TextMessage(role="system", content=load_system_prompt()),
                         TextMessage(role="user", content=formatted_user_msg),
                     ),
-                    require_tools=bool((selector_requirements or {}).get("require_tools", False)),
+                    require_tools=True,  # Always use tools for local backends
                     require_json_mode=False,
                     require_streaming=False,
                 )
 
-                # Build request with tools if needed
+                # Build request with tools
                 adapter_response = invoke_text_request_for_backend_with_tools(
                     selected_backend_id,
                     invocation_request,
-                    local_tools if invocation_request.require_tools else [],
+                    local_tools,  # Always send tools
                     runtime_config=selector_runtime_config,
                 )
 
