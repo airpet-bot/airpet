@@ -9742,8 +9742,29 @@ def ai_chat_route():
 
             # Tool loop for local backends (llama.cpp, LM Studio)
             final_adapter_response = None
+            last_tool_calls = []
+            consecutive_summary_calls = 0
+
             for turn in range(turn_limit):
                 print(f"{selected_backend_id} Turn {turn+1}/{turn_limit}...")
+
+                # Check for infinite loops (model stuck calling same tool repeatedly)
+                current_tool_names = [
+                    tc.get("name") or tc.get("function", {}).get("name")
+                    for tc in (adapter_response.tool_calls or [])
+                ] if turn > 0 else []
+                
+                if turn >= 2 and current_tool_names == last_tool_calls and current_tool_names == ["get_project_summary"]:
+                    consecutive_summary_calls += 1
+                    if consecutive_summary_calls >= 3:
+                        # Model is stuck in a loop - break and provide guidance
+                        print(f"WARNING: Model stuck calling 'get_project_summary' {consecutive_summary_calls} times. Breaking loop.")
+                        final_adapter_response = adapter_response
+                        break
+                else:
+                    consecutive_summary_calls = 0
+                
+                last_tool_calls = current_tool_names
 
                 # Use full system prompt for proper tool usage
                 invocation_request = TextGenerationRequest(
@@ -9827,6 +9848,11 @@ def ai_chat_route():
             # If no text was generated, add a summary message
             if not final_text and tool_calls and len(tool_calls) > 0:
                 final_text = "Successfully processed your request using available tools."
+
+            # If we broke due to infinite loop, add a helpful message
+            if consecutive_summary_calls >= 3:
+                final_text = final_text or ""
+                final_text += "\n\nNote: The AI model seems to be stuck in a loop. Please try a simpler request or switch to a different AI model (like Ollama with gpt-oss:latest) for better tool usage."
 
             if backend_selection_payload is not None:
                 backend_selection_payload["execution_mode"] = "local_text_adapter"
