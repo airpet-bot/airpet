@@ -51,6 +51,7 @@ from src.ai_backend_adapters import (
     TextGenerationRequest,
     TextMessage,
     invoke_text_request_for_backend,
+    invoke_text_request_for_backend_with_tools,
     select_backend_for_text_request,
 )
 
