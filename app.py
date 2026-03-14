@@ -9370,21 +9370,68 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             return {"success": False, "error": f"Invalid link_type '{ltype}'. Expected 'skin' or 'border'."}
 
         elif tool_name == "manage_assembly":
-            name = args['name']
-            pls = args['placements']
-            for p in pls:
-                if 'position' in p:
-                    p['position'] = to_vec_dict(p['position'])
-                if 'rotation' in p:
-                    p['rotation'] = to_vec_dict(p['rotation'])
+            name = args.get('name')
+            raw_placements = args.get('placements')
+
+            if not isinstance(name, str) or not name.strip():
+                return {"success": False, "error": "'name' is required for manage_assembly."}
+            if not isinstance(raw_placements, list):
+                return {"success": False, "error": "'placements' must be an array for manage_assembly."}
+
+            normalized_placements = []
+            for idx, raw_p in enumerate(raw_placements):
+                if not isinstance(raw_p, dict):
+                    return {"success": False, "error": f"placements[{idx}] must be an object."}
+
+                placement = dict(raw_p)
+                volume_ref = (
+                    placement.get('volume_ref')
+                    or placement.get('logical_volume_ref')
+                    or placement.get('volume')
+                    or placement.get('lv_name')
+                )
+                if not volume_ref:
+                    return {
+                        "success": False,
+                        "error": f"placements[{idx}] is missing required field 'volume_ref'."
+                    }
+
+                placement_name = (
+                    placement.get('name')
+                    or placement.get('placement_name')
+                    or placement.get('id')
+                    or f"{name}_placement_{idx + 1}"
+                )
+
+                normalized = {
+                    'name': str(placement_name),
+                    'volume_ref': str(volume_ref),
+                }
+
+                if placement.get('id') is not None:
+                    normalized['id'] = str(placement.get('id'))
+                if placement.get('parent_lv_name') is not None:
+                    normalized['parent_lv_name'] = str(placement.get('parent_lv_name'))
+                if placement.get('copy_number_expr') is not None:
+                    normalized['copy_number_expr'] = str(placement.get('copy_number_expr'))
+                elif placement.get('copy_number') is not None:
+                    normalized['copy_number'] = placement.get('copy_number')
+                if placement.get('position') is not None:
+                    normalized['position'] = to_vec_dict(placement.get('position'))
+                if placement.get('rotation') is not None:
+                    normalized['rotation'] = to_vec_dict(placement.get('rotation'))
+                if placement.get('scale') is not None:
+                    normalized['scale'] = to_vec_dict(placement.get('scale'))
+
+                normalized_placements.append(normalized)
 
             if name in pm.current_geometry_state.assemblies:
-                success, error = pm.update_assembly(name, pls)
+                success, error = pm.update_assembly(name, normalized_placements)
                 if success:
                     return {"success": True, "message": f"Assembly '{name}' updated."}
                 return {"success": False, "error": error}
             else:
-                res, error = pm.add_assembly(name, pls)
+                res, error = pm.add_assembly(name, normalized_placements)
                 if res:
                     return {"success": True, "message": f"Assembly '{res['name']}' created."}
                 return {"success": False, "error": error}

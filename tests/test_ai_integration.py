@@ -288,8 +288,47 @@ def test_ai_chat_backend_selector_returns_deterministic_local_invocation_error_p
         assert data["backend_selection"]["execution_mode"] == "local_text_adapter"
 
 
+def test_manage_assembly_tool_auto_generates_placement_names_when_missing():
+    evaluator = ExpressionEvaluator()
+    pm = ProjectManager(evaluator)
+    pm.create_empty_project()
+
+    world_lv_ref = pm.current_geometry_state.world_volume_ref
+
+    result = dispatch_ai_tool(pm, "manage_assembly", {
+        "name": "asm_auto",
+        "placements": [
+            {
+                "volume_ref": world_lv_ref,
+                "position": {"x": "0", "y": "0", "z": "0"}
+            }
+        ]
+    })
+
+    assert result["success"] is True, result.get("error")
+
+    asm = pm.current_geometry_state.assemblies.get("asm_auto")
+    assert asm is not None
+    assert len(asm.placements) == 1
+    assert asm.placements[0].name.startswith("asm_auto_placement_")
+
+
+def test_manage_assembly_tool_returns_validation_error_for_missing_volume_ref():
+    evaluator = ExpressionEvaluator()
+    pm = ProjectManager(evaluator)
+    pm.create_empty_project()
+
+    result = dispatch_ai_tool(pm, "manage_assembly", {
+        "name": "asm_bad",
+        "placements": [{}]
+    })
+
+    assert result["success"] is False
+    assert "placements[0] is missing required field 'volume_ref'" in result.get("error", "")
+
+
 def test_ai_analysis_summary_integration(client):
-    """Verify the analysis summary tool integration."""
+    """Verify that the analysis summary tool integration."""
     with patch('app.get_project_manager_for_session') as MockPMGetter, \
          patch('h5py.File') as MockFile, \
          patch('os.path.exists', return_value=True):

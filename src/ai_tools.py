@@ -970,11 +970,14 @@ AI_GEOMETRY_TOOLS = [
                     "items": {
                         "type": "object",
                         "properties": {
+                            "name": {"type": "string", "description": "Optional placement name. If omitted, AIRPET auto-generates a deterministic name."},
+                            "placement_name": {"type": "string", "description": "Alias for placement name."},
                             "volume_ref": {"type": "string"},
                             "position": {"type": "object"},
                             "rotation": {"type": "object"},
                             "copy_number": {"type": "integer"}
-                        }
+                        },
+                        "required": ["volume_ref"]
                     }
                 }
             },
