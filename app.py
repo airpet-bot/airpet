@@ -9744,14 +9744,13 @@ def ai_chat_route():
             for turn in range(turn_limit):
                 print(f"{selected_backend_id} Turn {turn+1}/{turn_limit}...")
 
+                # For local backends, use a simpler system prompt to reduce context size
+                simple_system_prompt = """You are AIRPET AI, a detector geometry assistant. You have access to tools for creating and manipulating Geant4 geometries. Use the tools to help the user build their detector design. Be concise and helpful."""
+                
                 invocation_request = TextGenerationRequest(
                     messages=(
-                        TextMessage(role="system", content=load_system_prompt()),
+                        TextMessage(role="system", content=simple_system_prompt),
                         TextMessage(role="user", content=formatted_user_msg),
-                    ) + tuple(
-                        TextMessage(role=m["role"], content=m["content"])
-                        for m in pm.chat_history[2:]  # Skip system + first user
-                        if isinstance(m.get("content"), str)
                     ),
                     require_tools=bool((selector_requirements or {}).get("require_tools", False)),
                     require_json_mode=bool((selector_requirements or {}).get("require_json_mode", False)),
