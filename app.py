@@ -9818,6 +9818,10 @@ def ai_chat_route():
             # Return final response
             final_text = final_adapter_response.text if final_adapter_response else ""
 
+            # If no text was generated, add a summary message
+            if not final_text and tool_calls and len(tool_calls) > 0:
+                final_text = "Successfully processed your request using available tools."
+
             if backend_selection_payload is not None:
                 backend_selection_payload["execution_mode"] = "local_text_adapter"
                 backend_selection_payload["resolved_model"] = final_adapter_response.model if final_adapter_response else None
