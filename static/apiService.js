@@ -762,9 +762,9 @@ export async function sendAiChatMessage(message, model, turnLimit = 10) {
                 allow_fallback: true
             };
         } else {
-            // For non-Gemini models (llama.cpp, LM Studio, Ollama), don't require tools
-            // since local backends may not support them
-            preferred_backend = null; // Let backend auto-detect based on availability
+            // For non-Gemini models, prefer local backends
+            // We'll try llama_cpp first, then lm_studio, then ollama
+            preferred_backend = 'llama_cpp';  // Start with llama.cpp as default for local models
             backend_selector = {
                 preferred_backend_id: preferred_backend,
                 requirements: {
@@ -772,7 +772,7 @@ export async function sendAiChatMessage(message, model, turnLimit = 10) {
                     require_json_mode: true,
                     require_streaming: false
                 },
-                allow_fallback: true
+                allow_fallback: true  // Allow fallback to other local backends
             };
         }
     }
