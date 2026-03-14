@@ -124,7 +124,7 @@ class LlamaCppAdapterConfig:
     base_url: str = "http://127.0.0.1:8080"
     endpoint_path: str = "/v1/chat/completions"
     model: str = "local-model"
-    timeout_seconds: float = 120.0  # Increased for tool calling
+    timeout_seconds: float = 300.0  # 5 minutes for complex tool-based requests
     max_retries: int = 1
     retry_backoff_seconds: float = 0.25
     verify_tls: bool = True
@@ -143,7 +143,7 @@ class LlamaCppAdapterConfig:
             base_url=str(cfg.get("base_url", "http://127.0.0.1:8080")),
             endpoint_path=str(cfg.get("endpoint_path", "/v1/chat/completions")),
             model=str(cfg.get("model", "local-model")),
-            timeout_seconds=float(cfg.get("timeout_seconds", 120.0)),  # Increased for tool calls
+            timeout_seconds=float(cfg.get("timeout_seconds", 300.0)),  # 5 minutes
             max_retries=max(0, int(cfg.get("max_retries", 1))),
             retry_backoff_seconds=max(0.0, float(cfg.get("retry_backoff_seconds", 0.25))),
             verify_tls=bool(cfg.get("verify_tls", True)),
