@@ -743,10 +743,41 @@ export async function checkAiServiceStatus() {
  * @returns {Promise<Object>}
  */
 export async function sendAiChatMessage(message, model, turnLimit = 10) {
+    // Determine backend based on model name
+    let backend_selector = null;
+    let preferred_backend = null;
+    
+    if (model) {
+        // Gemini models start with "models/"
+        if (model.startsWith('models/')) {
+            preferred_backend = 'gemini_remote';
+        } else {
+            // For non-Gemini models, we need to determine if it's ollama, llama.cpp, or lm_studio
+            // We'll let the backend auto-detect by not specifying a preferred backend
+            // but the backend selector will help route to the right adapter
+            preferred_backend = null; // Let backend auto-detect based on availability
+        }
+        
+        backend_selector = {
+            preferred_backend_id: preferred_backend,
+            requirements: {
+                require_tools: true,
+                require_json_mode: true,
+                require_streaming: false
+            },
+            allow_fallback: true
+        };
+    }
+    
+    const payload = { message, model, turn_limit: turnLimit };
+    if (backend_selector) {
+        payload.backend_selector = backend_selector;
+    }
+    
     const response = await fetch(`${API_BASE_URL}/api/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, model, turn_limit: turnLimit })
+        body: JSON.stringify(payload)
     });
     return handleResponse(response);
 }

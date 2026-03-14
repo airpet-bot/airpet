@@ -7436,7 +7436,7 @@ def get_defines_by_type_route():
 
 @app.route('/ai_health_check', methods=['GET'])
 def ai_health_check_route():
-    response_data = {"success": True, "models": {"ollama": [], "gemini": []}}
+    response_data = {"success": True, "models": {"ollama": [], "gemini": [], "llama_cpp": [], "lm_studio": []}}
     
     # 1. Check for Ollama models
     try:
@@ -7463,6 +7463,36 @@ def ai_health_check_route():
         except Exception as e:
             print(f"Error fetching Gemini models: {e}")
             response_data["error_gemini"] = str(e)
+
+    # 3. Check for llama.cpp models (OpenAI-compatible API at 127.0.0.1:8080)
+    try:
+        llama_response = requests.get('http://127.0.0.1:8080/v1/models', timeout=3)
+        if llama_response.ok:
+            llama_data = llama_response.json()
+            response_data["models"]["llama_cpp"] = [m['id'] for m in llama_data.get('data', [])]
+        else:
+            # If endpoint exists but returns error, check if it's the default model
+            print(f"llama.cpp models endpoint returned status {llama_response.status_code}")
+            # Try to use a default model name if we can't list models
+            response_data["models"]["llama_cpp"] = ["local-model"]
+    except requests.exceptions.RequestException:
+        print("llama.cpp service is unreachable at 127.0.0.1:8080")
+        # We don't fail the whole request, just show no llama.cpp models
+
+    # 4. Check for LM Studio models (OpenAI-compatible API at 127.0.0.1:1234)
+    try:
+        lmstudio_response = requests.get('http://127.0.0.1:1234/v1/models', timeout=3)
+        if lmstudio_response.ok:
+            lmstudio_data = lmstudio_response.json()
+            response_data["models"]["lm_studio"] = [m['id'] for m in lmstudio_data.get('data', [])]
+        else:
+            # If endpoint exists but returns error, check if it's the default model
+            print(f"LM Studio models endpoint returned status {lmstudio_response.status_code}")
+            # Try to use a default model name if we can't list models
+            response_data["models"]["lm_studio"] = ["local-model"]
+    except requests.exceptions.RequestException:
+        print("LM Studio service is unreachable at 127.0.0.1:1234")
+        # We don't fail the whole request, just show no LM Studio models
 
     return jsonify(response_data)
 

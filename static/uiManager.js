@@ -2035,7 +2035,7 @@ export function clearAiPrompt() {
 
 /**
  * Populates the AI model selector dropdown with grouped options.
- * @param {object} models - An object like {ollama: [...], gemini: [...]}.
+ * @param {object} models - An object like {ollama: [...], gemini: [...], llama_cpp: [...], lm_studio: [...]}.
  */
 export function populateAiModelSelector(models) {
     if (!aiModelSelect) return;
@@ -2063,12 +2063,16 @@ export function populateAiModelSelector(models) {
 
     createGroup("Gemini Models", models.gemini);
     createGroup("Ollama Models", models.ollama);
+    createGroup("llama.cpp Models", models.llama_cpp);
+    createGroup("LM Studio Models", models.lm_studio);
 
-    // If no models were added at all (check both lists)
+    // If no models were added at all (check all lists)
     const hasGemini = models.gemini && models.gemini.length > 0;
     const hasOllama = models.ollama && models.ollama.length > 0;
+    const hasLlamaCpp = models.llama_cpp && models.llama_cpp.length > 0;
+    const hasLmStudio = models.lm_studio && models.lm_studio.length > 0;
 
-    if (!hasGemini && !hasOllama) {
+    if (!hasGemini && !hasOllama && !hasLlamaCpp && !hasLmStudio) {
         const option = document.createElement('option');
         option.textContent = "No AI models found";
         option.disabled = true;
