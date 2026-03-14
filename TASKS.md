@@ -2,19 +2,19 @@
 
 ## In Progress
 
-- **Spike A Follow-on: local-backend health diagnostics + startup readiness hints (Checkpoint 1/3)**
-  - Objective: make mixed Gemini/llama.cpp/LM Studio setups easier to debug deterministically before `/api/ai/chat` failures.
+- **Spike A Follow-on: local-backend UI exposure + selection wiring (Checkpoint 1/3)**
+  - Objective: make llama.cpp / LM Studio backends visible and selectable from the user UI, not only backend payloads.
   - Checkpoint plan (multi-heartbeat):
     - Planned checkpoints:
-      - **1/3** add deterministic backend-health probe primitive (connectivity/model/timeout classification).
-      - **2/3** expose route-level diagnostics endpoint + stable error/readiness envelope.
-      - **3/3** surface startup/readiness hints in API responses/docs with regression coverage.
-    - Current checkpoint: **1/3** backend-health probe primitive + focused contract tests.
-    - Next checkpoint: **2/3** route-level health endpoint integration.
+      - **1/3** expose local backend model discovery in health/model-list APIs and render them in UI selector groups.
+      - **2/3** wire chat payload selection (`backend_selector`) from UI model choice with deterministic local-backend routing.
+      - **3/3** add UX/readiness diagnostics + docs/tests so users understand local text-first limits and fallback behavior.
+    - Current checkpoint: **1/3** discovery + model-selector UI exposure.
+    - Next checkpoint: **2/3** chat payload selector wiring.
   - Definition of done for current checkpoint:
-    - deterministic health probe output shape for gemini/local adapters
-    - normalized failure-class taxonomy suitable for operator triage
-    - regression tests lock probe determinism for representative healthy/unhealthy backend states
+    - `/ai_health_check` reports local-model lists for llama.cpp and LM Studio when reachable
+    - local model groups are shown in the model selector UI
+    - no regression to existing Gemini/Ollama model discovery behavior
 
 ## Recently Completed
 

@@ -48,6 +48,8 @@ from src.objective_engine import extract_objective_values_from_hdf5
 from src.objective_formula import get_allowed_formula_functions
 from src.ai_backend_adapters import (
     ADAPTER_CONTRACT_VERSION,
+    LlamaCppAdapterConfig,
+    LMStudioAdapterConfig,
     TextGenerationRequest,
     TextMessage,
     invoke_text_request_for_backend,
@@ -7456,8 +7458,34 @@ def get_defines_by_type_route():
 
 @app.route('/ai_health_check', methods=['GET'])
 def ai_health_check_route():
-    response_data = {"success": True, "models": {"ollama": [], "gemini": []}}
-    
+    response_data = {
+        "success": True,
+        "models": {
+            "ollama": [],
+            "gemini": [],
+            "llama_cpp": [],
+            "lm_studio": [],
+        },
+    }
+
+    def _fetch_openai_compatible_model_ids(base_url: str) -> List[str]:
+        url = f"{base_url.rstrip('/')}/v1/models"
+        resp = requests.get(url, timeout=2)
+        if not resp.ok:
+            return []
+        payload = resp.json() or {}
+        data = payload.get("data")
+        if not isinstance(data, list):
+            return []
+        model_ids: List[str] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            if model_id:
+                model_ids.append(str(model_id))
+        return model_ids
+
     # 1. Check for Ollama models
     try:
         ollama_response = requests.get('http://localhost:11434/api/tags', timeout=3)
@@ -7468,7 +7496,24 @@ def ai_health_check_route():
         print("Ollama service is unreachable.")
         # We don't fail the whole request, just show no Ollama models
 
-    # 2. Check for Gemini models if the client was initialized
+    # 2. Check local OpenAI-compatible model servers (llama.cpp + LM Studio)
+    try:
+        response_data["models"]["llama_cpp"] = _fetch_openai_compatible_model_ids(LlamaCppAdapterConfig().base_url)
+    except requests.exceptions.RequestException:
+        print("llama.cpp service is unreachable.")
+    except Exception as e:
+        print(f"Error fetching llama.cpp models: {e}")
+        response_data["error_llama_cpp"] = str(e)
+
+    try:
+        response_data["models"]["lm_studio"] = _fetch_openai_compatible_model_ids(LMStudioAdapterConfig().base_url)
+    except requests.exceptions.RequestException:
+        print("LM Studio service is unreachable.")
+    except Exception as e:
+        print(f"Error fetching LM Studio models: {e}")
+        response_data["error_lm_studio"] = str(e)
+
+    # 3. Check for Gemini models if the client was initialized
     gemini_client = get_gemini_client_for_session()
     if gemini_client:
         try:
@@ -11294,6 +11339,22 @@ def get_ai_context_stats():
                         break
             except Exception:
                 pass
+    elif model_id.startswith('llama_cpp::'):
+        context_source = "llama_cpp"
+        try:
+            runtime_model = model_id.split('::', 1)[1]
+            if runtime_model:
+                max_context_tokens = 16_384
+        except Exception:
+            pass
+    elif model_id.startswith('lm_studio::'):
+        context_source = "lm_studio"
+        try:
+            runtime_model = model_id.split('::', 1)[1]
+            if runtime_model:
+                max_context_tokens = 32_768
+        except Exception:
+            pass
     elif model_id and model_id != '--export--':
         context_source = "ollama"
         # Try to read Ollama context length from local model metadata.

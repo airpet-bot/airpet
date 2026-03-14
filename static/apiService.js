@@ -743,10 +743,44 @@ export async function checkAiServiceStatus() {
  * @returns {Promise<Object>}
  */
 export async function sendAiChatMessage(message, model, turnLimit = 10) {
+    const payload = { message, model, turn_limit: turnLimit };
+
+    const localPrefixes = {
+        'llama_cpp::': 'llama_cpp',
+        'lm_studio::': 'lm_studio'
+    };
+
+    for (const [prefix, backendId] of Object.entries(localPrefixes)) {
+        if (typeof model === 'string' && model.startsWith(prefix)) {
+            const localModelName = model.slice(prefix.length).trim();
+            if (!localModelName) break;
+
+            payload.backend_selector = {
+                preferred_backend_id: backendId,
+                allow_fallback: false,
+                runtime_config: {
+                    backends: {
+                        [backendId]: {
+                            enabled: true,
+                            model: localModelName
+                        }
+                    }
+                },
+                requirements: {
+                    // Local adapters are currently text-first (no tool calling yet).
+                    require_tools: false,
+                    require_json_mode: true,
+                    require_streaming: false
+                }
+            };
+            break;
+        }
+    }
+
     const response = await fetch(`${API_BASE_URL}/api/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, model, turn_limit: turnLimit })
+        body: JSON.stringify(payload)
     });
     return handleResponse(response);
 }

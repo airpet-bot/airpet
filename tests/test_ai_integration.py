@@ -4,12 +4,23 @@ from unittest.mock import MagicMock, patch
 from app import app, dispatch_ai_tool
 from src.project_manager import ProjectManager
 from src.expression_evaluator import ExpressionEvaluator
+from src.ai_tools import AI_GEOMETRY_TOOLS
 
 @pytest.fixture
 def client():
     app.config['TESTING'] = True
     with app.test_client() as client:
         yield client
+
+def test_ai_geometry_tools_schema_is_valid_for_gemini_generate_content_config():
+    types = pytest.importorskip("google.genai.types")
+
+    cfg = types.GenerateContentConfig(
+        tools=[{"function_declarations": AI_GEOMETRY_TOOLS}]
+    )
+
+    assert cfg is not None
+
 
 def test_ai_chat_flow_mocked(client):
     """Verify that the AI can trigger a simulation via chat using test_client."""

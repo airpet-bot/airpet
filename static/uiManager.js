@@ -2044,7 +2044,7 @@ export function populateAiModelSelector(models) {
     const existingGroups = aiModelSelect.querySelectorAll('.model-group, .no-models-option');
     existingGroups.forEach(group => group.remove());
 
-    const createGroup = (label, modelList) => {
+    const createGroup = (label, modelList, valuePrefix = null) => {
         if (modelList && modelList.length > 0) {
             const optgroup = document.createElement('optgroup');
             optgroup.label = label;
@@ -2052,7 +2052,7 @@ export function populateAiModelSelector(models) {
 
             modelList.forEach(modelName => {
                 const option = document.createElement('option');
-                option.value = modelName;
+                option.value = valuePrefix ? `${valuePrefix}::${modelName}` : modelName;
                 // Display a friendlier name for Gemini models
                 option.textContent = modelName.startsWith('models/') ? `${modelName.split('/')[1]}` : modelName;
                 optgroup.appendChild(option);
@@ -2063,12 +2063,16 @@ export function populateAiModelSelector(models) {
 
     createGroup("Gemini Models", models.gemini);
     createGroup("Ollama Models", models.ollama);
+    createGroup("llama.cpp Models", models.llama_cpp, "llama_cpp");
+    createGroup("LM Studio Models", models.lm_studio, "lm_studio");
 
-    // If no models were added at all (check both lists)
+    // If no models were added at all
     const hasGemini = models.gemini && models.gemini.length > 0;
     const hasOllama = models.ollama && models.ollama.length > 0;
+    const hasLlamaCpp = models.llama_cpp && models.llama_cpp.length > 0;
+    const hasLMStudio = models.lm_studio && models.lm_studio.length > 0;
 
-    if (!hasGemini && !hasOllama) {
+    if (!hasGemini && !hasOllama && !hasLlamaCpp && !hasLMStudio) {
         const option = document.createElement('option');
         option.textContent = "No AI models found";
         option.disabled = true;

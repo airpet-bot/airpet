@@ -174,7 +174,11 @@ async function refreshContextStats() {
 
         const sourceLabel = stats.context_source === 'gemini'
             ? 'Gemini'
-            : (stats.context_source === 'ollama' ? 'Ollama' : 'Unknown');
+            : (stats.context_source === 'ollama'
+                ? 'Ollama'
+                : (stats.context_source === 'llama_cpp'
+                    ? 'llama.cpp'
+                    : (stats.context_source === 'lm_studio' ? 'LM Studio' : 'Unknown')));
 
         if (stats.max_context_tokens) {
             contextStatsEl.textContent = `Context: ~${stats.estimated_tokens}/${stats.max_context_tokens} (${sourceLabel})`;
