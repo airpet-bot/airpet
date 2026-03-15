@@ -11176,6 +11176,107 @@ def _infer_local_backend_id_from_model_prefix(model_id: Any) -> Optional[str]:
     return None
 
 
+def _build_chat_backend_remediation(
+    *,
+    failure_stage: str,
+    error_code: str,
+    backend_id: Optional[str],
+    readiness: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    readiness_status = str((readiness or {}).get("status") or "unknown").lower()
+    backend_label = {
+        "llama_cpp": "llama.cpp",
+        "lm_studio": "LM Studio",
+    }.get(backend_id, backend_id or "local backend")
+
+    action_codes: List[str]
+    actions: List[str]
+    summary: str
+
+    if failure_stage == "selector_validation":
+        summary = "Local model selector is malformed."
+        action_codes = [
+            "use_backend_model_selector_format",
+            "select_nonempty_local_model_name",
+        ]
+        actions = [
+            "Use '<backend>::<model_name>' for local models (for example 'llama_cpp::llama-3.2-local').",
+            "Pick a local model option from the model dropdown so selector fields are auto-filled.",
+        ]
+    elif failure_stage == "selector_requirements":
+        summary = "Selected backend cannot satisfy the requested capabilities."
+        action_codes = [
+            "disable_tool_requirement_for_local_backends",
+            "allow_backend_fallback",
+            "switch_to_cloud_backend_for_tool_calls",
+        ]
+        actions = [
+            "For local text-first backends, set backend selector requirements to require_tools=false and require_streaming=false.",
+            "Set allow_fallback=true if automatic fallback to Gemini/Ollama is acceptable.",
+            "If tool calling is required, switch to a Gemini/Ollama model for this task.",
+        ]
+    else:
+        if readiness_status == "timeout":
+            summary = f"{backend_label} timed out before completing the request."
+            action_codes = [
+                "increase_backend_timeout",
+                "retry_after_backend_idle",
+                "verify_local_host_resources",
+            ]
+            actions = [
+                "Increase local backend timeout_seconds or reduce prompt size.",
+                "Retry after the local model server is idle.",
+                "Verify local CPU/RAM load is not saturating model inference.",
+            ]
+        elif readiness_status == "unreachable":
+            summary = f"{backend_label} is unreachable from AIRPET."
+            action_codes = [
+                "start_local_backend_service",
+                "verify_backend_base_url_and_port",
+                "verify_models_endpoint_reachable",
+            ]
+            actions = [
+                "Start the local backend service (llama.cpp server or LM Studio local server).",
+                "Verify backend base_url and port match the running service.",
+                "Confirm '<base_url>/v1/models' is reachable from this machine.",
+            ]
+        elif readiness_status == "misconfigured":
+            summary = f"{backend_label} is reachable but misconfigured for OpenAI-compatible chat."
+            action_codes = [
+                "fix_backend_configuration",
+                "set_valid_local_model_name",
+                "validate_openai_compatible_models_payload",
+            ]
+            actions = [
+                "Fix backend runtime_config (base_url, endpoint_path, auth headers if required).",
+                "Set a valid model id exposed by '/v1/models'.",
+                "Validate that '/v1/models' returns an OpenAI-compatible payload shape.",
+            ]
+        else:
+            summary = f"{backend_label} failed at runtime after selector resolution."
+            action_codes = [
+                "retry_request",
+                "inspect_backend_logs",
+                "refresh_backend_diagnostics",
+            ]
+            actions = [
+                "Retry the request once to rule out transient local failures.",
+                "Inspect local backend logs for request/response errors.",
+                "Refresh backend diagnostics to confirm current readiness state.",
+            ]
+
+    return {
+        "schema_version": LOCAL_BACKEND_DIAGNOSTICS_SCHEMA_VERSION,
+        "failure_stage": failure_stage,
+        "error_code": error_code,
+        "backend_id": backend_id,
+        "readiness_status": readiness_status,
+        "summary": summary,
+        "action_codes": action_codes,
+        "actions": actions,
+    }
+
+
 def _build_chat_backend_diagnostics(
     *,
     failure_stage: str,
@@ -11202,12 +11303,12 @@ def _build_chat_backend_diagnostics(
         diagnostics["message"] = message
 
     if backend_id in {"llama_cpp", "lm_studio"}:
-        diagnostics["readiness"] = build_local_backend_readiness_diagnostic(
+        readiness = build_local_backend_readiness_diagnostic(
             backend_id,
             runtime_config=runtime_config,
         )
     else:
-        diagnostics["readiness"] = {
+        readiness = {
             "schema_version": LOCAL_BACKEND_DIAGNOSTICS_SCHEMA_VERSION,
             "status": "misconfigured",
             "readiness_code": "readiness_not_applicable",
@@ -11215,6 +11316,14 @@ def _build_chat_backend_diagnostics(
             "message": "Readiness probe is only available for local text-first backends.",
             "backend_id": backend_id,
         }
+
+    diagnostics["readiness"] = readiness
+    diagnostics["remediation"] = _build_chat_backend_remediation(
+        failure_stage=failure_stage,
+        error_code=error_code,
+        backend_id=backend_id,
+        readiness=readiness,
+    )
 
     return diagnostics
 

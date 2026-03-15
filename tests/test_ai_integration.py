@@ -204,6 +204,12 @@ def test_ai_chat_backend_selector_returns_deterministic_no_fallback_error(client
         assert data["backend_diagnostics"]["failure_stage"] == "selector_requirements"
         assert data["backend_diagnostics"]["error_code"] == "backend_selection_failed"
         assert data["backend_diagnostics"]["readiness"]["status"] == "healthy"
+        assert data["backend_diagnostics"]["remediation"]["summary"] == "Selected backend cannot satisfy the requested capabilities."
+        assert data["backend_diagnostics"]["remediation"]["action_codes"] == [
+            "disable_tool_requirement_for_local_backends",
+            "allow_backend_fallback",
+            "switch_to_cloud_backend_for_tool_calls",
+        ]
 
 
 def test_ai_chat_backend_selector_invokes_local_text_adapter_when_selected(client):
@@ -304,6 +310,12 @@ def test_ai_chat_backend_selector_returns_deterministic_local_invocation_error_p
         assert data["backend_diagnostics"]["failure_stage"] == "backend_runtime"
         assert data["backend_diagnostics"]["error_code"] == "local_backend_invocation_failed"
         assert data["backend_diagnostics"]["readiness"]["status"] == "unreachable"
+        assert data["backend_diagnostics"]["remediation"]["summary"] == "LM Studio is unreachable from AIRPET."
+        assert data["backend_diagnostics"]["remediation"]["action_codes"] == [
+            "start_local_backend_service",
+            "verify_backend_base_url_and_port",
+            "verify_models_endpoint_reachable",
+        ]
 
 
 def test_ai_chat_infers_local_backend_selector_from_model_prefix(client):
@@ -370,6 +382,11 @@ def test_ai_chat_rejects_local_model_prefix_without_model_name(client):
         assert data["backend_diagnostics"]["failure_stage"] == "selector_validation"
         assert data["backend_diagnostics"]["error_code"] == "invalid_local_model_selector"
         assert data["backend_diagnostics"]["readiness"]["backend_id"] == "llama_cpp"
+        assert data["backend_diagnostics"]["remediation"]["summary"] == "Local model selector is malformed."
+        assert data["backend_diagnostics"]["remediation"]["action_codes"] == [
+            "use_backend_model_selector_format",
+            "select_nonempty_local_model_name",
+        ]
 
 
 @pytest.mark.parametrize("model_name", ["llama_cpp::llama-3.2-local", "lm_studio::qwen2.5"])

@@ -2,20 +2,51 @@
 
 ## In Progress
 
-- **Spike A Next: UI surfacing for local backend readiness diagnostics (Checkpoint 2/2)**
-  - Objective: expose local backend readiness (`healthy|timeout|unreachable|misconfigured`) directly in the model selection UX so users can self-remediate quickly.
+- **Multimodal parity follow-on: preflight code-family correlation hints in parity report (Checkpoint 1/2)**
+  - Objective: map changed preflight issue codes to likely operation families (`dimension_hints`, `material_updates`, `other_mutations`) for faster Geant4-facing triage.
   - Checkpoint plan (multi-heartbeat):
-    - Planned checkpoints:
-      - **1/2** wire `/api/ai/backends/diagnostics` + `/api/ai/chat` `backend_diagnostics` into selector-level badges/tooltips. ✅ completed 2026-03-15
-      - **2/2** add front-end regression coverage + docs/examples for remediation guidance.
-    - Current checkpoint: **2/2** lock deterministic UX copy + add regression tests for selector-validation vs backend-runtime failure stages.
-    - Next checkpoint: finalize docs/examples that show remediation flow for each local readiness status.
+    - **1/2** add deterministic issue-family correlation mapping into `execution.parity_report` payloads.
+    - **2/2** add regression tests + representative examples/docs for correlation behavior.
+  - Current checkpoint: **1/2** design and wire deterministic correlation rules with stable route-level contract fields.
+  - Next checkpoint: expand multimodal parity regression matrix and examples.
   - Definition of done for current checkpoint:
-    - deterministic user-facing copy for `selector_validation`, `selector_requirements`, and `backend_runtime` failures
-    - front-end or contract-level regression tests pinning diagnostics UX behavior
-    - docs/examples include operator remediation guidance for local backend readiness states
+    - parity report includes deterministic preflight-code-family correlation hints
+    - correlation output is stable across success/partial-failure envelopes
+    - docs/task notes capture operator-facing interpretation guidance
 
 ## Recently Completed
+
+- **Spike A Next Checkpoint 2/2 completed: deterministic remediation copy + regression contracts + docs/examples** (2026-03-15)
+  - Finalized deterministic local-backend remediation payloads in `app.py` for `/api/ai/chat` local-selector failure paths:
+    - `backend_diagnostics.remediation.summary`
+    - `backend_diagnostics.remediation.action_codes`
+    - `backend_diagnostics.remediation.actions`
+  - Added stable remediation taxonomy for:
+    - `selector_validation`
+    - `selector_requirements`
+    - `backend_runtime` (status-specific guidance for `timeout|unreachable|misconfigured|unknown`)
+  - Updated chat UX in `static/aiAssistant.js`:
+    - deterministic stage labels and remediation rendering
+    - explicit “Next steps” list surfaced from remediation actions/action-codes
+    - preserved diagnostics refresh flow so selector readiness badges remain current after failures
+  - Added regression assertions in `tests/test_ai_integration.py` to pin remediation fields for:
+    - selector requirement mismatch path
+    - local runtime unreachable path
+    - malformed local selector path
+  - Added operator docs/examples:
+    - `docs/AI_BACKEND_ADAPTER_CONTRACT.md` (remediation payload + playbook section)
+    - `examples/ai_backends/chat_error_selector_validation.json`
+    - `examples/ai_backends/chat_error_selector_requirements.json`
+    - `examples/ai_backends/chat_error_backend_runtime_unreachable.json`
+  - Checks run:
+    - `node --check static/aiAssistant.js`
+    - `python -m py_compile app.py`
+    - `pytest -q tests/test_ai_integration.py -k "backend_selector_returns_deterministic_no_fallback_error or backend_selector_returns_deterministic_local_invocation_error_payload or rejects_local_model_prefix_without_model_name"`
+    - `pytest -q tests/test_ai_health_check.py tests/test_ai_integration.py`
+  - Checkpoint finished:
+    - ✔ deterministic remediation contract emitted by backend for local-selector chat failures
+    - ✔ deterministic remediation UX copy rendered in chat error flow
+    - ✔ regression coverage + examples/docs now pin expected remediation guidance
 
 - **Spike A Next Checkpoint 1/2 completed: local readiness badges/tooltips + chat-stage-aware failure surfacing in UI** (2026-03-15)
   - Wired local readiness diagnostics into UI bootstrapping:
@@ -885,15 +916,15 @@
 
 ## Next Candidates
 
-1. **Spike A Follow-on (post 3/3): backend diagnostics endpoint contract + route wiring**
-   - Expose deterministic backend-health payload at route level for operators and automation.
-   - Lock success/error envelope parity for healthy, timeout, unreachable, and misconfigured local-backend states.
-   - Impact: high (unblocks actionable troubleshooting before runtime chat failures).
-
-2. **Multimodal parity follow-on: preflight code-family correlation hints in parity report**
+1. **Multimodal parity follow-on: preflight code-family correlation hints in parity report**
    - Add deterministic mapping from changed preflight issue codes to likely operation families (dimension/material/topology).
    - Expand parity-report regression tests for representative Geant4-facing issue-family transitions.
    - Impact: medium-high (improves root-cause diagnostics after multimodal execution).
+
+2. **AI UX hardening: lightweight DOM-level regression harness for backend diagnostics panels**
+   - Add fast JS tests for selector badge copy, status-chip transitions, and chat remediation rendering paths.
+   - Keep route-level contracts in pytest, and lock UX copy regressions with a narrow jsdom/Playwright smoke suite.
+   - Impact: medium (reduces UI-copy drift risk across future backend diagnostics changes).
 
 ### Reserve Backlog (only when needed for concrete bug/regression)
 

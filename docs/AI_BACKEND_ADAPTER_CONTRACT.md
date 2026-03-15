@@ -119,3 +119,54 @@ When local-selector chat paths fail, diagnostics now distinguish failure stages:
 - `backend_runtime`: backend was selected, then invocation failed at runtime
 
 This allows UI/workflow logic to separate user-input fixes from backend availability/remediation steps.
+
+### `/api/ai/chat` remediation payload
+
+`backend_diagnostics` now also includes a deterministic `remediation` object:
+
+- `summary`: human-readable one-line triage summary
+- `action_codes`: stable machine-readable next-step codes
+- `actions`: deterministic operator-facing guidance
+
+This is intended to let the UI render stable copy for selector/input errors vs runtime failures without guessing from free-form exception text.
+
+## 9) Local-backend remediation playbook (Checkpoint 2/2)
+
+When `/api/ai/chat` returns `backend_diagnostics.failure_stage`, use this default remediation path:
+
+- `selector_validation`
+  - expected issue: malformed local selector
+  - primary actions:
+    - `use_backend_model_selector_format`
+    - `select_nonempty_local_model_name`
+
+- `selector_requirements`
+  - expected issue: local backend cannot satisfy requested capabilities (often tools/streaming)
+  - primary actions:
+    - `disable_tool_requirement_for_local_backends`
+    - `allow_backend_fallback`
+    - `switch_to_cloud_backend_for_tool_calls`
+
+- `backend_runtime` + readiness `timeout`
+  - primary actions:
+    - `increase_backend_timeout`
+    - `retry_after_backend_idle`
+    - `verify_local_host_resources`
+
+- `backend_runtime` + readiness `unreachable`
+  - primary actions:
+    - `start_local_backend_service`
+    - `verify_backend_base_url_and_port`
+    - `verify_models_endpoint_reachable`
+
+- `backend_runtime` + readiness `misconfigured`
+  - primary actions:
+    - `fix_backend_configuration`
+    - `set_valid_local_model_name`
+    - `validate_openai_compatible_models_payload`
+
+Representative examples are available in:
+
+- `examples/ai_backends/chat_error_selector_validation.json`
+- `examples/ai_backends/chat_error_selector_requirements.json`
+- `examples/ai_backends/chat_error_backend_runtime_unreachable.json`

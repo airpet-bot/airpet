@@ -1,0 +1,35 @@
+{
+  "success": false,
+  "error": "Invalid local model selector for model='llama_cpp::'. Expected 'llama_cpp::<model_name>' or 'lm_studio::<model_name>'.",
+  "backend_diagnostics": {
+    "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
+    "failure_stage": "selector_validation",
+    "error_class": "selector_input_validation",
+    "error_code": "invalid_local_model_selector",
+    "backend_id": "llama_cpp",
+    "message": "Local model prefixes must follow '<backend>::<model_name>'.",
+    "readiness": {
+      "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
+      "backend_id": "llama_cpp",
+      "status": "misconfigured",
+      "readiness_code": "invalid_models_payload",
+      "ready": false
+    },
+    "remediation": {
+      "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
+      "failure_stage": "selector_validation",
+      "error_code": "invalid_local_model_selector",
+      "backend_id": "llama_cpp",
+      "readiness_status": "misconfigured",
+      "summary": "Local model selector is malformed.",
+      "action_codes": [
+        "use_backend_model_selector_format",
+        "select_nonempty_local_model_name"
+      ],
+      "actions": [
+        "Use '<backend>::<model_name>' for local models (for example 'llama_cpp::llama-3.2-local').",
+        "Pick a local model option from the model dropdown so selector fields are auto-filled."
+      ]
+    }
+  }
+}

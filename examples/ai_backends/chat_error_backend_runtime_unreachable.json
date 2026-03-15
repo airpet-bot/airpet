@@ -1,0 +1,54 @@
+{
+  "success": false,
+  "error": "AI backend invocation failed (lm_studio): connection refused",
+  "backend_selection": {
+    "contract_version": "2026-03-14.checkpoint5",
+    "preferred_backend_id": "lm_studio",
+    "allow_fallback": false,
+    "requirements": {
+      "require_tools": false,
+      "require_json_mode": true,
+      "require_streaming": false,
+      "min_context_tokens": null
+    },
+    "resolved_backend_id": "lm_studio",
+    "resolved_provider_family": "lm_studio",
+    "resolved_adapter_kind": "local",
+    "used_fallback": false,
+    "execution_mode": "local_text_adapter"
+  },
+  "backend_diagnostics": {
+    "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
+    "failure_stage": "backend_runtime",
+    "error_class": "backend_runtime_failure",
+    "error_code": "local_backend_invocation_failed",
+    "backend_id": "lm_studio",
+    "message": "Local backend invocation failed after selection succeeded.",
+    "readiness": {
+      "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
+      "backend_id": "lm_studio",
+      "status": "unreachable",
+      "readiness_code": "backend_unreachable",
+      "ready": false,
+      "models_endpoint": "http://localhost:1234/v1/models"
+    },
+    "remediation": {
+      "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
+      "failure_stage": "backend_runtime",
+      "error_code": "local_backend_invocation_failed",
+      "backend_id": "lm_studio",
+      "readiness_status": "unreachable",
+      "summary": "LM Studio is unreachable from AIRPET.",
+      "action_codes": [
+        "start_local_backend_service",
+        "verify_backend_base_url_and_port",
+        "verify_models_endpoint_reachable"
+      ],
+      "actions": [
+        "Start the local backend service (llama.cpp server or LM Studio local server).",
+        "Verify backend base_url and port match the running service.",
+        "Confirm '<base_url>/v1/models' is reachable from this machine."
+      ]
+    }
+  }
+}
