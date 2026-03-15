@@ -9754,13 +9754,21 @@ def ai_chat_route():
                     for tc in (adapter_response.tool_calls or [])
                 ] if turn > 0 else []
                 
-                if turn >= 2 and current_tool_names == last_tool_calls and current_tool_names == ["get_project_summary"]:
-                    consecutive_summary_calls += 1
-                    if consecutive_summary_calls >= 3:
-                        # Model is stuck in a loop - break and provide guidance
-                        print(f"WARNING: Model stuck calling 'get_project_summary' {consecutive_summary_calls} times. Breaking loop.")
-                        final_adapter_response = adapter_response
-                        break
+                if turn >= 1 and current_tool_names == last_tool_calls:
+                    # Detect ANY repeated tool pattern, not just get_project_summary
+                    if current_tool_names == ["get_project_summary"]:
+                        consecutive_summary_calls += 1
+                        if consecutive_summary_calls >= 2:  # Be more aggressive - break after 2 repeats
+                            print(f"WARNING: Model stuck calling 'get_project_summary' {consecutive_summary_calls} times. Breaking loop.")
+                            final_adapter_response = adapter_response
+                            break
+                    else:
+                        # Any other tool repeated 3+ times is also suspicious
+                        print(f"WARNING: Model repeating tool calls: {current_tool_names}")
+                        if turn >= 4:  # Break after 4 turns of any repeated pattern
+                            print(f"Breaking after {turn+1} turns of repeated tool calls")
+                            final_adapter_response = adapter_response
+                            break
                 else:
                     consecutive_summary_calls = 0
                 
@@ -9851,8 +9859,8 @@ def ai_chat_route():
                         })
 
                 # Update formatted message with tool results for next iteration
-                context_summary = pm.get_summarized_context()
-                formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nContinue processing..."
+                # IMPORTANT: Do NOT resend full context - just tell the model to continue using tool results
+                formatted_user_msg = "Tool results have been provided above. Continue with the next step of your task using the information from the tool results. Do NOT call get_project_summary again unless you specifically need to verify the current state after making changes."
 
             # If no tool calls were made at all, use the last response
             if final_adapter_response is None:
