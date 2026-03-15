@@ -2,20 +2,51 @@
 
 ## In Progress
 
-- **Spike A Next: UI surfacing for local backend readiness diagnostics (Checkpoint 1/2)**
+- **Spike A Next: UI surfacing for local backend readiness diagnostics (Checkpoint 2/2)**
   - Objective: expose local backend readiness (`healthy|timeout|unreachable|misconfigured`) directly in the model selection UX so users can self-remediate quickly.
   - Checkpoint plan (multi-heartbeat):
     - Planned checkpoints:
-      - **1/2** wire `/api/ai/backends/diagnostics` + `/api/ai/chat` `backend_diagnostics` into selector-level badges/tooltips.
+      - **1/2** wire `/api/ai/backends/diagnostics` + `/api/ai/chat` `backend_diagnostics` into selector-level badges/tooltips. ✅ completed 2026-03-15
       - **2/2** add front-end regression coverage + docs/examples for remediation guidance.
-    - Current checkpoint: **1/2** UI wiring for readiness states and failure-stage messaging.
-    - Next checkpoint: deterministic UX copy + tests for selector-validation vs backend-runtime failure states.
+    - Current checkpoint: **2/2** lock deterministic UX copy + add regression tests for selector-validation vs backend-runtime failure stages.
+    - Next checkpoint: finalize docs/examples that show remediation flow for each local readiness status.
   - Definition of done for current checkpoint:
-    - model picker shows deterministic readiness state for `llama_cpp` and `lm_studio`
-    - chat error surfaces selector-stage vs runtime-stage failures distinctly
-    - no regression for Gemini/Ollama-only flows
+    - deterministic user-facing copy for `selector_validation`, `selector_requirements`, and `backend_runtime` failures
+    - front-end or contract-level regression tests pinning diagnostics UX behavior
+    - docs/examples include operator remediation guidance for local backend readiness states
 
 ## Recently Completed
+
+- **Spike A Next Checkpoint 1/2 completed: local readiness badges/tooltips + chat-stage-aware failure surfacing in UI** (2026-03-15)
+  - Wired local readiness diagnostics into UI bootstrapping:
+    - `static/apiService.js`: added `getAiBackendDiagnostics(...)` for `GET|POST /api/ai/backends/diagnostics`
+    - `static/main.js`: `checkAndSetAiStatus()` now refreshes local diagnostics and passes them into model selector rendering
+  - Updated AI model selector/UX surfaces in `static/uiManager.js` + `templates/index.html`:
+    - local-model options now show readiness badges (`healthy|timeout|unreachable|misconfigured`) with per-option tooltips
+    - added status chip (`#ai_backend_status`) to show selected local backend readiness at a glance
+    - added diagnostics cache + incremental update helper so chat failures can immediately refresh selector annotations
+  - Updated chat error handling in `static/aiAssistant.js`:
+    - parses `/api/ai/chat` `backend_diagnostics` payloads and emits stage-aware messaging for:
+      - `selector_validation`
+      - `selector_requirements`
+      - `backend_runtime`
+    - refreshes local diagnostics after backend failures so readiness badges/tooltips stay current
+  - Kept Gemini/Ollama flows unchanged while enriching local-backend-only UX.
+  - Checks run:
+    - `node --check static/aiAssistant.js`
+    - `node --check static/apiService.js`
+    - `node --check static/main.js`
+    - `node --check static/uiManager.js`
+    - `pytest -q tests/test_ai_health_check.py`
+    - `pytest -q tests/test_ai_health_check.py tests/test_ai_integration.py -k "backend_selector_returns_deterministic_no_fallback_error or backend_selector_returns_deterministic_local_invocation_error_payload or rejects_local_model_prefix_without_model_name"`
+  - Checkpoint finished:
+    - ✔ model picker surfaces local readiness state via selector-level badges/tooltips
+    - ✔ chat failures now distinguish selector-stage and runtime-stage errors in UI messaging
+    - ✔ no regression in backend diagnostics contracts for Gemini/Ollama/local discovery paths
+  - Next checkpoint:
+    - deterministic UX copy polish + regression tests + remediation docs/examples
+  - Risks/blockers:
+    - no frontend test harness yet for DOM-level assertions; likely need targeted contract-driven coverage in the next checkpoint
 
 - **Spike A Follow-on Checkpoint 3/3 completed: local-backend readiness diagnostics contracts + `/api/ai/chat` failure-stage hints** (2026-03-15)
   - Added deterministic local-backend diagnostics contract in `app.py`:
