@@ -288,6 +288,82 @@ def test_ai_chat_backend_selector_returns_deterministic_local_invocation_error_p
         assert data["backend_selection"]["execution_mode"] == "local_text_adapter"
 
 
+def test_ai_chat_infers_local_backend_selector_from_model_prefix(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.invoke_text_request_for_backend') as MockInvokeAdapter:
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        MockInvokeAdapter.return_value = MagicMock(
+            backend_id='llama_cpp',
+            model='llama-3.2-local',
+            text='{"status":"ok"}',
+            usage={'prompt_tokens': 11, 'completion_tokens': 5},
+        )
+
+        payload = {
+            "message": "Return JSON only.",
+            "model": "llama_cpp::llama-3.2-local",
+        }
+
+        response = client.post("/api/ai/chat", json=payload)
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["success"] is True
+        assert data["backend_selection"]["resolved_backend_id"] == "llama_cpp"
+        assert data["backend_selection"]["execution_mode"] == "local_text_adapter"
+        assert data["backend_selection"]["selector_source"] == "model_prefix"
+
+        MockInvokeAdapter.assert_called_once()
+        invocation_request = MockInvokeAdapter.call_args.args[1]
+        assert invocation_request.require_tools is False
+        assert invocation_request.require_json_mode is True
+        assert invocation_request.require_streaming is False
+
+
+def test_ai_chat_rejects_local_model_prefix_without_model_name(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter:
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        payload = {
+            "message": "Return JSON only.",
+            "model": "llama_cpp::   ",
+        }
+
+        response = client.post("/api/ai/chat", json=payload)
+
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data["success"] is False
+        assert "Invalid local model selector" in data["error"]
+        assert "llama_cpp::<model_name>" in data["error"]
+
+
+@pytest.mark.parametrize("model_name", ["llama_cpp::llama-3.2-local", "lm_studio::qwen2.5"])
+def test_ai_process_prompt_rejects_local_model_prefixes(client, model_name):
+    with patch('app.get_project_manager_for_session') as MockPMGetter:
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        response = client.post("/ai_process_prompt", json={
+            "prompt": "Build a detector.",
+            "model": model_name,
+        })
+
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data["success"] is False
+        assert "One-shot AI generate currently supports Gemini/Ollama model ids only" in data["error"]
+
+
 def test_manage_assembly_tool_auto_generates_placement_names_when_missing():
     evaluator = ExpressionEvaluator()
     pm = ProjectManager(evaluator)

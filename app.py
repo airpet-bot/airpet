@@ -7568,6 +7568,17 @@ def ai_process_prompt_route():
     if not all([user_prompt, model_name]):
         return jsonify({"success": False, "error": "Prompt or model name missing."}), 400
 
+    if isinstance(model_name, str) and (
+        model_name.startswith("llama_cpp::") or model_name.startswith("lm_studio::")
+    ):
+        return jsonify({
+            "success": False,
+            "error": (
+                "One-shot AI generate currently supports Gemini/Ollama model ids only. "
+                "Use /api/ai/chat for llama.cpp/LM Studio local models."
+            ),
+        }), 400
+
     try:
         # Step 1: Construct the full prompt
         full_prompt = construct_full_ai_prompt(pm, user_prompt)
@@ -9705,6 +9716,48 @@ def _coerce_optional_int(value: Any) -> Optional[int]:
     return None
 
 
+def _infer_local_backend_selector_from_model_id(model_id: Any) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    if not isinstance(model_id, str):
+        return None, None
+
+    normalized_model_id = model_id.strip()
+    prefix_to_backend = {
+        "llama_cpp::": "llama_cpp",
+        "lm_studio::": "lm_studio",
+    }
+
+    for prefix, backend_id in prefix_to_backend.items():
+        if not normalized_model_id.startswith(prefix):
+            continue
+
+        local_model_name = normalized_model_id[len(prefix):].strip()
+        if not local_model_name:
+            return None, (
+                f"Invalid local model selector '{model_id}'. "
+                f"Expected '{backend_id}::<model_name>' with a non-empty model name."
+            )
+
+        return {
+            "preferred_backend_id": backend_id,
+            "allow_fallback": False,
+            "runtime_config": {
+                "backends": {
+                    backend_id: {
+                        "enabled": True,
+                        "model": local_model_name,
+                    }
+                }
+            },
+            "requirements": {
+                "require_tools": False,
+                "require_json_mode": True,
+                "require_streaming": False,
+            },
+        }, None
+
+    return None, None
+
+
 def _get_ai_artifact_store_for_session(pm: Optional[ProjectManager] = None) -> AIArtifactStore:
     pm = pm or get_project_manager_for_session()
     return AIArtifactStore(
@@ -10873,7 +10926,25 @@ def ai_chat_route():
     backend_selection_payload = None
     selector_runtime_config = None
     selector_requirements = None
-    selector_cfg = data.get("backend_selector")
+
+    selector_cfg_raw = data.get("backend_selector")
+    if selector_cfg_raw is not None and not isinstance(selector_cfg_raw, dict):
+        return jsonify({
+            "success": False,
+            "error": "Invalid backend_selector payload. Expected an object.",
+        }), 400
+
+    selector_cfg = selector_cfg_raw if isinstance(selector_cfg_raw, dict) else None
+    selector_inferred_from_model = False
+
+    if selector_cfg is None:
+        inferred_selector_cfg, infer_error = _infer_local_backend_selector_from_model_id(model_id)
+        if infer_error:
+            return jsonify({"success": False, "error": infer_error}), 400
+        if inferred_selector_cfg is not None:
+            selector_cfg = inferred_selector_cfg
+            selector_inferred_from_model = True
+
     if isinstance(selector_cfg, dict):
         requirements_cfg = selector_cfg.get("requirements")
         if not isinstance(requirements_cfg, dict):
@@ -10940,6 +11011,7 @@ def ai_chat_route():
             "resolved_adapter_kind": selection.spec.adapter_kind,
             "used_fallback": selection.used_fallback,
             "tried": list(selection.tried),
+            "selector_source": "model_prefix" if selector_inferred_from_model else "request_payload",
         }
 
     selected_backend_id = backend_selection_payload.get("resolved_backend_id") if backend_selection_payload else None

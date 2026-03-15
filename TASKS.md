@@ -2,21 +2,36 @@
 
 ## In Progress
 
-- **Spike A Follow-on: local-backend UI exposure + selection wiring (Checkpoint 2/3)**
-  - Objective: make llama.cpp / LM Studio backends visible and selectable from the user UI, not only backend payloads.
+- **Spike A Follow-on: local-backend UI exposure + selection wiring (Checkpoint 3/3)**
+  - Objective: make llama.cpp / LM Studio backends visible/selectable and provide deterministic UX/readiness diagnostics for local text-first chat paths.
   - Checkpoint plan (multi-heartbeat):
     - Planned checkpoints:
       - ✅ **1/3** expose local backend model discovery in health/model-list APIs and render them in UI selector groups.
-      - **2/3** wire chat payload selection (`backend_selector`) from UI model choice with deterministic local-backend routing.
+      - ✅ **2/3** wire chat payload selection (`backend_selector`) from UI model choice with deterministic local-backend routing.
       - **3/3** add UX/readiness diagnostics + docs/tests so users understand local text-first limits and fallback behavior.
-    - Current checkpoint: **2/3** chat payload selector wiring.
-    - Next checkpoint: **3/3** UX/readiness diagnostics + docs/tests.
+    - Current checkpoint: **3/3** UX/readiness diagnostics + docs/tests.
+    - Next checkpoint: backend diagnostics endpoint contract + route wiring (healthy/timeout/unreachable/misconfigured parity).
   - Definition of done for current checkpoint:
-    - AI chat requests from local-model UI selections include deterministic `backend_selector` payloads
-    - `/api/ai/chat` routes selector-resolved local backends through text-adapter invocation path with stable diagnostics
-    - one-shot AI generate remains explicitly guarded to Gemini/Ollama while local-model chat path stays enabled
+    - `/api/ai/chat` local-selector failures include deterministic, machine-readable readiness hints
+    - diagnostics distinguish selector/input-validation failures from backend reachability/runtime failures
+    - docs/examples/tests describe local text-first constraints and remediation paths
 
 ## Recently Completed
+
+- **Spike A Follow-on Checkpoint 2/3 completed: deterministic local-model chat selector inference + one-shot guardrails** (2026-03-15)
+  - Hardened local-model chat routing in `app.py` for UI/API parity:
+    - added `_infer_local_backend_selector_from_model_id(...)` so `llama_cpp::<model>` / `lm_studio::<model>` chat selections are deterministically routed even when callers omit `backend_selector`
+    - invalid local selector formats now return deterministic 400 validation errors (non-empty `<backend>::<model_name>` required)
+    - backend-selection diagnostics now include `selector_source` (`request_payload` vs `model_prefix`) for clearer operator/debug traces
+  - Added explicit one-shot API guardrail in `/ai_process_prompt`:
+    - local-prefixed model ids are rejected with deterministic 400 guidance to use `/api/ai/chat` for llama.cpp / LM Studio paths
+  - Added regression coverage in `tests/test_ai_integration.py`:
+    - inferred local-selector chat success path (local model prefix without `backend_selector`)
+    - local-prefix validation failure path (empty model suffix)
+    - one-shot route rejection for local-prefixed model ids
+  - Checks run:
+    - `pytest -q tests/test_ai_integration.py -k "backend_selector or local_model_prefix or ai_process_prompt_rejects_local_model_prefixes"`
+    - `pytest -q tests/test_ai_integration.py tests/test_ai_backend_adapters.py`
 
 - **Spike A Follow-on Checkpoint 1/3 completed: local-model discovery hardening + regression coverage for AI model availability route** (2026-03-14)
   - Hardened `/ai_health_check` discovery flow in `app.py`:
@@ -807,17 +822,12 @@
 
 ## Next Candidates
 
-1. **Spike A Follow-on Checkpoint 2/3: backend diagnostics endpoint contract + route wiring**
+1. **Spike A Follow-on (post 3/3): backend diagnostics endpoint contract + route wiring**
    - Expose deterministic backend-health payload at route level for operators and automation.
    - Lock success/error envelope parity for healthy, timeout, unreachable, and misconfigured local-backend states.
    - Impact: high (unblocks actionable troubleshooting before runtime chat failures).
 
-2. **Spike A Follow-on Checkpoint 3/3: startup readiness hints surfaced in `/api/ai/chat` diagnostics**
-   - Attach deterministic backend-readiness hints to selector and runtime error payloads.
-   - Keep hints concise but machine-readable for UI and AI-assisted remediation flows.
-   - Impact: medium-high (improves mixed-backend reliability and operator speed).
-
-3. **Multimodal parity follow-on: preflight code-family correlation hints in parity report**
+2. **Multimodal parity follow-on: preflight code-family correlation hints in parity report**
    - Add deterministic mapping from changed preflight issue codes to likely operation families (dimension/material/topology).
    - Expand parity-report regression tests for representative Geant4-facing issue-family transitions.
    - Impact: medium-high (improves root-cause diagnostics after multimodal execution).
