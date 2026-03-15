@@ -31,7 +31,10 @@ export function init(callbacks) {
     }
 
     if (modelSelect) {
-        modelSelect.addEventListener('change', refreshContextStats);
+        modelSelect.addEventListener('change', () => {
+            refreshContextStats();
+            UIManager.updateAiBackendStatus?.();
+        });
     }
 
     // Load existing history
@@ -95,6 +98,53 @@ function renderHistory(history) {
     scrollToBottom();
 }
 
+function getBackendLabel(backendId) {
+    if (backendId === 'llama_cpp') return 'llama.cpp';
+    if (backendId === 'lm_studio') return 'LM Studio';
+    return backendId || 'AI backend';
+}
+
+function formatBackendDiagnosticsError(err) {
+    const diagnostics = err?.data?.backend_diagnostics;
+    if (!diagnostics || typeof diagnostics !== 'object') return null;
+
+    const stage = String(diagnostics.failure_stage || '').toLowerCase();
+    const stageLabel = stage === 'selector_validation'
+        ? 'selector validation failed'
+        : (stage === 'selector_requirements'
+            ? 'selector requirements mismatch'
+            : (stage === 'backend_runtime'
+                ? 'backend runtime failure'
+                : 'backend diagnostics error'));
+
+    const backendLabel = getBackendLabel(diagnostics.backend_id);
+    const readiness = diagnostics.readiness && typeof diagnostics.readiness === 'object'
+        ? diagnostics.readiness
+        : {};
+
+    const readinessStatus = String(readiness.status || 'unknown');
+    const readinessCode = String(readiness.readiness_code || 'unknown');
+    const readinessMessage = String(readiness.message || diagnostics.message || err.message || 'Unknown backend error.');
+
+    const alertMessage = `${backendLabel}: ${stageLabel} (${readinessStatus})`;
+    const detailLines = [
+        `AI backend failure (${stageLabel})`,
+        `Backend: ${backendLabel}`,
+        `Readiness: ${readinessStatus} (${readinessCode})`,
+        `Detail: ${readinessMessage}`,
+    ];
+
+    if (typeof diagnostics.error_code === 'string' && diagnostics.error_code) {
+        detailLines.push(`Error code: ${diagnostics.error_code}`);
+    }
+
+    return {
+        alertMessage,
+        chatMessage: detailLines.join('\n'),
+        readiness,
+    };
+}
+
 async function handleSend() {
     if (isProcessing) return;
     
@@ -124,8 +174,27 @@ async function handleSend() {
             onGeometryUpdateCallback(result);
         }
     } catch (err) {
-        UIManager.showError("AI Error: " + err.message);
-        addMessageToUI('system', "Error: " + err.message);
+        const backendError = formatBackendDiagnosticsError(err);
+
+        if (backendError) {
+            UIManager.showError("AI Error: " + backendError.alertMessage);
+            addMessageToUI('system', backendError.chatMessage);
+            UIManager.upsertAiBackendDiagnostic?.(backendError.readiness);
+
+            try {
+                const diagResponse = await APIService.getAiBackendDiagnostics(['llama_cpp', 'lm_studio']);
+                if (diagResponse?.success && Array.isArray(diagResponse.diagnostics)) {
+                    diagResponse.diagnostics.forEach(diagnostic => {
+                        UIManager.upsertAiBackendDiagnostic?.(diagnostic);
+                    });
+                }
+            } catch (_diagErr) {
+                // Ignore diagnostics refresh failure in chat error path.
+            }
+        } else {
+            UIManager.showError("AI Error: " + err.message);
+            addMessageToUI('system', "Error: " + err.message);
+        }
     } finally {
         setLoading(false);
         scrollToBottom();

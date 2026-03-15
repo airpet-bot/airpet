@@ -15,7 +15,7 @@ let newProjectButton, saveProjectButton, exportGdmlButton,
     cameraModeOriginButton, cameraModeSelectedButton,
     toggleSnapToGridButton, gridSnapSizeInput, angleSnapSizeInput,
     bottomPanel, toggleBottomPanelBtn,
-    aiPromptInput, aiGenerateButton, aiModelSelect,
+    aiPromptInput, aiGenerateButton, aiModelSelect, aiBackendStatusEl,
     setApiKeyButton, apiKeyModal, apiKeyInput, saveApiKeyButton, cancelApiKeyButton,
     currentModeDisplay;
 
@@ -43,6 +43,9 @@ let statusIndicator;
 
 // Keep track of last selected item
 let lastSelectedItem = null; // Stores the DOM element of the last clicked item
+
+// AI backend readiness diagnostics cache (keyed by backend id)
+let aiBackendDiagnosticsById = {};
 
 // Number of items per group for lists
 const ITEMS_PER_GROUP = 100;
@@ -215,6 +218,13 @@ export function initUI(cb) {
     aiPromptInput = document.getElementById('ai_prompt_input');
     aiGenerateButton = document.getElementById('ai_generate_button');
     aiModelSelect = document.getElementById('ai_model_select');
+    aiBackendStatusEl = document.getElementById('ai_backend_status');
+
+    if (aiModelSelect) {
+        aiModelSelect.addEventListener('change', () => {
+            updateAiBackendStatus();
+        });
+    }
 
     // API key modal elements
     apiKeyModal = document.getElementById('apiKeyModal');
@@ -2033,18 +2043,163 @@ export function clearAiPrompt() {
     }
 }
 
+function normalizeAiBackendDiagnostics(localBackendDiagnostics) {
+    if (Array.isArray(localBackendDiagnostics)) {
+        return localBackendDiagnostics.reduce((acc, item) => {
+            if (item && typeof item === 'object' && item.backend_id) {
+                acc[item.backend_id] = item;
+            }
+            return acc;
+        }, {});
+    }
+
+    if (localBackendDiagnostics && typeof localBackendDiagnostics === 'object') {
+        return Object.entries(localBackendDiagnostics).reduce((acc, [backendId, diagnostic]) => {
+            if (diagnostic && typeof diagnostic === 'object') {
+                acc[backendId] = diagnostic;
+            }
+            return acc;
+        }, {});
+    }
+
+    return {};
+}
+
+function getLocalBackendIdForModel(modelValue) {
+    if (typeof modelValue !== 'string') return null;
+    if (modelValue.startsWith('llama_cpp::')) return 'llama_cpp';
+    if (modelValue.startsWith('lm_studio::')) return 'lm_studio';
+    return null;
+}
+
+function getBackendDisplayName(backendId) {
+    if (backendId === 'llama_cpp') return 'llama.cpp';
+    if (backendId === 'lm_studio') return 'LM Studio';
+    return backendId || 'Local backend';
+}
+
+function getReadinessBadge(status) {
+    switch ((status || '').toLowerCase()) {
+        case 'healthy':
+            return '🟢';
+        case 'timeout':
+            return '🟠';
+        case 'unreachable':
+            return '🔴';
+        case 'misconfigured':
+            return '🟣';
+        default:
+            return '⚪';
+    }
+}
+
+function getReadinessLabel(status) {
+    switch ((status || '').toLowerCase()) {
+        case 'healthy':
+            return 'healthy';
+        case 'timeout':
+            return 'timeout';
+        case 'unreachable':
+            return 'unreachable';
+        case 'misconfigured':
+            return 'misconfigured';
+        default:
+            return 'unknown';
+    }
+}
+
+function buildLocalBackendTooltip(backendId, diagnostic) {
+    const backendLabel = getBackendDisplayName(backendId);
+    const status = getReadinessLabel(diagnostic?.status);
+    const readinessCode = diagnostic?.readiness_code || 'n/a';
+    const message = diagnostic?.message || 'No readiness diagnostics available yet.';
+    const endpoint = diagnostic?.models_endpoint;
+
+    const lines = [
+        `${backendLabel} readiness: ${status}`,
+        `Code: ${readinessCode}`,
+        message,
+    ];
+
+    if (endpoint) {
+        lines.push(`Probe: ${endpoint}`);
+    }
+
+    return lines.join('\n');
+}
+
+export function getAiBackendDiagnosticForModel(modelValue = null) {
+    const selectedModel = modelValue || getAiSelectedModel();
+    const backendId = getLocalBackendIdForModel(selectedModel);
+    if (!backendId) return null;
+    return aiBackendDiagnosticsById[backendId] || null;
+}
+
+export function upsertAiBackendDiagnostic(diagnostic) {
+    if (!diagnostic || typeof diagnostic !== 'object' || !diagnostic.backend_id) return;
+
+    const backendId = diagnostic.backend_id;
+    aiBackendDiagnosticsById[backendId] = diagnostic;
+
+    if (aiModelSelect) {
+        const options = aiModelSelect.querySelectorAll(`option[data-backend-id="${backendId}"]`);
+        options.forEach(option => {
+            const rawModelName = String(option.value || '').split('::').slice(1).join('::') || option.textContent;
+            option.textContent = `${getReadinessBadge(diagnostic.status)} ${rawModelName}`;
+            option.title = buildLocalBackendTooltip(backendId, diagnostic);
+            option.dataset.readinessStatus = getReadinessLabel(diagnostic.status);
+        });
+    }
+
+    updateAiBackendStatus();
+}
+
+export function updateAiBackendStatus(modelValue = null) {
+    if (!aiBackendStatusEl) return;
+
+    const selectedModel = modelValue || getAiSelectedModel();
+    const backendId = getLocalBackendIdForModel(selectedModel);
+
+    aiBackendStatusEl.className = 'ai-model-info ai-backend-status';
+
+    if (!selectedModel) {
+        aiBackendStatusEl.textContent = 'Backend: n/a';
+        aiBackendStatusEl.title = 'No AI model selected.';
+        return;
+    }
+
+    if (!backendId) {
+        aiBackendStatusEl.textContent = 'Backend: cloud';
+        aiBackendStatusEl.title = 'Gemini/Ollama routing does not require local backend readiness probes.';
+        return;
+    }
+
+    const diagnostic = aiBackendDiagnosticsById[backendId] || null;
+    const status = getReadinessLabel(diagnostic?.status);
+    const badge = getReadinessBadge(diagnostic?.status);
+
+    aiBackendStatusEl.classList.add(`status-${status}`);
+    aiBackendStatusEl.textContent = `${badge} ${getBackendDisplayName(backendId)}: ${status}`;
+    aiBackendStatusEl.title = buildLocalBackendTooltip(backendId, diagnostic);
+}
+
 /**
  * Populates the AI model selector dropdown with grouped options.
  * @param {object} models - An object like {ollama: [...], gemini: [...]}.
+ * @param {object|Array<object>|null} localBackendDiagnostics - Local backend readiness diagnostics.
  */
-export function populateAiModelSelector(models) {
+export function populateAiModelSelector(models, localBackendDiagnostics = null) {
     if (!aiModelSelect) return;
+
+    if (localBackendDiagnostics !== null) {
+        aiBackendDiagnosticsById = normalizeAiBackendDiagnostics(localBackendDiagnostics);
+    }
 
     // Remove all existing model groups before adding new ones.
     const existingGroups = aiModelSelect.querySelectorAll('.model-group, .no-models-option');
     existingGroups.forEach(group => group.remove());
 
-    const createGroup = (label, modelList, valuePrefix = null) => {
+    const createGroup = (label, modelList, valuePrefix = null, backendId = null) => {
         if (modelList && modelList.length > 0) {
             const optgroup = document.createElement('optgroup');
             optgroup.label = label;
@@ -2053,8 +2208,19 @@ export function populateAiModelSelector(models) {
             modelList.forEach(modelName => {
                 const option = document.createElement('option');
                 option.value = valuePrefix ? `${valuePrefix}::${modelName}` : modelName;
-                // Display a friendlier name for Gemini models
-                option.textContent = modelName.startsWith('models/') ? `${modelName.split('/')[1]}` : modelName;
+
+                const prettyName = modelName.startsWith('models/') ? `${modelName.split('/')[1]}` : modelName;
+
+                if (backendId) {
+                    const diagnostic = aiBackendDiagnosticsById[backendId] || null;
+                    option.textContent = `${getReadinessBadge(diagnostic?.status)} ${prettyName}`;
+                    option.title = buildLocalBackendTooltip(backendId, diagnostic);
+                    option.dataset.backendId = backendId;
+                    option.dataset.readinessStatus = getReadinessLabel(diagnostic?.status);
+                } else {
+                    option.textContent = prettyName;
+                }
+
                 optgroup.appendChild(option);
             });
             aiModelSelect.appendChild(optgroup);
@@ -2063,8 +2229,8 @@ export function populateAiModelSelector(models) {
 
     createGroup("Gemini Models", models.gemini);
     createGroup("Ollama Models", models.ollama);
-    createGroup("llama.cpp Models", models.llama_cpp, "llama_cpp");
-    createGroup("LM Studio Models", models.lm_studio, "lm_studio");
+    createGroup("llama.cpp Models", models.llama_cpp, "llama_cpp", "llama_cpp");
+    createGroup("LM Studio Models", models.lm_studio, "lm_studio", "lm_studio");
 
     // If no models were added at all
     const hasGemini = models.gemini && models.gemini.length > 0;
@@ -2096,6 +2262,8 @@ export function populateAiModelSelector(models) {
         // Notify listeners (e.g., AI context stats widget) that model list/selection changed.
         aiModelSelect.dispatchEvent(new Event('change'));
     }
+
+    updateAiBackendStatus();
 }
 
 /**

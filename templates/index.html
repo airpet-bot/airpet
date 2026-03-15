@@ -673,6 +673,39 @@
             gap: 4px;
         }
 
+        .ai-backend-status {
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 1px 6px;
+            background: #f8fafc;
+        }
+
+        .ai-backend-status.status-healthy {
+            color: #166534;
+            border-color: #bbf7d0;
+            background: #f0fdf4;
+        }
+
+        .ai-backend-status.status-timeout,
+        .ai-backend-status.status-unreachable,
+        .ai-backend-status.status-misconfigured {
+            color: #9a3412;
+            border-color: #fed7aa;
+            background: #fff7ed;
+        }
+
+        .ai-backend-status.status-unreachable {
+            color: #991b1b;
+            border-color: #fecaca;
+            background: #fef2f2;
+        }
+
+        .ai-backend-status.status-misconfigured {
+            color: #6b21a8;
+            border-color: #e9d5ff;
+            background: #faf5ff;
+        }
+
         #clear_chat_btn {
             background: none;
             border: none;
@@ -2084,6 +2117,7 @@
                         <div class="ai-status-bar">
                             <div class="ai-status-left">
                                 <span class="ai-model-info">Model: <select id="ai_model_select"></select></span>
+                                <span class="ai-model-info ai-backend-status" id="ai_backend_status" title="Local backend readiness status">Backend: n/a</span>
                                 <span class="ai-model-info">Max turns: <input type="number" id="ai_turn_limit" value="10" min="1" max="50" style="width: 44px; font-size: 11px;"></span>
                                 <span class="ai-model-info" id="ai_context_stats">Context: n/a</span>
                             </div>

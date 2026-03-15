@@ -2076,7 +2076,23 @@ async function checkAndSetAiStatus() {
     try {
         const status = await APIService.checkAiServiceStatus();
         if (status.success) {
-            UIManager.populateAiModelSelector(status.models);
+            let localBackendDiagnostics = status.local_backend_diagnostics || {};
+
+            try {
+                const diagnosticsResponse = await APIService.getAiBackendDiagnostics(['llama_cpp', 'lm_studio']);
+                if (diagnosticsResponse?.success && Array.isArray(diagnosticsResponse.diagnostics)) {
+                    localBackendDiagnostics = diagnosticsResponse.diagnostics.reduce((acc, item) => {
+                        if (item && typeof item === 'object' && item.backend_id) {
+                            acc[item.backend_id] = item;
+                        }
+                        return acc;
+                    }, {});
+                }
+            } catch (diagError) {
+                console.warn("Failed to refresh local backend diagnostics, using ai_health_check payload:", diagError.message || diagError);
+            }
+
+            UIManager.populateAiModelSelector(status.models, localBackendDiagnostics);
             UIManager.setAiPanelState('idle', "Generate with AI");
             console.log("AI service is online.");
         } else {

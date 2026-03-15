@@ -736,6 +736,25 @@ export async function checkAiServiceStatus() {
 }
 
 /**
+ * Fetches local backend readiness diagnostics for llama.cpp and LM Studio.
+ * @param {Array<string>|null} backends Optional backend ids to scope diagnostics.
+ * @returns {Promise<Object>}
+ */
+export async function getAiBackendDiagnostics(backends = null) {
+    let response;
+    if (Array.isArray(backends) && backends.length > 0) {
+        response = await fetch(`${API_BASE_URL}/api/ai/backends/diagnostics`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ backends }),
+        });
+    } else {
+        response = await fetch(`${API_BASE_URL}/api/ai/backends/diagnostics`);
+    }
+    return handleResponse(response);
+}
+
+/**
  * Sends a message to the stateful AI chat assistant.
  * @param {string} message - The user's text message.
  * @param {string} model - The model ID to use.
