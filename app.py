@@ -9810,21 +9810,26 @@ def ai_chat_route():
                     tool_args = tool_call.get("arguments") or tool_call.get("function", {}).get("arguments", {})
 
                     try:
-                        # Debug: log the tool call with full details
-                        print(f"DEBUG TOOL CALL:")
-                        print(f"  - tool_name: {tool_name}")
-                        print(f"  - raw tool_call: {tool_call}")
-                        print(f"  - tool_call.get('name'): {tool_call.get('name')}")
-                        print(f"  - tool_call.get('function', {{}}).get('name'): {tool_call.get('function', {}).get('name')}")
-                        print(f"  - tool_call.get('arguments'): {tool_call.get('arguments')}")
-                        print(f"  - tool_call.get('function', {{}}).get('arguments'): {tool_call.get('function', {}).get('arguments')}")
-                        print(f"  - type(tool_args): {type(tool_args)}")
-                        print(f"  - tool_args value: {tool_args}")
+                        # Debug: log the tool call with full details to file
+                        debug_log = open("/tmp/tool_debug.log", "a")
+                        debug_log.write(f"\n=== DEBUG TOOL CALL ===\n")
+                        debug_log.write(f"tool_name: {tool_name}\n")
+                        debug_log.write(f"raw tool_call: {tool_call}\n")
+                        debug_log.write(f"tool_call.get('name'): {tool_call.get('name')}\n")
+                        debug_log.write(f"tool_call.get('function', {{}}).get('name'): {tool_call.get('function', {}).get('name')}\n")
+                        debug_log.write(f"tool_call.get('arguments'): {tool_call.get('arguments')}\n")
+                        debug_log.write(f"tool_call.get('function', {{}}).get('arguments'): {tool_call.get('function', {}).get('arguments')}\n")
+                        debug_log.write(f"type(tool_args): {type(tool_args)}\n")
+                        debug_log.write(f"tool_args value: {tool_args}\n")
+                        debug_log.close()
                         
                         # Execute the tool
                         tool_result = dispatch_ai_tool(pm, tool_name, tool_args)
 
-                        print(f"DEBUG TOOL RESULT: {tool_result}")
+                        # Debug: log result to file
+                        debug_log = open("/tmp/tool_debug.log", "a")
+                        debug_log.write(f"DEBUG TOOL RESULT: {tool_result}\n")
+                        debug_log.close()
 
                         pm.chat_history.append({
                             "role": "tool",
@@ -9835,9 +9840,10 @@ def ai_chat_route():
 
                     except Exception as e:
                         error_msg = f"Tool '{tool_name}' failed: {e}"
-                        print(f"DEBUG TOOL ERROR: {error_msg}")
-                        import traceback
-                        traceback.print_exc()
+                        # Debug: log error to file
+                        debug_log = open("/tmp/tool_debug.log", "a")
+                        debug_log.write(f"DEBUG TOOL ERROR: {error_msg}\n")
+                        debug_log.close()
                         pm.chat_history.append({
                             "role": "tool",
                             "name": tool_name,
