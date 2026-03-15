@@ -2,19 +2,29 @@
 
 ## In Progress
 
-- **Multimodal parity follow-on: expand issue-code family-correlation regression matrix (Checkpoint 2/2)**
-  - Objective: harden parity-report triage confidence by testing broader preflight code-delta transitions against deterministic family-hint contracts.
-  - Checkpoint plan (multi-heartbeat):
-    - ✅ **1/2** deterministic issue-family correlation mapping wired into `execution.parity_report`.
-    - **2/2** expand regression matrix + examples/docs for representative added/increased/resolved/reduced transitions.
-  - Current checkpoint: **2/2** add broader route-level regression coverage for mixed code-delta transitions and overlap/no-overlap correlation behaviors.
-  - Next checkpoint: add representative parity example artifacts for resolved/reduced issue-code transitions.
-  - Definition of done for current checkpoint:
-    - regression suite covers representative `added|increased|resolved|reduced` issue-code transitions
-    - tests lock confidence + overlap behavior for family hints (`dimension_hints`, `material_updates`, `other_mutations`)
-    - docs/examples include at least one non-added transition case
+- _None currently._
+  - Next heartbeat should pick the highest-impact item from `Next Candidates` (prefer Geant4 parity confidence or scoped-geometry workflow leverage).
 
 ## Recently Completed
+
+- **Multimodal parity follow-on Checkpoint 2/2 completed: mixed delta-transition correlation coverage + example artifact** (2026-03-15)
+  - Expanded route-level parity regression coverage in `tests/test_ai_multimodal_extraction_api.py`:
+    - added mixed transition matrix assertions for `added`, `increased`, `resolved`, and `reduced` issue-code deltas
+    - locked overlap/no-overlap confidence behavior across all operation-family buckets (`dimension_hints`, `material_updates`, `other_mutations`)
+    - pinned signed delta propagation from `comparison.counts_delta_by_code` for non-unit transitions (e.g. `-2`, `+2`)
+  - Added representative non-added parity artifact:
+    - `examples/multimodal/planning_execute_response_parity_delta_mix.json`
+  - Updated docs:
+    - `docs/AI_MULTIMODAL_ARTIFACT_INTAKE.md` now references mixed transition coverage + example payload
+  - Checks run:
+    - `python3 -m py_compile app.py`
+    - `pytest -q tests/test_ai_multimodal_extraction_api.py -k "parity_family_correlations or mismatch_classes_when_success_regresses_preflight"` (2 passed)
+    - `pytest -q tests/test_ai_multimodal_extraction_api.py` (13 passed)
+  - Checkpoint finished:
+    - ✔ representative `added|increased|resolved|reduced` transitions covered by deterministic route-level regression assertions
+    - ✔ overlap-aware confidence degradation/preservation pinned for correlated families
+    - ✔ docs/examples include a concrete non-added transition case
+
 
 - **Multimodal parity follow-on Checkpoint 1/2 completed: deterministic preflight issue-code ↔ operation-family correlation hints** (2026-03-15)
   - Upgraded multimodal planning execution route schema to `2026-03-15.multimodal-intake.checkpoint9`.

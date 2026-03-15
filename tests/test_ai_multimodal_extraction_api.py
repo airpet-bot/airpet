@@ -837,3 +837,127 @@ def test_artifact_planning_execute_route_emits_preflight_mismatch_classes_when_s
     ]
 
     assert preflight_mock.call_count == 2
+
+
+def test_artifact_planning_execute_route_parity_family_correlations_cover_mixed_issue_code_transitions(client, tmp_path):
+    pm = _build_project_manager(tmp_path)
+
+    baseline_report = {
+        'summary': {
+            'can_run': True,
+            'issue_count': 7,
+            'counts_by_code': {
+                'invalid_replica_width': 4,
+                'missing_material_reference': 2,
+                'non_positive_dimension': 1,
+            },
+            'issue_fingerprint': 'baseline_fingerprint',
+        }
+    }
+    candidate_report = {
+        'summary': {
+            'can_run': True,
+            'issue_count': 6,
+            'counts_by_code': {
+                'invalid_replica_width': 2,
+                'non_positive_dimension': 3,
+                'unknown_world_volume_reference': 1,
+            },
+            'issue_fingerprint': 'candidate_fingerprint',
+        }
+    }
+
+    with patch('app.get_project_manager_for_session', return_value=pm):
+        upload_response = client.post(
+            '/api/ai/artifacts/upload',
+            data={
+                'artifact': (io.BytesIO(b'\x89PNG\r\n\x1a\nimage'), 'detector.png'),
+            },
+            content_type='multipart/form-data',
+        )
+        assert upload_response.status_code == 200
+        artifact = upload_response.get_json()['artifact']
+
+        extraction_response = client.post(
+            f"/api/ai/artifacts/{artifact['artifact_id']}/extraction/review",
+            json={
+                'review_status': 'approved',
+                'extraction': _payload_for_artifact(artifact),
+            },
+        )
+        assert extraction_response.status_code == 200
+        extraction = extraction_response.get_json()
+
+        with patch.object(pm, 'run_preflight_checks', side_effect=[baseline_report, candidate_report]) as preflight_mock:
+            execute_response = client.post(
+                f"/api/ai/artifacts/{artifact['artifact_id']}/planning/execute",
+                json={
+                    'extraction': extraction['extraction'],
+                    'review_envelope': extraction['review_envelope'],
+                    'region_bindings': {
+                        'region_b': {
+                            'logical_volume_name': 'box_LV',
+                            'material_map': {
+                                'si': 'G4_Galactic',
+                            },
+                        },
+                    },
+                },
+            )
+
+    assert execute_response.status_code == 200
+    payload = execute_response.get_json()
+    assert payload['success'] is True
+
+    execution = payload['execution']
+    assert execution['status'] == 'success'
+
+    preflight_crosscheck = execution['preflight_crosscheck']
+    assert preflight_crosscheck['status'] == 'consistent'
+    assert preflight_crosscheck['mismatch_classes'] == []
+    assert preflight_crosscheck['invariants']['issue_count_delta'] == -1
+    assert [entry['code'] for entry in preflight_crosscheck['diagnostics']] == [
+        'preflight_issue_count_improved_after_success',
+    ]
+
+    parity_report = execution['parity_report']
+    correlations = parity_report['issue_code_family_correlations']
+    assert correlations['summary'] == {
+        'changed_issue_code_count': 4,
+        'with_observed_overlap_count': 3,
+        'without_observed_overlap_count': 1,
+        'confidence_counts': {
+            'high': 3,
+            'medium': 1,
+            'low': 0,
+        },
+    }
+    assert [
+        (entry['issue_code'], entry['change_kind'], entry['delta'], entry['confidence'])
+        for entry in correlations['entries']
+    ] == [
+        ('unknown_world_volume_reference', 'added', 1, 'medium'),
+        ('non_positive_dimension', 'increased', 2, 'high'),
+        ('missing_material_reference', 'resolved', -2, 'high'),
+        ('invalid_replica_width', 'reduced', -2, 'high'),
+    ]
+    assert [entry['likely_operation_family_ids'] for entry in correlations['entries']] == [
+        ['other_mutations'],
+        ['dimension_hints'],
+        ['material_updates'],
+        ['dimension_hints'],
+    ]
+    assert [entry['observed_overlap_operation_family_ids'] for entry in correlations['entries']] == [
+        [],
+        ['dimension_hints'],
+        ['material_updates'],
+        ['dimension_hints'],
+    ]
+    assert [entry['reason_codes'] for entry in correlations['entries']] == [
+        ['exact_issue_code_family_match', 'no_overlap_with_executed_operation_groups'],
+        ['exact_issue_code_family_match', 'overlap_with_executed_operation_groups'],
+        ['exact_issue_code_family_match', 'overlap_with_executed_operation_groups'],
+        ['exact_issue_code_family_match', 'overlap_with_executed_operation_groups'],
+    ]
+
+    assert preflight_mock.call_count == 2

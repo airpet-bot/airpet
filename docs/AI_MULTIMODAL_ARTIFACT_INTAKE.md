@@ -456,6 +456,7 @@ Checkpoint 8 Geant4-facing parity-report contract (`execution.parity_report`):
 
 Checkpoint 9 preflight issue-code family correlation hints (`execution.parity_report.issue_code_family_correlations`):
 - deterministic per-issue-code correlation entries with `change_kind`, signed `delta`, confidence, and reason codes
+- regression matrix now pins representative `added`, `increased`, `resolved`, and `reduced` transitions
 - deterministic mapping to likely operation families (`dimension_hints`, `material_updates`, `other_mutations`)
 - explicit overlap hints with operation families that were observed in this execution
 - summary counters for changed issue-code volume, overlap coverage, and confidence distribution
@@ -464,6 +465,7 @@ Representative geometry-flow examples:
 - Success path request: `examples/multimodal/planning_execute_request.json`
 - Partial-failure path request (missing LV binding): `examples/multimodal/planning_execute_request_partial_failure.json`
 - Mismatch-error parity-report response: `examples/multimodal/planning_execute_response_parity_mismatch.json`
+- Mixed delta-transition parity-report response (`added|increased|resolved|reduced`): `examples/multimodal/planning_execute_response_parity_delta_mix.json`
 
 ## Persistence Layout
 
