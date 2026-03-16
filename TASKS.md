@@ -7,6 +7,25 @@
 
 ## Recently Completed
 
+- **Geant4 confidence checkpoint completed: partial-failure procedural parity-warning matrix + mixed-group fallback coverage** (2026-03-16)
+  - Added a complementary warning-tier multimodal parity smoke regression in `tests/test_ai_multimodal_extraction_api.py`:
+    - `test_artifact_planning_execute_route_emits_partial_failure_procedural_warning_with_mixed_operation_group_fallbacks`
+    - drives a procedural-dimension+material execution path that yields `partial_failure` with increased preflight issue count
+  - Locked deterministic warning semantics + affected-group routing for partial failures:
+    - preflight mismatch class: `preflight_issue_count_regressed_under_partial_failure`
+    - high-signal mismatch affected-operation-group coverage now explicitly includes mixed applied+failed groups (`dimension_hints`, `material_updates`)
+    - issue-code family correlation overlap/no-overlap confidence behavior pinned for mixed-family transitions (`dimension_hints`, `material_updates`, `other_mutations`)
+  - Added representative warning-tier parity artifact:
+    - `examples/multimodal/planning_execute_response_parity_partial_failure_procedural_warning.json`
+  - Updated docs:
+    - `docs/AI_MULTIMODAL_ARTIFACT_INTAKE.md` representative geometry-flow examples now include the new partial-failure warning response
+  - Checks run:
+    - `pytest -q tests/test_ai_multimodal_extraction_api.py -k "partial_failure_procedural_warning_with_mixed_operation_group_fallbacks or procedural_dimension_deltas or parity_family_correlations_cover_mixed_issue_code_transitions"`
+    - `pytest -q tests/test_ai_multimodal_extraction_api.py`
+  - Checkpoint finished:
+    - ✔ warning-tier procedural parity diagnostics are now regression-pinned next to mismatch-error coverage
+    - ✔ mixed operation-group fallback semantics under partial failure are now deterministic and tested
+
 - **Geant4 confidence checkpoint completed: procedural replica/division parity smoke fixture + mismatch-bucket coverage** (2026-03-15)
   - Added a high-signal multimodal parity smoke regression in `tests/test_ai_multimodal_extraction_api.py`:
     - `test_artifact_planning_execute_route_geant4_parity_smoke_for_procedural_dimension_deltas`
@@ -1073,10 +1092,10 @@
    - Add unit-level coverage for intermediate-path traversal failures (dict/object chains) and invalid nested segments.
    - Impact: medium (keeps mutation safety invariant consistent across entrypoints).
 
-2. **Geant4 confidence follow-on: partial-failure procedural parity-warning matrix**
-   - Add a complementary parity smoke fixture where procedural dimension mutations yield `partial_failure` plus increased preflight issues.
-   - Lock `preflight_issue_count_regressed_under_partial_failure` warning semantics and affected-operation-group bucketing (`dimension_hints` vs mixed-group fallbacks).
-   - Impact: medium-high (completes warning-tier coverage next to the new mismatch-error procedural smoke fixture).
+2. **Geant4 confidence follow-on: failed-execution parity guardrail for preflight drift without applied operations**
+   - Add a parity smoke fixture where multimodal execution reports `failed` with zero applied operations but preflight invariants drift.
+   - Lock `preflight_changed_without_applied_operations` mismatch semantics and affected-operation-group selection for failed-only execution groups.
+   - Impact: medium-high (completes the deterministic mismatch-class triad around success/partial-failure/failed outcomes).
 
 ### Reserve Backlog (only when needed for concrete bug/regression)
 
