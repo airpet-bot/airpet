@@ -467,6 +467,7 @@ Representative geometry-flow examples:
 - Mismatch-error parity-report response: `examples/multimodal/planning_execute_response_parity_mismatch.json`
 - Mixed delta-transition parity-report response (`added|increased|resolved|reduced`): `examples/multimodal/planning_execute_response_parity_delta_mix.json`
 - Procedural replica/division regression smoke parity response (dimension-family mismatch bucketing): `examples/multimodal/planning_execute_response_parity_procedural_dimension_smoke.json`
+- Partial-failure procedural warning parity response (mixed operation-group fallback semantics): `examples/multimodal/planning_execute_response_parity_partial_failure_procedural_warning.json`
 
 ## Persistence Layout
 
