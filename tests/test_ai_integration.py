@@ -105,30 +105,22 @@ def test_ai_chat_handles_empty_gemini_candidate_content_with_text_fallback(clien
         assert "Fallback response from Gemini." in data['message']
 
 
-def test_ai_chat_backend_selector_surfaces_fallback_diagnostics_in_success_response(client):
-    final_part = MagicMock()
-    final_part.function_call = None
-    final_part.text = "Selection fallback succeeded."
-
-    final_response = MagicMock()
-    final_response.candidates = [MagicMock()]
-    final_response.candidates[0].content.parts = [final_part]
-    final_response.candidates[0].content.role = "model"
-    final_response.text = "Selection fallback succeeded."
-
-    with patch('app.get_gemini_client_for_session') as MockClientGetter, \
-         patch('app.get_project_manager_for_session') as MockPMGetter, \
-         patch('app.types.GenerateContentConfig', side_effect=lambda **kwargs: kwargs), \
-         patch('app.time.sleep', return_value=None):
+def test_ai_chat_backend_selector_uses_llama_cpp_for_tool_requests_when_enabled(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.invoke_text_request_for_backend') as MockInvokeAdapter:
 
         evaluator = ExpressionEvaluator()
         pm = ProjectManager(evaluator)
         pm.create_empty_project()
         MockPMGetter.return_value = pm
 
-        mock_client = MagicMock()
-        MockClientGetter.return_value = mock_client
-        mock_client.models.generate_content.return_value = final_response
+        MockInvokeAdapter.return_value = MagicMock(
+            backend_id='llama_cpp',
+            model='llama-local',
+            text='Selection handled locally.',
+            usage={'prompt_tokens': 42, 'completion_tokens': 7},
+            raw_response={},
+        )
 
         payload = {
             "message": "hello",
@@ -153,16 +145,16 @@ def test_ai_chat_backend_selector_surfaces_fallback_diagnostics_in_success_respo
         assert response.status_code == 200
         data = response.get_json()
         assert data["success"] is True
-        assert data["backend_selection"]["resolved_backend_id"] == "gemini_remote"
-        assert data["backend_selection"]["used_fallback"] is True
+        assert data["backend_selection"]["resolved_backend_id"] == "llama_cpp"
+        assert data["backend_selection"]["used_fallback"] is False
         assert data["backend_selection"]["tried"][0]["backend_id"] == "llama_cpp"
-        assert data["backend_selection"]["tried"][0]["missing_capabilities"] == ["tools"]
+        assert data["backend_selection"]["tried"][0]["missing_capabilities"] == []
 
 
-def test_ai_chat_backend_selector_returns_deterministic_no_fallback_error(client):
+def test_ai_chat_backend_selector_returns_deterministic_no_fallback_error_for_lm_studio_tools(client):
     with patch('app.get_project_manager_for_session') as MockPMGetter, \
          patch('app.build_local_backend_readiness_diagnostic', return_value={
-             'backend_id': 'llama_cpp',
+             'backend_id': 'lm_studio',
              'status': 'healthy',
              'readiness_code': 'ok',
              'ready': True,
@@ -176,7 +168,7 @@ def test_ai_chat_backend_selector_returns_deterministic_no_fallback_error(client
             "message": "hello",
             "model": "models/gemini-2.0-flash-exp",
             "backend_selector": {
-                "preferred_backend_id": "llama_cpp",
+                "preferred_backend_id": "lm_studio",
                 "allow_fallback": False,
                 "runtime_config": {
                     "backends": {
@@ -197,18 +189,18 @@ def test_ai_chat_backend_selector_returns_deterministic_no_fallback_error(client
         data = response.get_json()
         assert data["success"] is False
         assert "AI backend selection failed" in data["error"]
-        assert data["backend_selection"]["preferred_backend_id"] == "llama_cpp"
+        assert data["backend_selection"]["preferred_backend_id"] == "lm_studio"
         assert data["backend_selection"]["allow_fallback"] is False
-        assert "'backend_id': 'llama_cpp'" in data["backend_selection"]["selection_error"]
+        assert "'backend_id': 'lm_studio'" in data["backend_selection"]["selection_error"]
         assert "'missing_capabilities': ['tools']" in data["backend_selection"]["selection_error"]
         assert data["backend_diagnostics"]["failure_stage"] == "selector_requirements"
         assert data["backend_diagnostics"]["error_code"] == "backend_selection_failed"
         assert data["backend_diagnostics"]["readiness"]["status"] == "healthy"
         assert data["backend_diagnostics"]["remediation"]["summary"] == "Selected backend cannot satisfy the requested capabilities."
         assert data["backend_diagnostics"]["remediation"]["action_codes"] == [
-            "disable_tool_requirement_for_local_backends",
+            "review_backend_requirements",
             "allow_backend_fallback",
-            "switch_to_cloud_backend_for_tool_calls",
+            "switch_backend_for_missing_capabilities",
         ]
 
 
@@ -261,6 +253,62 @@ def test_ai_chat_backend_selector_invokes_local_text_adapter_when_selected(clien
         assert data["backend_execution"]["backend_id"] == "llama_cpp"
         assert data["backend_execution"]["usage"] == {'prompt_tokens': 42, 'completion_tokens': 9}
         MockInvokeAdapter.assert_called_once()
+
+
+def test_ai_chat_local_llama_executes_tool_calls_from_json_fallback(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.invoke_text_request_for_backend') as MockInvokeAdapter, \
+         patch('app.dispatch_ai_tool') as MockDispatchTool:
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        MockInvokeAdapter.side_effect = [
+            MagicMock(
+                backend_id='llama_cpp',
+                model='qwen-local',
+                text=(
+                    "I'll define spacing and proceed.\n\n"
+                    "```json\n"
+                    "{\n"
+                    "  \"tool_calls\": [\n"
+                    "    {\"tool\": \"manage_define\", \"name\": \"SiPM_spacing\", \"value\": \"10\"}\n"
+                    "  ]\n"
+                    "}\n"
+                    "```"
+                ),
+                usage={'prompt_tokens': 50, 'completion_tokens': 20},
+                raw_response={},
+            ),
+            MagicMock(
+                backend_id='llama_cpp',
+                model='qwen-local',
+                text='Done. Created the SiPM grid on kapton.',
+                usage={'prompt_tokens': 58, 'completion_tokens': 18},
+                raw_response={},
+            ),
+        ]
+
+        MockDispatchTool.return_value = {"success": True}
+
+        payload = {
+            "message": "Create an 8x8 SiPM matrix.",
+            "model": "llama_cpp::qwen-local",
+        }
+
+        response = client.post("/api/ai/chat", json=payload)
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["success"] is True
+        assert "Done. Created the SiPM grid on kapton." in data["message"]
+        assert MockInvokeAdapter.call_count == 2
+        MockDispatchTool.assert_called_once()
+        called_tool_name = MockDispatchTool.call_args.args[1]
+        called_tool_args = MockDispatchTool.call_args.args[2]
+        assert called_tool_name == "manage_define"
+        assert called_tool_args == {"name": "SiPM_spacing", "value": "10"}
 
 
 def test_ai_chat_backend_selector_returns_deterministic_local_invocation_error_payload(client):
@@ -349,7 +397,7 @@ def test_ai_chat_infers_local_backend_selector_from_model_prefix(client):
 
         MockInvokeAdapter.assert_called_once()
         invocation_request = MockInvokeAdapter.call_args.args[1]
-        assert invocation_request.require_tools is False
+        assert invocation_request.require_tools is True
         assert invocation_request.require_json_mode is True
         assert invocation_request.require_streaming is False
 

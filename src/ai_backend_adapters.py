@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urljoin
 
-ADAPTER_CONTRACT_VERSION = "2026-03-14.checkpoint5"
+ADAPTER_CONTRACT_VERSION = "2026-03-16.local-tools"
 
 
 @dataclass(frozen=True)
@@ -107,6 +107,8 @@ class TextGenerationRequest:
     temperature: Optional[float] = None
     max_output_tokens: Optional[int] = None
     stop: Optional[Tuple[str, ...]] = None
+    tool_schemas: Optional[Tuple[Dict[str, Any], ...]] = None
+    tool_choice: Optional[Any] = None
 
 
 @dataclass(frozen=True)
@@ -174,6 +176,9 @@ class LlamaCppTextAdapter:
             payload["stop"] = list(request.stop)
         if request.require_json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if request.require_tools and request.tool_schemas:
+            payload["tools"] = list(request.tool_schemas)
+            payload["tool_choice"] = request.tool_choice or "auto"
         return payload
 
     def invoke(
@@ -206,9 +211,14 @@ class LlamaCppTextAdapter:
                 if hasattr(response, "raise_for_status"):
                     response.raise_for_status()
                 body = response.json() if hasattr(response, "json") else {}
-                text = _extract_openai_style_text(body)
-                if not text:
-                    raise ValueError("llama_cpp response did not include a non-empty assistant message")
+                assistant_message = _extract_openai_style_assistant_message(body)
+                if not assistant_message:
+                    raise ValueError("llama_cpp response did not include an assistant message")
+
+                text = assistant_message.get("content") or ""
+                tool_calls = assistant_message.get("tool_calls")
+                if not text and not tool_calls:
+                    raise ValueError("llama_cpp response did not include text or tool calls")
 
                 return TextGenerationResponse(
                     backend_id=self.backend_id,
@@ -285,6 +295,9 @@ class LMStudioTextAdapter:
             payload["stop"] = list(request.stop)
         if request.require_json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if request.require_tools and request.tool_schemas:
+            payload["tools"] = list(request.tool_schemas)
+            payload["tool_choice"] = request.tool_choice or "auto"
         return payload
 
     def invoke(
@@ -317,9 +330,14 @@ class LMStudioTextAdapter:
                 if hasattr(response, "raise_for_status"):
                     response.raise_for_status()
                 body = response.json() if hasattr(response, "json") else {}
-                text = _extract_openai_style_text(body)
-                if not text:
-                    raise ValueError("lm_studio response did not include a non-empty assistant message")
+                assistant_message = _extract_openai_style_assistant_message(body)
+                if not assistant_message:
+                    raise ValueError("lm_studio response did not include an assistant message")
+
+                text = assistant_message.get("content") or ""
+                tool_calls = assistant_message.get("tool_calls")
+                if not text and not tool_calls:
+                    raise ValueError("lm_studio response did not include text or tool calls")
 
                 return TextGenerationResponse(
                     backend_id=self.backend_id,
@@ -364,7 +382,7 @@ DEFAULT_BACKEND_SPECS: Tuple[AdapterSpec, ...] = (
         enabled=False,
         implementation_status="implemented",
         capabilities=AdapterCapabilities(
-            supports_tools=False,
+            supports_tools=True,
             supports_json_mode=True,
             supports_vision=False,
             supports_streaming=True,
@@ -493,7 +511,13 @@ def _ordered_candidates(
     if not preferred:
         raise ValueError(f"Unknown preferred backend: {preferred_backend_id}")
 
-    return preferred + [s for s in ordered if s.backend_id != preferred_backend_id]
+    remaining = [s for s in ordered if s.backend_id != preferred_backend_id]
+    if any(s.adapter_kind == "local" for s in remaining) and any(s.adapter_kind != "local" for s in remaining):
+        local_remaining = [s for s in remaining if s.adapter_kind == "local"]
+        remote_remaining = [s for s in remaining if s.adapter_kind != "local"]
+        remaining = local_remaining + remote_remaining
+
+    return preferred + remaining
 
 
 def select_backend(
@@ -561,7 +585,7 @@ def _runtime_backend_config(
     return {}
 
 
-def _extract_openai_style_text(body: Dict[str, Any]) -> Optional[str]:
+def _extract_openai_style_assistant_message(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(body, dict):
         return None
 
@@ -578,8 +602,22 @@ def _extract_openai_style_text(body: Dict[str, Any]) -> Optional[str]:
         return None
 
     content = message.get("content")
+    normalized_content = ""
     if isinstance(content, str):
-        stripped = content.strip()
-        return stripped or None
+        normalized_content = content.strip()
+    elif isinstance(content, list):
+        text_segments: List[str] = []
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                text_segments.append(part["text"])
+        normalized_content = "\n".join(seg.strip() for seg in text_segments if seg and seg.strip())
 
-    return None
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        tool_calls = []
+
+    return {
+        "role": str(message.get("role") or "assistant"),
+        "content": normalized_content,
+        "tool_calls": tool_calls,
+    }

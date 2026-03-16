@@ -1,6 +1,6 @@
-# AI Backend Adapter Contract (Spike A Checkpoint 5)
+# AI Backend Adapter Contract (Spike A Checkpoint 6)
 
-Contract version: `2026-03-14.checkpoint5`
+Contract version: `2026-03-16.local-tools`
 
 This document defines the normalized adapter contract AIRPET uses for AI backends.
 
@@ -62,7 +62,7 @@ Checkpoint 5 includes implemented text-first local adapter scaffolds **and runti
 - normalized response envelope (`TextGenerationResponse`)
 - normalized invocation dispatcher (`invoke_text_request_for_backend`) to route runtime requests by resolved backend id
 
-These paths are intended for text-first/JSON-first workflows where tool calling is not required.
+These paths are intended for text-first/JSON-first workflows, with native tool-call loop support now enabled for `llama_cpp`.
 
 ## 6) `/api/ai/chat` runtime integration notes
 
@@ -141,11 +141,11 @@ When `/api/ai/chat` returns `backend_diagnostics.failure_stage`, use this defaul
     - `select_nonempty_local_model_name`
 
 - `selector_requirements`
-  - expected issue: local backend cannot satisfy requested capabilities (often tools/streaming)
+  - expected issue: selected backend cannot satisfy requested capabilities
   - primary actions:
-    - `disable_tool_requirement_for_local_backends`
+    - `review_backend_requirements`
     - `allow_backend_fallback`
-    - `switch_to_cloud_backend_for_tool_calls`
+    - `switch_backend_for_missing_capabilities`
 
 - `backend_runtime` + readiness `timeout`
   - primary actions:

@@ -26,7 +26,7 @@ from pathlib import Path
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, Response, session, send_file
 from flask_cors import CORS
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from dotenv import load_dotenv, set_key, find_dotenv
 from google import genai  # Correct top-level import
@@ -10029,6 +10029,163 @@ def _coerce_optional_int(value: Any) -> Optional[int]:
     return None
 
 
+def _build_openai_tool_schema_from_ai_tools() -> List[Dict[str, Any]]:
+    tool_schemas: List[Dict[str, Any]] = []
+    for tool in AI_GEOMETRY_TOOLS:
+        tool_schemas.append({
+            "type": "function",
+            "function": {
+                "name": tool["name"],
+                "description": tool["description"],
+                "parameters": tool["parameters"],
+            },
+        })
+    return tool_schemas
+
+
+def _coerce_tool_arguments(arguments: Any) -> Dict[str, Any]:
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str):
+        stripped = arguments.strip()
+        if not stripped:
+            return {}
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _normalize_tool_calls_payload(raw_tool_calls: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_tool_calls, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for call in raw_tool_calls:
+        if not isinstance(call, dict):
+            continue
+
+        call_id = call.get("id")
+        function_obj = call.get("function") if isinstance(call.get("function"), dict) else None
+
+        tool_name = None
+        arguments: Any = {}
+
+        if function_obj:
+            tool_name = function_obj.get("name")
+            arguments = function_obj.get("arguments", {})
+        else:
+            fallback_name = call.get("name")
+            tool_name = call.get("tool") or call.get("tool_name")
+            fallback_used_as_tool_name = False
+            if tool_name is None and isinstance(fallback_name, str):
+                tool_name = fallback_name
+                fallback_used_as_tool_name = True
+
+            if "arguments" in call:
+                arguments = call.get("arguments")
+            elif "params" in call:
+                arguments = call.get("params")
+            else:
+                exclude_fields = {"id", "tool", "tool_name", "function", "tool_call_id"}
+                if fallback_used_as_tool_name:
+                    exclude_fields.add("name")
+                arguments = {
+                    k: v for k, v in call.items()
+                    if k not in exclude_fields
+                }
+
+        if not tool_name or not isinstance(tool_name, str):
+            continue
+
+        normalized.append({
+            "id": call_id,
+            "name": tool_name,
+            "arguments": _coerce_tool_arguments(arguments),
+        })
+
+    return normalized
+
+
+def _extract_tool_calls_from_json_text(content: str) -> List[Dict[str, Any]]:
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    candidates: List[str] = []
+    stripped = content.strip()
+    candidates.append(stripped)
+
+    fenced_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)```", content, flags=re.IGNORECASE)
+    candidates.extend(block.strip() for block in fenced_blocks if isinstance(block, str) and block.strip())
+
+    if "tool_calls" in content:
+        first_brace = content.find("{")
+        last_brace = content.rfind("}")
+        if first_brace != -1 and last_brace > first_brace:
+            candidates.append(content[first_brace:last_brace + 1].strip())
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+
+        raw_tool_calls = None
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("tool_calls"), list):
+                raw_tool_calls = parsed.get("tool_calls")
+            elif isinstance(parsed.get("calls"), list):
+                raw_tool_calls = parsed.get("calls")
+        elif isinstance(parsed, list):
+            raw_tool_calls = parsed
+
+        normalized = _normalize_tool_calls_payload(raw_tool_calls)
+        if normalized:
+            return normalized
+
+    return []
+
+
+def _extract_openai_assistant_payload(raw_response: Dict[str, Any], fallback_text: str = "") -> Dict[str, Any]:
+    content = fallback_text or ""
+    tool_calls: List[Dict[str, Any]] = []
+
+    if isinstance(raw_response, dict):
+        choices = raw_response.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                message = first.get("message")
+                if isinstance(message, dict):
+                    raw_content = message.get("content")
+                    if isinstance(raw_content, str):
+                        content = raw_content.strip()
+                    elif isinstance(raw_content, list):
+                        text_parts: List[str] = []
+                        for part in raw_content:
+                            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                                text_parts.append(part["text"])
+                        content = "\n".join(p.strip() for p in text_parts if p and p.strip())
+
+                    tool_calls = _normalize_tool_calls_payload(message.get("tool_calls"))
+
+    if not tool_calls:
+        tool_calls = _extract_tool_calls_from_json_text(content or fallback_text or "")
+
+    return {
+        "content": content,
+        "tool_calls": tool_calls,
+    }
+
+
 def _infer_local_backend_selector_from_model_id(model_id: Any) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
     if not isinstance(model_id, str):
         return None, None
@@ -10050,6 +10207,8 @@ def _infer_local_backend_selector_from_model_id(model_id: Any) -> tuple[Optional
                 f"Expected '{backend_id}::<model_name>' with a non-empty model name."
             )
 
+        inferred_require_tools = backend_id == "llama_cpp"
+
         return {
             "preferred_backend_id": backend_id,
             "allow_fallback": False,
@@ -10062,7 +10221,7 @@ def _infer_local_backend_selector_from_model_id(model_id: Any) -> tuple[Optional
                 }
             },
             "requirements": {
-                "require_tools": False,
+                "require_tools": inferred_require_tools,
                 "require_json_mode": True,
                 "require_streaming": False,
             },
@@ -11531,14 +11690,14 @@ def _build_chat_backend_remediation(
     elif failure_stage == "selector_requirements":
         summary = "Selected backend cannot satisfy the requested capabilities."
         action_codes = [
-            "disable_tool_requirement_for_local_backends",
+            "review_backend_requirements",
             "allow_backend_fallback",
-            "switch_to_cloud_backend_for_tool_calls",
+            "switch_backend_for_missing_capabilities",
         ]
         actions = [
-            "For local text-first backends, set backend selector requirements to require_tools=false and require_streaming=false.",
-            "Set allow_fallback=true if automatic fallback to Gemini/Ollama is acceptable.",
-            "If tool calling is required, switch to a Gemini/Ollama model for this task.",
+            "Review backend selector requirements (tools/json/streaming/context) and align them with the selected backend.",
+            "Set allow_fallback=true if automatic fallback to another backend is acceptable.",
+            "If a capability is missing, switch to a backend that supports it (for example Gemini for vision-heavy tasks).",
         ]
     else:
         if readiness_status == "timeout":
@@ -11824,45 +11983,125 @@ def ai_chat_route():
         pm.begin_transaction()
 
         try:
-            invocation_request = TextGenerationRequest(
-                messages=(
-                    TextMessage(role="system", content=load_system_prompt()),
-                    TextMessage(role="user", content=formatted_user_msg),
-                ),
-                require_tools=bool((selector_requirements or {}).get("require_tools", False)),
-                require_json_mode=bool((selector_requirements or {}).get("require_json_mode", True)),
-                require_streaming=bool((selector_requirements or {}).get("require_streaming", False)),
-                min_context_tokens=_coerce_optional_int((selector_requirements or {}).get("min_context_tokens")),
-            )
+            require_tools = bool((selector_requirements or {}).get("require_tools", False))
+            require_json_mode = bool((selector_requirements or {}).get("require_json_mode", True))
+            require_streaming = bool((selector_requirements or {}).get("require_streaming", False))
+            min_context_tokens = _coerce_optional_int((selector_requirements or {}).get("min_context_tokens"))
 
-            adapter_response = invoke_text_request_for_backend(
-                selected_backend_id,
-                invocation_request,
-                runtime_config=selector_runtime_config,
-            )
+            local_messages: List[TextMessage] = [
+                TextMessage(role="system", content=load_system_prompt()),
+                TextMessage(role="user", content=formatted_user_msg),
+            ]
 
-            pm.chat_history.append({
-                "role": "assistant",
-                "content": adapter_response.text,
-                "metadata": {
-                    "resolved_backend_id": adapter_response.backend_id,
-                    "provider_model": adapter_response.model,
-                },
-            })
+            openai_tool_schemas: Optional[Tuple[Dict[str, Any], ...]] = None
+            if require_tools and selected_backend_id == "llama_cpp":
+                openai_tool_schemas = tuple(_build_openai_tool_schema_from_ai_tools())
 
-            if backend_selection_payload is not None:
-                backend_selection_payload["execution_mode"] = "local_text_adapter"
-                backend_selection_payload["resolved_model"] = adapter_response.model
-
-            local_extra_payload = dict(chat_extra_payload or {})
-            local_extra_payload["backend_execution"] = {
-                "backend_id": adapter_response.backend_id,
-                "model": adapter_response.model,
-                "usage": adapter_response.usage,
+            job_id = None
+            version_id = None
+            last_execution_payload = {
+                "backend_id": selected_backend_id,
+                "model": None,
+                "usage": None,
             }
 
-            pm.end_transaction(f"AI: {user_message[:50]}")
-            return create_success_response(pm, adapter_response.text, extra_payload=local_extra_payload)
+            for turn in range(turn_limit):
+                invocation_request = TextGenerationRequest(
+                    messages=tuple(local_messages),
+                    require_tools=require_tools,
+                    require_json_mode=require_json_mode,
+                    require_streaming=require_streaming,
+                    min_context_tokens=min_context_tokens,
+                    tool_schemas=openai_tool_schemas,
+                    tool_choice="auto" if openai_tool_schemas else None,
+                )
+
+                adapter_response = invoke_text_request_for_backend(
+                    selected_backend_id,
+                    invocation_request,
+                    runtime_config=selector_runtime_config,
+                )
+
+                last_execution_payload = {
+                    "backend_id": adapter_response.backend_id,
+                    "model": adapter_response.model,
+                    "usage": adapter_response.usage,
+                }
+
+                assistant_payload = _extract_openai_assistant_payload(
+                    adapter_response.raw_response,
+                    fallback_text=adapter_response.text,
+                )
+                assistant_text = assistant_payload.get("content") or adapter_response.text or ""
+                parsed_tool_calls = assistant_payload.get("tool_calls") or []
+
+                assistant_history_entry: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": assistant_text,
+                    "metadata": {
+                        "resolved_backend_id": adapter_response.backend_id,
+                        "provider_model": adapter_response.model,
+                    },
+                }
+                if parsed_tool_calls:
+                    assistant_history_entry["tool_calls"] = [
+                        {
+                            "id": tc.get("id"),
+                            "function": {
+                                "name": tc.get("name"),
+                                "arguments": tc.get("arguments", {}),
+                            },
+                        }
+                        for tc in parsed_tool_calls
+                    ]
+
+                pm.chat_history.append(assistant_history_entry)
+                local_messages.append(TextMessage(role="assistant", content=assistant_text))
+
+                if backend_selection_payload is not None:
+                    backend_selection_payload["execution_mode"] = "local_text_adapter"
+                    backend_selection_payload["resolved_model"] = adapter_response.model
+
+                if not parsed_tool_calls:
+                    final_text = assistant_text or adapter_response.text or "Done."
+                    local_extra_payload = dict(chat_extra_payload or {})
+                    local_extra_payload["backend_execution"] = last_execution_payload
+
+                    pm.end_transaction(f"AI: {user_message[:50]}")
+                    res_obj = create_success_response(pm, final_text, extra_payload=local_extra_payload)
+                    if job_id:
+                        res_json = res_obj.get_json()
+                        res_json['job_id'] = job_id
+                        res_json['version_id'] = version_id or pm.current_version_id
+                        return jsonify(res_json)
+                    return res_obj
+
+                for tool_call in parsed_tool_calls:
+                    tool_name = tool_call.get("name")
+                    if not tool_name:
+                        continue
+
+                    args = tool_call.get("arguments", {})
+                    print(f"Local Adapter AI Calling Tool: {tool_name}")
+                    result = dispatch_ai_tool(pm, tool_name, args)
+
+                    if "job_id" in result:
+                        job_id = result["job_id"]
+                    if "version_id" in result:
+                        version_id = result["version_id"]
+
+                    tool_result_payload = json.dumps(result)
+                    pm.chat_history.append({
+                        "role": "tool",
+                        "name": tool_name,
+                        "content": tool_result_payload,
+                    })
+                    local_messages.append(TextMessage(role="tool", content=tool_result_payload))
+
+            pm.end_transaction("AI Timeout")
+            timeout_extra_payload = dict(chat_extra_payload or {})
+            timeout_extra_payload["backend_execution"] = last_execution_payload
+            return create_success_response(pm, "Too many tool iterations (local adapter).", extra_payload=timeout_extra_payload)
 
         except Exception as e:
             pm.end_transaction("AI Error")

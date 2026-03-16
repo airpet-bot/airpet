@@ -15,8 +15,10 @@ const BACKEND_FAILURE_STAGE_LABELS = Object.freeze({
 const REMEDIATION_ACTION_LABELS = Object.freeze({
     use_backend_model_selector_format: "Use '<backend>::<model_name>' local selector format.",
     select_nonempty_local_model_name: 'Select a local model with a non-empty model name.',
+    review_backend_requirements: 'Review backend selector requirements (tools/json/streaming/context) for this backend.',
+    allow_backend_fallback: 'Enable allow_fallback=true to permit backend fallback.',
+    switch_backend_for_missing_capabilities: 'Switch to a backend that supports the missing capabilities.',
     disable_tool_requirement_for_local_backends: 'Set require_tools=false for local text-first backends.',
-    allow_backend_fallback: 'Enable allow_fallback=true to permit Gemini/Ollama fallback.',
     switch_to_cloud_backend_for_tool_calls: 'Use a Gemini/Ollama model when tool calling is required.',
     increase_backend_timeout: 'Increase backend timeout_seconds or reduce prompt size.',
     retry_after_backend_idle: 'Retry after the local model server is idle.',

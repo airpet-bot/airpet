@@ -461,7 +461,7 @@
     - added deterministic 502 error-envelope test for local-adapter invocation failures
     - `tests/test_ai_backend_adapters.py` now covers invocation dispatcher runtime-model override and unsupported-backend rejection
   - Updated contract artifacts/docs:
-    - bumped adapter contract version to `2026-03-14.checkpoint5`
+    - bumped adapter contract version to `2026-03-16.local-tools` and recorded native tool-loop support for `llama_cpp`
     - updated `docs/AI_BACKEND_ADAPTER_CONTRACT.md` and `docs/AI_BACKEND_CAPABILITY_MATRIX.json`
   - Checks run:
     - `pytest -q tests/test_ai_integration.py tests/test_ai_backend_adapters.py`

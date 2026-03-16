@@ -2,7 +2,7 @@
   "success": false,
   "error": "AI backend invocation failed (lm_studio): connection refused",
   "backend_selection": {
-    "contract_version": "2026-03-14.checkpoint5",
+    "contract_version": "2026-03-16.local-tools",
     "preferred_backend_id": "lm_studio",
     "allow_fallback": false,
     "requirements": {

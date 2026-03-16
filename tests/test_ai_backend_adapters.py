@@ -37,6 +37,7 @@ def test_default_capability_matrix_reports_expected_backends_and_contract_versio
     assert rows_by_id["llama_cpp"]["enabled"] is False
     assert rows_by_id["llama_cpp"]["implementation_status"] == "implemented"
     assert rows_by_id["llama_cpp"]["capabilities"]["supports_json_mode"] is True
+    assert rows_by_id["llama_cpp"]["capabilities"]["supports_tools"] is True
 
     assert rows_by_id["lm_studio"]["enabled"] is False
     assert rows_by_id["lm_studio"]["implementation_status"] == "implemented"
@@ -99,7 +100,7 @@ def test_select_backend_prefers_explicit_backend_when_it_satisfies_requirements(
     assert selection.tried[0]["missing_capabilities"] == []
 
 
-def test_select_backend_falls_back_when_preferred_backend_cannot_satisfy_requirements():
+def test_select_backend_routes_to_llama_cpp_for_tool_requests_when_enabled():
     runtime_config = {"backends": {"llama_cpp": {"enabled": True}}}
     request = TextGenerationRequest(
         messages=(TextMessage(role="user", content="hi"),),
@@ -114,10 +115,10 @@ def test_select_backend_falls_back_when_preferred_backend_cannot_satisfy_require
         allow_fallback=True,
     )
 
-    assert selection.backend_id == "gemini_remote"
-    assert selection.used_fallback is True
+    assert selection.backend_id == "llama_cpp"
+    assert selection.used_fallback is False
     assert selection.tried[0]["backend_id"] == "llama_cpp"
-    assert "tools" in selection.tried[0]["missing_capabilities"]
+    assert selection.tried[0]["missing_capabilities"] == []
 
 
 def test_select_text_backend_routes_to_llama_cpp_when_enabled_and_capable():
@@ -180,8 +181,7 @@ def test_select_text_backend_routes_to_lm_studio_when_enabled_and_capable():
     assert selection.tried == ({"backend_id": "lm_studio", "missing_capabilities": []},)
 
 
-@pytest.mark.parametrize("preferred_backend", ["llama_cpp", "lm_studio"])
-def test_mixed_local_backends_fall_back_to_gemini_with_deterministic_diagnostics(preferred_backend):
+def test_mixed_local_backends_fall_back_to_gemini_for_lm_studio_tool_requests():
     runtime_config = {
         "backends": {
             "llama_cpp": {"enabled": True},
@@ -197,19 +197,18 @@ def test_mixed_local_backends_fall_back_to_gemini_with_deterministic_diagnostics
     selection = select_backend_for_text_request(
         request=request,
         runtime_config=runtime_config,
-        preferred_backend_id=preferred_backend,
+        preferred_backend_id="lm_studio",
         allow_fallback=True,
     )
 
-    assert selection.backend_id == "gemini_remote"
+    assert selection.backend_id == "llama_cpp"
     assert selection.used_fallback is True
-    assert selection.tried[0]["backend_id"] == preferred_backend
+    assert selection.tried[0]["backend_id"] == "lm_studio"
     assert selection.tried[0]["missing_capabilities"] == ["tools"]
-    assert selection.tried[1] == {"backend_id": "gemini_remote", "missing_capabilities": []}
+    assert selection.tried[1] == {"backend_id": "llama_cpp", "missing_capabilities": []}
 
 
-@pytest.mark.parametrize("preferred_backend", ["llama_cpp", "lm_studio"])
-def test_mixed_local_backends_preserve_error_diagnostics_when_fallback_disabled(preferred_backend):
+def test_mixed_local_backends_preserve_error_diagnostics_for_lm_studio_when_fallback_disabled():
     runtime_config = {
         "backends": {
             "llama_cpp": {"enabled": True},
@@ -226,13 +225,13 @@ def test_mixed_local_backends_preserve_error_diagnostics_when_fallback_disabled(
         select_backend_for_text_request(
             request=request,
             runtime_config=runtime_config,
-            preferred_backend_id=preferred_backend,
+            preferred_backend_id="lm_studio",
             allow_fallback=False,
         )
 
     message = str(exc_info.value)
-    assert f"preferred={preferred_backend}" in message
-    assert f"'backend_id': '{preferred_backend}'" in message
+    assert "preferred=lm_studio" in message
+    assert "'backend_id': 'lm_studio'" in message
     assert "'missing_capabilities': ['tools']" in message
 
 
@@ -331,6 +330,38 @@ def test_llama_cpp_adapter_builds_openai_chat_payload_for_text_first_json_mode()
     assert payload["temperature"] == 0.1
 
 
+def test_llama_cpp_adapter_includes_tool_schema_when_tool_calls_required():
+    adapter = LlamaCppTextAdapter(
+        LlamaCppAdapterConfig(
+            base_url="http://localhost:8080",
+            model="meta-llama",
+            timeout_seconds=11,
+            max_retries=0,
+            retry_backoff_seconds=0,
+        )
+    )
+    request = TextGenerationRequest(
+        messages=(TextMessage(role="user", content="Use tools."),),
+        require_json_mode=True,
+        require_tools=True,
+        tool_schemas=(
+            {
+                "type": "function",
+                "function": {
+                    "name": "manage_define",
+                    "description": "Create define",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ),
+    )
+
+    payload = adapter.build_payload(request)
+
+    assert payload["tools"][0]["function"]["name"] == "manage_define"
+    assert payload["tool_choice"] == "auto"
+
+
 def test_lm_studio_adapter_builds_openai_chat_payload_for_text_first_json_mode():
     adapter = LMStudioTextAdapter(
         LMStudioAdapterConfig(
@@ -425,6 +456,63 @@ def test_llama_cpp_adapter_retries_then_returns_normalized_response():
     assert response.model == "meta-llama"
     assert response.text == '{"ok": true}'
     assert response.usage == {"prompt_tokens": 12, "completion_tokens": 3}
+
+
+def test_llama_cpp_adapter_accepts_tool_only_assistant_messages():
+    adapter = LlamaCppTextAdapter(
+        LlamaCppAdapterConfig(
+            base_url="http://localhost:8080",
+            model="meta-llama",
+            timeout_seconds=2,
+            max_retries=0,
+            retry_backoff_seconds=0,
+        )
+    )
+    request = TextGenerationRequest(
+        messages=(TextMessage(role="user", content="hello"),),
+        require_json_mode=False,
+        require_tools=True,
+        tool_schemas=(
+            {
+                "type": "function",
+                "function": {
+                    "name": "manage_define",
+                    "description": "Create define",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ),
+    )
+
+    def fake_post(url, json, headers, timeout, verify):
+        return _FakeResponse(
+            {
+                "model": "meta-llama",
+                "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "manage_define",
+                                        "arguments": "{\"name\":\"x\",\"value\":\"1\"}",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+            }
+        )
+
+    response = adapter.invoke(request, http_post=fake_post)
+    assert response.backend_id == "llama_cpp"
+    assert response.text == ""
 
 
 def test_lm_studio_adapter_retries_then_returns_normalized_response():

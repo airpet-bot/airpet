@@ -2,8 +2,8 @@
   "success": false,
   "error": "AI backend selection failed: backend requirements could not be satisfied",
   "backend_selection": {
-    "contract_version": "2026-03-14.checkpoint5",
-    "preferred_backend_id": "llama_cpp",
+    "contract_version": "2026-03-16.local-tools",
+    "preferred_backend_id": "lm_studio",
     "allow_fallback": false,
     "requirements": {
       "require_tools": true,
@@ -35,14 +35,14 @@
       "readiness_status": "healthy",
       "summary": "Selected backend cannot satisfy the requested capabilities.",
       "action_codes": [
-        "disable_tool_requirement_for_local_backends",
+        "review_backend_requirements",
         "allow_backend_fallback",
-        "switch_to_cloud_backend_for_tool_calls"
+        "switch_backend_for_missing_capabilities"
       ],
       "actions": [
-        "For local text-first backends, set backend selector requirements to require_tools=false and require_streaming=false.",
+        "Review backend selector requirements (tools/json/streaming/context) for this backend.",
         "Set allow_fallback=true if automatic fallback to Gemini/Ollama is acceptable.",
-        "If tool calling is required, switch to a Gemini/Ollama model for this task."
+        "Switch to a backend that supports the missing capabilities."
       ]
     }
   }

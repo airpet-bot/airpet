@@ -108,7 +108,7 @@ test('chat remediation rendering keeps deterministic stage/readiness and next-st
                 remediation: {
                     summary: 'Selected backend cannot satisfy the requested capabilities.',
                     action_codes: [
-                        'disable_tool_requirement_for_local_backends',
+                        'review_backend_requirements',
                         'allow_backend_fallback',
                     ],
                 },
@@ -126,8 +126,8 @@ test('chat remediation rendering keeps deterministic stage/readiness and next-st
     assert.ok(formatted.chatMessage.includes('Remediation: Selected backend cannot satisfy the requested capabilities.'));
     assert.ok(formatted.chatMessage.includes('Error code: backend_selection_failed'));
     assert.ok(formatted.chatMessage.includes('Next steps:'));
-    assert.ok(formatted.chatMessage.includes('1. Set require_tools=false for local text-first backends.'));
-    assert.ok(formatted.chatMessage.includes('2. Enable allow_fallback=true to permit Gemini/Ollama fallback.'));
+    assert.ok(formatted.chatMessage.includes('1. Review backend selector requirements (tools/json/streaming/context) for this backend.'));
+    assert.ok(formatted.chatMessage.includes('2. Enable allow_fallback=true to permit backend fallback.'));
 });
 
 test('chat remediation prefers explicit actions over action-code lookup and returns null without diagnostics', () => {
