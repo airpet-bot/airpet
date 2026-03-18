@@ -124,7 +124,7 @@ class LlamaCppAdapterConfig:
     base_url: str = "http://127.0.0.1:8080"
     endpoint_path: str = "/v1/chat/completions"
     model: str = "local-model"
-    timeout_seconds: float = 300.0  # 5 minutes for complex tool-based requests
+    timeout_seconds: float = 600.0  # 10 minutes for complex tool-based requests with large context
     max_retries: int = 1
     retry_backoff_seconds: float = 0.25
     verify_tls: bool = True
@@ -531,6 +531,94 @@ def invoke_text_request_for_backend_with_tools(
 
     if request.max_output_tokens:
         payload["max_tokens"] = request.max_output_tokens
+
+    # Determine base URL
+    if backend_id == LlamaCppTextAdapter.backend_id:
+        config = LlamaCppAdapterConfig.from_runtime_config(runtime_config)
+        url = urljoin(config.base_url.rstrip("/") + "/", "/v1/chat/completions")
+    elif backend_id == LMStudioTextAdapter.backend_id:
+        config = LMStudioAdapterConfig.from_runtime_config(runtime_config)
+        url = urljoin(config.base_url.rstrip("/") + "/", "/v1/chat/completions")
+    else:
+        raise ValueError(f"Unsupported backend: {backend_id}")
+
+    headers = {"Content-Type": "application/json"}
+    if hasattr(config, 'headers'):
+        headers.update(dict(config.headers))
+
+    response = http_post(
+        url,
+        json=payload,
+        headers=headers,
+        timeout=getattr(config, 'timeout_seconds', 120.0),
+        verify=getattr(config, 'verify_tls', True),
+    )
+
+    if hasattr(response, 'raise_for_status'):
+        response.raise_for_status()
+
+    body = response.json() if hasattr(response, 'json') else {}
+
+    # Extract text and tool calls
+    text = _extract_openai_style_text(body)
+
+    # Extract tool calls if present
+    tool_calls = []
+    if "choices" in body and len(body["choices"]) > 0:
+        message = body["choices"][0].get("message", {})
+        if "tool_calls" in message:
+            tool_calls = message["tool_calls"]
+
+    return TextGenerationResponse(
+        backend_id=backend_id,
+        text=text,
+        raw_response=body,
+        model=body.get("model"),
+        usage=body.get("usage"),
+        tool_calls=tool_calls,
+    )
+
+
+def invoke_text_request_for_backend_with_tools_and_history(
+    backend_id: str,
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    *,
+    runtime_config: Optional[Mapping[str, Any]] = None,
+    http_post: Optional[Callable[..., Any]] = None,
+) -> TextGenerationResponse:
+    """Invoke a normalized text request with tool support using pre-built message history.
+    
+    This variant accepts a list of message dicts (already sanitized) instead of TextMessage objects.
+    This is useful when you need to maintain full conversation history with tool calls/results.
+    """
+
+    if http_post is None:
+        import requests
+        http_post = requests.post
+
+    # Determine config and model
+    if backend_id == LlamaCppTextAdapter.backend_id:
+        config = LlamaCppAdapterConfig.from_runtime_config(runtime_config)
+        model_name = config.model
+    elif backend_id == LMStudioTextAdapter.backend_id:
+        config = LMStudioAdapterConfig.from_runtime_config(runtime_config)
+        model_name = config.model
+    else:
+        raise ValueError(f"Unsupported backend: {backend_id}")
+
+    # Build OpenAI-compatible request with tools
+    payload = {
+        "model": model_name,
+        "messages": messages,  # Use the pre-built message history
+        "stream": False,
+        "temperature": 0.7,
+    }
+
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+        payload["parallel_tool_calls"] = True
 
     # Determine base URL
     if backend_id == LlamaCppTextAdapter.backend_id:

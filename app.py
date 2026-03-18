@@ -52,6 +52,7 @@ from src.ai_backend_adapters import (
     TextMessage,
     invoke_text_request_for_backend,
     invoke_text_request_for_backend_with_tools,
+    invoke_text_request_for_backend_with_tools_and_history,
     select_backend_for_text_request,
 )
 
@@ -9746,54 +9747,89 @@ def ai_chat_route():
             final_adapter_response = None
             last_tool_calls = []
 
+            # Build sanitized history for local backends (similar to Ollama)
+            # This ensures the model has full context of previous tool calls/results
+            # IMPORTANT: Only include OpenAI-compatible fields (no metadata, no custom fields)
+            sanitized_history = []
+            for msg in pm.chat_history:
+                sanitized_msg = {
+                    "role": msg["role"],
+                    "content": msg.get("content") or msg.get("parts", [{}])[0].get("text", "")
+                }
+                # Include tool_calls if present (assistant messages)
+                if "tool_calls" in msg:
+                    sanitized_msg["tool_calls"] = msg["tool_calls"]
+                # Include tool_call_id for tool responses
+                if "tool_call_id" in msg:
+                    sanitized_msg["tool_call_id"] = msg["tool_call_id"]
+                sanitized_history.append(sanitized_msg)
+
             for turn in range(turn_limit):
                 print(f"{selected_backend_id} Turn {turn+1}/{turn_limit}...")
 
-                # Very mild loop detection: only warn if same tool called 5+ times in a row
-                # This is just for debugging, not for breaking the loop
-                current_tool_names = [
-                    tc.get("name") or tc.get("function", {}).get("name")
-                    for tc in (adapter_response.tool_calls or [])
-                ] if turn > 0 else []
+                # Loop detection: only break if same tool+args called 15+ times in a row
+                # This allows legitimate retries with different arguments
+                current_tool_signature = []
+                if turn > 0 and adapter_response:
+                    for tc in (adapter_response.tool_calls or []):
+                        name = tc.get("name") or tc.get("function", {}).get("name")
+                        args = tc.get("arguments") or tc.get("function", {}).get("arguments", {})
+                        current_tool_signature.append(f"{name}:{json.dumps(args, sort_keys=True)}")
                 
-                if turn >= 4 and current_tool_names == last_tool_calls:
-                    print(f"INFO: Model repeating same tool {turn+1} times: {current_tool_names}")
-                    # Don't break - let the model continue, it might be doing legitimate work
+                # Only break if EXACTLY the same tool with EXACTLY the same arguments
+                if turn >= 14 and current_tool_signature == last_tool_signature and len(current_tool_signature) == 1:
+                    print(f"ERROR: Model stuck in infinite loop (15+ identical calls). Breaking.")
+                    final_adapter_response = adapter_response
+                    break
                 
-                last_tool_calls = current_tool_names
+                last_tool_signature = current_tool_signature
 
-                # Use full system prompt for proper tool usage
-                invocation_request = TextGenerationRequest(
-                    messages=(
-                        TextMessage(role="system", content=load_system_prompt()),
-                        TextMessage(role="user", content=formatted_user_msg),
-                    ),
-                    require_tools=True,  # Always use tools for local backends
-                    require_json_mode=False,
-                    require_streaming=False,
-                )
-
-                # Build request with tools
-                adapter_response = invoke_text_request_for_backend_with_tools(
+                # Build request with tools using full sanitized history
+                # Debug: log what we're sending
+                print(f"DEBUG: Sending {len(sanitized_history)} messages to {selected_backend_id}")
+                for i, msg in enumerate(sanitized_history[-3:]):  # Last 3 messages
+                    if msg.get("tool_calls"):
+                        print(f"  [{i}] {msg['role']}: tool_calls={len(msg['tool_calls'])}")
+                    elif msg.get("tool_call_id"):
+                        print(f"  [{i}] {msg['role']}: tool_call_id={msg['tool_call_id']}, content={msg['content'][:50]}...")
+                    else:
+                        print(f"  [{i}] {msg['role']}: {msg['content'][:50]}...")
+                
+                adapter_response = invoke_text_request_for_backend_with_tools_and_history(
                     selected_backend_id,
-                    invocation_request,
+                    sanitized_history,
                     local_tools,  # Always send tools
                     runtime_config=selector_runtime_config,
                 )
                 
                 print(f"DEBUG: Turn {turn+1} - text={adapter_response.text[:50] if adapter_response.text else 'None'}..., tool_calls={len(adapter_response.tool_calls) if adapter_response.tool_calls else 0}")
 
-                pm.chat_history.append({
+                # Check for tool calls in response
+                tool_calls = adapter_response.tool_calls if hasattr(adapter_response, 'tool_calls') else []
+                
+                # Build assistant message for chat_history (with metadata)
+                assistant_msg_full = {
                     "role": "assistant",
                     "content": adapter_response.text,
                     "metadata": {
                         "resolved_backend_id": adapter_response.backend_id,
                         "provider_model": adapter_response.model,
                     },
-                })
-
-                # Check for tool calls in response
-                tool_calls = adapter_response.tool_calls if hasattr(adapter_response, 'tool_calls') else []
+                }
+                if tool_calls:
+                    assistant_msg_full["tool_calls"] = tool_calls
+                
+                pm.chat_history.append(assistant_msg_full)
+                
+                # Build sanitized assistant message for model (NO metadata - OpenAI format only)
+                assistant_msg_sanitized = {
+                    "role": "assistant",
+                    "content": adapter_response.text or "",
+                }
+                if tool_calls:
+                    assistant_msg_sanitized["tool_calls"] = tool_calls
+                
+                sanitized_history.append(assistant_msg_sanitized)
 
                 if not tool_calls:
                     # No tool calls, we're done - save this response
@@ -9827,12 +9863,17 @@ def ai_chat_route():
                         debug_log.write(f"DEBUG TOOL RESULT: {tool_result}\n")
                         debug_log.close()
 
-                        pm.chat_history.append({
+                        # Extract tool_call_id from the tool_call
+                        tool_call_id = tool_call.get("id") or tool_call.get("function", {}).get("id", f"call_{turn}_{tool_name}")
+                        
+                        tool_msg = {
                             "role": "tool",
-                            "name": tool_name,
                             "content": json.dumps(tool_result),
-                            "tool_call_id": tool_call.get("id") or tool_call.get("function", {}).get("id", f"call_{turn}_{tool_name}")
-                        })
+                            "tool_call_id": tool_call_id
+                        }
+                        pm.chat_history.append(tool_msg)
+                        # Also add to sanitized_history for next turn
+                        sanitized_history.append(tool_msg)
 
                     except Exception as e:
                         error_msg = f"Tool '{tool_name}' failed: {e}"
@@ -9840,11 +9881,17 @@ def ai_chat_route():
                         debug_log = open("/tmp/tool_debug.log", "a")
                         debug_log.write(f"DEBUG TOOL ERROR: {error_msg}\n")
                         debug_log.close()
-                        pm.chat_history.append({
+                        # Extract tool_call_id from the tool_call
+                        tool_call_id = tool_call.get("id") or tool_call.get("function", {}).get("id", f"call_{turn}_{tool_name}")
+                        
+                        tool_msg = {
                             "role": "tool",
-                            "name": tool_name,
-                            "content": error_msg
-                        })
+                            "content": error_msg,
+                            "tool_call_id": tool_call_id
+                        }
+                        pm.chat_history.append(tool_msg)
+                        # Also add to sanitized_history for next turn
+                        sanitized_history.append(tool_msg)
 
                 # Update formatted message with tool results for next iteration
                 # IMPORTANT: Do NOT resend full context - just tell the model to continue using tool results
