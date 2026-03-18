@@ -3,9 +3,26 @@
 ## In Progress
 
 - _None currently._
-  - Next heartbeat should continue with the highest-impact remaining `Next Candidates` item (currently Windows-separator + mixed-alias malformed-id parity follow-on).
+  - Next heartbeat should continue with the highest-impact remaining `Next Candidates` item (currently broader shared selector-id helper adoption across remaining single-segment selector surfaces).
 
 ## Recently Completed
+
+- **Reliability/security checkpoint completed: explicit selector malformed-id parity matrix now covers Windows separators + mixed canonical-null alias forms** (2026-03-18)
+  - Expanded route↔AI malformed-id parity coverage in `tests/test_ai_api.py` (`test_preflight_snapshot_and_explicit_selector_routes_and_ai_wrappers_share_malformed_id_validation_error_envelopes`):
+    - added cross-platform malformed explicit selector inputs using Windows-style `\\` separators for saved-version selectors.
+    - added mixed canonical-null alias-precedence hostile-input scenarios to verify malformed first-choice aliases fail fast (400) instead of falling through to later aliases.
+  - Newly pinned malformed-input parity scenarios:
+    - `compare_autosave_vs_saved_version` with direct Windows-style `saved_version_id` path separators.
+    - `compare_autosave_vs_saved_version` where `saved_version_id=None`, `saved_version` is malformed (`\\` path-like), and `version_id` is valid (must still fail on malformed preferred alias).
+    - `compare_autosave_vs_snapshot_version` where `autosave_snapshot_version_id=None`, malformed `snapshot_version_id` uses `\\` separators, and `snapshot_version` is valid.
+    - `compare_autosave_snapshot_preflight_versions` where candidate canonical id is null and malformed `candidate_snapshot_version` should fail before `candidate_version_id` fallback.
+  - Checks run:
+    - `python -m py_compile tests/test_ai_api.py`
+    - `pytest -q tests/test_ai_api.py -k "snapshot_and_explicit_selector_routes_and_ai_wrappers_share_malformed_id_validation_error_envelopes or snapshot_and_explicit_selector_routes_and_ai_wrappers_share_canonical_alias_precedence_payloads"` (2 passed)
+    - `pytest -q tests/test_ai_api.py` (121 passed)
+  - Checkpoint finished:
+    - ✔ explicit selector route/AI wrapper malformed-id contracts now include Windows-style path-separator inputs.
+    - ✔ mixed canonical-null alias precedence now explicitly guards against accidental fallback-through on malformed first-preference aliases.
 
 - **Reliability hardening checkpoint completed: shared single-segment selector-id sanitization helper consolidation (run-linked + explicit selectors)** (2026-03-18)
   - Consolidated selector id sanitization logic in `app.py`:
@@ -1183,12 +1200,7 @@
 
 ## Next Candidates
 
-1. **Reliability/security follow-on: explicit selector malformed-id matrix for Windows-style separators + mixed alias forms**
-   - Extend malformed-id parity coverage for `\\` path separators and mixed canonical-null/alias fallback payloads on explicit saved/snapshot selectors.
-   - Lock deterministic 400 parity and metadata-clean envelopes for these cross-platform hostile-input forms.
-   - Impact: medium (tightens cross-platform selector validation confidence).
-
-2. **Reliability follow-on: broaden shared selector-id helper adoption to additional single-segment selector surfaces**
+1. **Reliability follow-on: broaden shared selector-id helper adoption to additional single-segment selector surfaces**
    - Audit remaining id-like selectors that behave as single path segments and adopt `_normalize_single_segment_selector_id(...)` where semantics match.
    - Add parity-focused tests to confirm no canonical/alias precedence drift on newly consolidated call sites.
    - Impact: medium (keeps validation behavior aligned as selector APIs grow).
