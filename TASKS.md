@@ -3,10 +3,27 @@
 ## In Progress
 
 - **No active coding checkpoint (ready for next heartbeat task selection).**
-  - Last multi-heartbeat reliability follow-on (selector-id helper consolidation) is now complete.
-  - Next heartbeat should pick a product-forward checkpoint (feature/architecture) unless a live regression appears.
+  - Last checkpoint expanded nested property-path writes to support list-index traversal for parameterised content updates.
+  - Next heartbeat should continue product-forward work (prefer user-visible parameterised/scoped editing follow-on) unless a live regression appears.
 
 ## Recently Completed
+
+- **Scoped geometry/AI editability checkpoint completed: nested `update_object_property` paths now support deterministic list-index traversal** (2026-03-18)
+  - Upgraded property-path traversal in `src/project_manager.py`:
+    - added `_resolve_update_property_list_index(...)` with deterministic validation for numeric list segments.
+    - `update_object_property(...)` now traverses both dict/object and list segments (e.g., `content.parameters.0.position.x`) before applying updates.
+    - list writes reject non-numeric or out-of-range indices with stable `Invalid property path ...` failures.
+  - Added focused regression coverage in `tests/test_project_manager_update_property.py`:
+    - success-path nested list traversal update for parameterised LV content (`content.parameters.0.position.x`).
+    - non-numeric list-segment rejection contract.
+    - out-of-range list-segment rejection contract.
+  - Checks run:
+    - `python -m py_compile src/project_manager.py tests/test_project_manager_update_property.py`
+    - `pytest -q tests/test_project_manager_update_property.py tests/test_update_property_api.py` (37 passed)
+  - Checkpoint finished:
+    - ✔ parameterised nested list-backed properties are now updatable through the shared property-update pipeline.
+    - ✔ invalid list segment handling is deterministic and covered by regression tests.
+
 
 - **Reliability follow-on Checkpoint 3/3 completed: audited remaining single-segment selector surfaces and finished shared helper consolidation for compare-version selectors** (2026-03-18)
   - Audited remaining preflight selector surfaces outside explicit autosave/snapshot compare helpers.

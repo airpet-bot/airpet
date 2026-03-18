@@ -2844,6 +2844,16 @@ class ProjectManager:
 
         return path_parts, None
 
+    def _resolve_update_property_list_index(self, segment, list_obj, property_path):
+        if not isinstance(segment, str) or not segment.isdigit():
+            raise KeyError(f"Expected list index segment for '{property_path}', got '{segment}'")
+
+        idx = int(segment)
+        if idx < 0 or idx >= len(list_obj):
+            raise IndexError(f"List index out of range for '{property_path}': {segment}")
+
+        return idx
+
     def update_object_property(self, object_type, object_id, property_path, new_value):
         """
         Updates a property of an object.
@@ -2895,12 +2905,18 @@ class ProjectManager:
             for part in path_parts[:-1]:
                 if isinstance(current_level_obj, dict):
                     current_level_obj = current_level_obj[part]
+                elif isinstance(current_level_obj, list):
+                    idx = self._resolve_update_property_list_index(part, current_level_obj, property_path)
+                    current_level_obj = current_level_obj[idx]
                 else:
                     current_level_obj = getattr(current_level_obj, part)
-            
+
             final_key = path_parts[-1]
             if isinstance(current_level_obj, dict):
                 current_level_obj[final_key] = new_value
+            elif isinstance(current_level_obj, list):
+                idx = self._resolve_update_property_list_index(final_key, current_level_obj, property_path)
+                current_level_obj[idx] = new_value
             else:
                 setattr(current_level_obj, final_key, new_value)
         except (AttributeError, KeyError, TypeError, IndexError) as e:
