@@ -3,9 +3,28 @@
 ## In Progress
 
 - _None currently._
-  - Next heartbeat should pick the highest-impact item from `Next Candidates` (prefer Geant4 parity confidence or scoped-geometry workflow leverage).
+  - Next heartbeat should continue with the highest-impact remaining `Next Candidates` item (currently reliability hardening for core nested-property path validation parity).
 
 ## Recently Completed
+
+- **Geant4 confidence checkpoint completed: failed-only parity-warning smoke fixture + failed-group routing coverage** (2026-03-18)
+  - Added a failed-outcome multimodal parity smoke regression in `tests/test_ai_multimodal_extraction_api.py`:
+    - `test_artifact_planning_execute_route_emits_failed_execution_parity_warning_when_preflight_drifts_without_applied_operations`
+    - drives an execution path with `failed` status (`applied=0`, `failed=3`) while preflight issue counts regress
+  - Locked deterministic warning semantics for failed execution drift:
+    - preflight mismatch class: `preflight_changed_without_applied_operations`
+    - high-signal mismatch affected-operation-group routing now explicitly pinned for failed-only execution groups (`dimension_hints`, `material_updates`)
+    - issue-code family correlation overlap/no-overlap behavior pinned for failed execution (`missing_material_reference`, `invalid_replica_width`, `unknown_world_volume_reference`)
+  - Added representative warning-tier parity artifact:
+    - `examples/multimodal/planning_execute_response_parity_failed_no_applied_warning.json`
+  - Updated docs:
+    - `docs/AI_MULTIMODAL_ARTIFACT_INTAKE.md` representative geometry-flow examples now include the failed-without-applied-operations warning response
+  - Checks run:
+    - `pytest -q tests/test_ai_multimodal_extraction_api.py -k "failed_execution_parity_warning_when_preflight_drifts_without_applied_operations or partial_failure_procedural_warning_with_mixed_operation_group_fallbacks or procedural_dimension_deltas"`
+    - `pytest -q tests/test_ai_multimodal_extraction_api.py`
+  - Checkpoint finished:
+    - ✔ failed execution parity warnings are now regression-pinned for zero-applied-operation preflight drift
+    - ✔ failed-only operation-group routing is deterministic and covered in high-signal mismatch diagnostics
 
 - **Geant4 confidence checkpoint completed: partial-failure procedural parity-warning matrix + mixed-group fallback coverage** (2026-03-16)
   - Added a complementary warning-tier multimodal parity smoke regression in `tests/test_ai_multimodal_extraction_api.py`:
@@ -1091,11 +1110,6 @@
    - Mirror route-level path-segment validation at the mutation core so non-route callers (scripts/future APIs) get the same deterministic guardrails.
    - Add unit-level coverage for intermediate-path traversal failures (dict/object chains) and invalid nested segments.
    - Impact: medium (keeps mutation safety invariant consistent across entrypoints).
-
-2. **Geant4 confidence follow-on: failed-execution parity guardrail for preflight drift without applied operations**
-   - Add a parity smoke fixture where multimodal execution reports `failed` with zero applied operations but preflight invariants drift.
-   - Lock `preflight_changed_without_applied_operations` mismatch semantics and affected-operation-group selection for failed-only execution groups.
-   - Impact: medium-high (completes the deterministic mismatch-class triad around success/partial-failure/failed outcomes).
 
 ### Reserve Backlog (only when needed for concrete bug/regression)
 
