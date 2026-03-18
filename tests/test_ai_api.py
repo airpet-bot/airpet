@@ -3322,6 +3322,76 @@ def test_preflight_snapshot_and_explicit_selector_routes_and_ai_wrappers_share_m
             },
             "error_substrings": ["invalid version_id", "nested/20260318_autosave_snapshot_baseline"],
         },
+        {
+            "name": "compare_autosave_vs_saved_version_rejects_windows_separator_saved_version_id",
+            "route": "/api/preflight/compare_autosave_vs_saved_version",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "saved_version_id": "nested\\windows_saved_version_id",
+            },
+            "tool": "compare_autosave_preflight_vs_saved_version",
+            "ai_args": {
+                "project": pm.project_name,
+                "saved_version_id": "nested\\windows_saved_version_id",
+            },
+            "error_substrings": ["invalid version_id", "nested\\windows_saved_version_id"],
+        },
+        {
+            "name": "compare_autosave_vs_saved_version_rejects_malformed_saved_version_alias_when_canonical_is_null",
+            "route": "/api/preflight/compare_autosave_vs_saved_version",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "saved_version_id": None,
+                "saved_version": "nested\\windows_saved_alias",
+                "version_id": fixture["requested_saved_version_id"],
+            },
+            "tool": "compare_autosave_preflight_vs_saved_version",
+            "ai_args": {
+                "project": pm.project_name,
+                "saved_version_id": None,
+                "saved_version": "nested\\windows_saved_alias",
+                "version_id": fixture["requested_saved_version_id"],
+            },
+            "error_substrings": ["invalid version_id", "nested\\windows_saved_alias"],
+        },
+        {
+            "name": "compare_autosave_vs_snapshot_version_rejects_malformed_snapshot_version_id_alias_when_canonical_is_null",
+            "route": "/api/preflight/compare_autosave_vs_snapshot_version",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "autosave_snapshot_version_id": None,
+                "snapshot_version_id": "nested\\id_autosave_snapshot_windows_alias",
+                "snapshot_version": fixture["baseline_snapshot_version_id"],
+            },
+            "tool": "compare_autosave_preflight_vs_snapshot_version",
+            "ai_args": {
+                "project": pm.project_name,
+                "autosave_snapshot_version_id": None,
+                "snapshot_version_id": "nested\\id_autosave_snapshot_windows_alias",
+                "snapshot_version": fixture["baseline_snapshot_version_id"],
+            },
+            "error_substrings": ["invalid version_id", "nested\\id_autosave_snapshot_windows_alias"],
+        },
+        {
+            "name": "compare_snapshot_versions_rejects_malformed_candidate_snapshot_alias_when_canonical_is_null",
+            "route": "/api/preflight/compare_snapshot_versions",
+            "route_payload": {
+                "project_name": pm.project_name,
+                "baseline_snapshot_version_id": fixture["baseline_snapshot_version_id"],
+                "candidate_snapshot_version_id": None,
+                "candidate_snapshot_version": "nested\\id_autosave_snapshot_windows_candidate",
+                "candidate_version_id": fixture["candidate_snapshot_version_id"],
+            },
+            "tool": "compare_autosave_snapshot_preflight_versions",
+            "ai_args": {
+                "project": pm.project_name,
+                "baseline_snapshot_version_id": fixture["baseline_snapshot_version_id"],
+                "candidate_snapshot_version_id": None,
+                "candidate_snapshot_version": "nested\\id_autosave_snapshot_windows_candidate",
+                "candidate_version_id": fixture["candidate_snapshot_version_id"],
+            },
+            "error_substrings": ["invalid version_id", "nested\\id_autosave_snapshot_windows_candidate"],
+        },
     ]
 
     for case in cases:
