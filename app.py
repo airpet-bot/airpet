@@ -9558,6 +9558,157 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 return {"success": False, "error": body.get('error', f"Could not fetch simulation analysis (status {status_code}).")}
             return {"success": True, "analysis": body.get('analysis', {})}
 
+        elif tool_name == "create_parameter_registry":
+            param_name = args.get('param_name')
+            target_type = args.get('target_type')
+            target_ref = args.get('target_ref')
+            bounds = args.get('bounds')
+            default = args.get('default')
+
+            if not all([param_name, target_type, target_ref, bounds]):
+                return {"success": False, "error": "Missing required fields: param_name, target_type, target_ref, bounds"}
+
+            entry = {
+                'target_type': target_type,
+                'target_ref': target_ref,
+                'bounds': bounds,
+            }
+            if default is not None:
+                entry['default'] = default
+
+            result, err = pm.upsert_parameter_registry_entry(param_name, entry)
+            if err:
+                return {"success": False, "error": err}
+            return {"success": True, "parameter": result}
+
+        elif tool_name == "setup_param_study":
+            study_name = args.get('study_name')
+            mode = args.get('mode')
+            parameters = args.get('parameters')
+            objectives = args.get('objectives')
+
+            if not all([study_name, mode, parameters, objectives]):
+                return {"success": False, "error": "Missing required fields: study_name, mode, parameters, objectives"}
+
+            config = {
+                'mode': mode,
+                'parameters': parameters,
+                'objectives': objectives,
+            }
+            if args.get('grid'):
+                config['grid'] = args['grid']
+            if args.get('random'):
+                config['random'] = args['random']
+
+            result, err = pm.upsert_param_study(study_name, config)
+            if err:
+                return {"success": False, "error": err}
+            return {"success": True, "study": result}
+
+        elif tool_name == "run_optimization":
+            study_name = args.get('study_name')
+            method = args.get('method')
+            budget = args.get('budget')
+
+            if not all([study_name, method, budget]):
+                return {"success": False, "error": "Missing required fields: study_name, method, budget"}
+
+            def simulation_evaluator(candidate):
+                params = candidate.get('parameters', {})
+                try:
+                    pm.apply_parameter_values(params)
+                    version_id = pm.current_version_id
+                    if not version_id:
+                        pm.save_project(f"opt_eval_{candidate.get('iteration', 0)}")
+                        version_id = pm.current_version_id
+
+                    sim_config = {
+                        'num_events': args.get('sim_events', 10000),
+                        'save_hits': True,
+                        'save_primaries': True,
+                        'save_steps': False,
+                    }
+                    job_id = pm.run_simulation(sim_config)
+                    if not job_id:
+                        return {'score': -1e9, 'error': 'Failed to start simulation'}
+
+                    wait_time = min(60, args.get('max_wait_seconds', 30))
+                    start_time = time.time()
+                    while time.time() - start_time < wait_time:
+                        status_result = pm.get_simulation_status(job_id)
+                        if not status_result:
+                            break
+                        status = status_result.get('status', {})
+                        if status.get('state') == 'completed':
+                            analysis = pm.get_simulation_analysis(job_id)
+                            if analysis and analysis.get('success'):
+                                metrics = analysis.get('analysis', {}).get('metrics', {})
+                                objective_name = args.get('objective_name', 'efficiency')
+                                score = metrics.get(objective_name, -1e9)
+                                direction = args.get('direction', 'maximize')
+                                if direction == 'minimize':
+                                    score = -score
+                                return {'score': float(score), 'metrics': metrics}
+                        time.sleep(2)
+                    pm.stop_simulation(job_id)
+                    return {'score': -1e9, 'error': 'Simulation timeout'}
+                except Exception as e:
+                    return {'score': -1e9, 'error': str(e)}
+
+            cmaes_config = args.get('cmaes_config')
+            surrogate_config = args.get('surrogate_config')
+            objective_name = args.get('objective_name')
+            direction = args.get('direction')
+            seed = args.get('seed', 42)
+
+            result, err = pm.run_simulation_in_loop_optimizer(
+                study_name=study_name,
+                method=method,
+                budget=budget,
+                seed=seed,
+                objective_name=objective_name,
+                direction=direction,
+                cmaes_config=cmaes_config,
+                surrogate_config=surrogate_config,
+                evaluator=simulation_evaluator,
+            )
+            if err:
+                return {"success": False, "error": err}
+            return {"success": True, "optimization_result": result}
+
+        elif tool_name == "apply_best_result":
+            run_id = args.get('run_id')
+            apply_to_project = args.get('apply_to_project', True)
+
+            if not run_id:
+                return {"success": False, "error": "Missing required field: run_id"}
+
+            result, err = pm.replay_optimizer_best_candidate(run_id, apply_to_project=apply_to_project)
+            if err:
+                return {"success": False, "error": err}
+            return {"success": True, "result": result}
+
+        elif tool_name == "list_optimizer_runs":
+            study_name = args.get('study_name')
+            limit = args.get('limit', 50)
+
+            runs, err = pm.list_optimizer_runs(study_name=study_name, limit=limit)
+            if err:
+                return {"success": False, "error": err}
+            return {"success": True, "runs": runs}
+
+        elif tool_name == "verify_best_candidate":
+            run_id = args.get('run_id')
+            repeats = args.get('repeats', 3)
+
+            if not run_id:
+                return {"success": False, "error": "Missing required field: run_id"}
+
+            result, err = pm.verify_optimizer_best_candidate(run_id, repeats=repeats)
+            if err:
+                return {"success": False, "error": err}
+            return {"success": True, "verification": result}
+
         return {"success": False, "error": f"Unknown tool: {tool_name}"}
     except Exception as e:
         traceback.print_exc()
