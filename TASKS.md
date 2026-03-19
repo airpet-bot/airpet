@@ -3,10 +3,37 @@
 ## In Progress
 
 - **No active coding checkpoint (ready for next heartbeat task selection).**
-  - Latest product-forward local-model optionality checkpoint is complete (runtime capability overrides + LM Studio tool-loop routing coverage).
-  - Next heartbeat should continue product-forward progress (prefer scoped-geometry UX or Geant4 confidence tooling) unless a live regression appears.
+  - Latest product-forward scoped-geometry checkpoint is complete (scoped preflight route + AI tool parity + selector normalization).
+  - Next heartbeat should continue product-forward progress (prefer scoped-geometry UX follow-on or Geant4 confidence fixtures) unless a live regression appears.
 
 ## Recently Completed
+
+- **Scoped-geometry checkpoint completed: deterministic scoped preflight route + AI wrapper parity + selector normalization** (2026-03-19)
+  - Finished/cleaned the previously uncommitted scoped-preflight work and shipped it as a coherent product-forward checkpoint.
+  - Added deterministic scope-input normalization in `app.py`:
+    - new `_normalize_preflight_scope_input(...)` helper shared by route + AI dispatcher.
+    - canonical nested selector precedence (`scope.type` / `scope.name`), with explicit non-fallback behavior when canonical keys are present-but-null.
+    - accepts ergonomic aliases (`lv`, `logical-volume`, `logical volume`, `asm`, `assemblies`) and trims names deterministically.
+    - supports both nested scope payloads and top-level alias fields (`scope_type`, `scope_name`, plus camelCase forms) for UI/automation flexibility.
+  - Completed scoped-preflight execution surfaces:
+    - route: `POST /api/preflight/check_scope`
+    - AI dispatch: `run_preflight_scope`
+    - both return full report, scoped report, and deterministic `summary_delta` (`scope` vs `outside_scope` counts).
+  - Expanded AI tool contract exposure:
+    - added `run_preflight_scope` to `src/ai_tools.py` with structured `scope` schema so AI tool-calling can invoke scoped preflight directly.
+  - Expanded regression/parity coverage in `tests/test_ai_api.py`:
+    - direct AI success contract for scoped preflight output shape.
+    - route↔AI success parity for nested selectors, top-level aliases, and nested camelCase alias forms.
+    - route↔AI validation parity for missing selectors, unsupported scope types, and canonical-null-precedence behavior.
+  - Existing scoped-route coverage in `tests/test_preflight.py` retained (required scope, LV filtering, invalid-scope failures).
+  - Checks run:
+    - `python -m py_compile app.py src/project_manager.py src/ai_tools.py tests/test_preflight.py tests/test_ai_api.py`
+    - `pytest -q tests/test_preflight.py -k "preflight_scope_route"` (3 passed, 107 deselected)
+    - `pytest -q tests/test_ai_api.py -k "run_preflight_scope or preflight_scope_route_and_ai_wrappers"` (3 passed, 121 deselected)
+  - Checkpoint finished:
+    - ✔ scoped preflight is now first-class for both HTTP and AI tooling.
+    - ✔ scoped selector normalization and alias behavior are deterministic.
+    - ✔ route and AI error/success contracts are parity-locked for scoped-preflight flows.
 
 - **Local-model optionality checkpoint completed: runtime backend capability overrides + LM Studio tool-loop contract coverage** (2026-03-19)
   - Extended adapter runtime override resolution in `src/ai_backend_adapters.py`:
@@ -1264,15 +1291,15 @@
 
 ## Next Candidates
 
-1. **Scoped-geometry workflow checkpoint: add deterministic subtree preflight/filter mode for AI + UI flows**
-   - Add a route/helper path that runs preflight on a selected LV/assembly subtree and returns scoped diagnostics + summary deltas vs full-geometry preflight.
-   - Ensure selector/path validation is deterministic and route↔AI wrappers keep parity on malformed scope inputs.
-   - Impact: high (directly advances scoped editing + faster iteration on large geometries).
-
-2. **Geant4 confidence checkpoint: parity fixture set for scoped preflight drift classes**
+1. **Geant4 confidence checkpoint: parity fixture set for scoped preflight drift classes**
    - Add representative fixtures/tests that pin mismatch classes when scoped edits alter overlaps/replica constraints in one subtree while global preflight remains stable.
    - Expand deterministic diagnostics for issue-family correlations in scoped mode.
    - Impact: high (stronger confidence that scoped workflows preserve Geant4-relevant invariants).
+
+2. **Scoped-geometry follow-on checkpoint: wire scoped-preflight diagnostics into inspector/workspace UX flows**
+   - Surface scoped summary deltas and scoped issue lists in the main geometry editing UI so users can iterate on one subtree without parsing full-geometry noise.
+   - Add deterministic selector handoff from current selection state (tree/inspector) into `/api/preflight/check_scope` payloads.
+   - Impact: high (turns scoped preflight from backend capability into everyday editing acceleration).
 
 3. **Local-model optionality follow-on: operator-facing capability override diagnostics in backend readiness/chat payloads**
    - Surface effective capability overrides (`supports_tools` etc.) in diagnostics payloads so users can audit why a backend was/was not selected.

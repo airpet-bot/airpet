@@ -568,6 +568,150 @@ def test_ai_tool_run_preflight_checks_returns_report_and_summary(pm):
     assert len(summary['issue_fingerprint']) == 64
 
 
+def test_ai_tool_run_preflight_scope_returns_scoped_report_and_summary_delta(pm):
+    pm.current_geometry_state.logical_volumes['box_LV'].material_ref = None
+
+    res = dispatch_ai_tool(pm, "run_preflight_scope", {
+        "scope": {
+            "type": "lv",
+            "name": "  box_LV  ",
+        },
+    })
+
+    assert res['success'] is True
+    assert res['scope'] == {
+        'type': 'logical_volume',
+        'name': 'box_LV',
+    }
+    assert 'preflight_report' in res
+    assert 'scoped_preflight_report' in res
+    scoped_report = res['scoped_preflight_report']
+    assert scoped_report['summary']['errors'] >= 1
+    assert 'missing_material_reference' in [issue['code'] for issue in scoped_report['issues']]
+    assert res['summary_delta']['scope']['issue_count'] == scoped_report['summary']['issue_count']
+
+
+def test_preflight_scope_route_and_ai_wrappers_share_success_payloads(pm):
+    pm.current_geometry_state.logical_volumes['box_LV'].material_ref = None
+
+    cases = [
+        {
+            'name': 'nested_scope_selector_with_type_alias',
+            'route_payload': {
+                'scope': {
+                    'type': 'logical-volume',
+                    'name': ' box_LV ',
+                },
+            },
+            'ai_args': {
+                'scope': {
+                    'type': 'logical-volume',
+                    'name': ' box_LV ',
+                },
+            },
+        },
+        {
+            'name': 'top_level_scope_alias_fields',
+            'route_payload': {
+                'scope_type': 'lv',
+                'scope_name': 'box_LV',
+            },
+            'ai_args': {
+                'scope_type': 'lv',
+                'scope_name': 'box_LV',
+            },
+        },
+        {
+            'name': 'nested_camel_case_scope_alias_fields',
+            'route_payload': {
+                'scope': {
+                    'scopeType': 'logical volume',
+                    'scopeName': 'box_LV',
+                },
+            },
+            'ai_args': {
+                'scope': {
+                    'scopeType': 'logical volume',
+                    'scopeName': 'box_LV',
+                },
+            },
+        },
+    ]
+
+    for case in cases:
+        status_code, route_data = _call_preflight_route_with_pm(
+            pm,
+            '/api/preflight/check_scope',
+            case['route_payload'],
+        )
+        ai_data = dispatch_ai_tool(pm, 'run_preflight_scope', case['ai_args'])
+
+        assert status_code == 200, case['name']
+        assert route_data == ai_data, case['name']
+        assert route_data['scope'] == {
+            'type': 'logical_volume',
+            'name': 'box_LV',
+        }, case['name']
+
+
+def test_preflight_scope_route_and_ai_wrappers_share_validation_error_payloads(pm):
+    cases = [
+        {
+            'name': 'missing_scope_type_and_name',
+            'route_payload': {},
+            'ai_args': {},
+            'expected_error': 'Scope type and name are required for scoped preflight.',
+        },
+        {
+            'name': 'canonical_null_type_does_not_fall_back_to_scope_type_alias',
+            'route_payload': {
+                'scope': {
+                    'type': None,
+                    'scope_type': 'logical_volume',
+                    'name': 'box_LV',
+                },
+            },
+            'ai_args': {
+                'scope': {
+                    'type': None,
+                    'scope_type': 'logical_volume',
+                    'name': 'box_LV',
+                },
+            },
+            'expected_error': 'Scope type and name are required for scoped preflight.',
+        },
+        {
+            'name': 'unsupported_scope_type',
+            'route_payload': {
+                'scope': {
+                    'type': 'volume_group',
+                    'name': 'box_LV',
+                },
+            },
+            'ai_args': {
+                'scope': {
+                    'type': 'volume_group',
+                    'name': 'box_LV',
+                },
+            },
+            'expected_error': "Unsupported scope type 'volume_group'.",
+        },
+    ]
+
+    for case in cases:
+        status_code, route_data = _call_preflight_route_with_pm(
+            pm,
+            '/api/preflight/check_scope',
+            case['route_payload'],
+        )
+        ai_data = dispatch_ai_tool(pm, 'run_preflight_scope', case['ai_args'])
+
+        assert status_code == 400, case['name']
+        assert route_data == ai_data, case['name']
+        assert route_data['success'] is False, case['name']
+        assert route_data['error'] == case['expected_error'], case['name']
+
+
 def test_ai_tool_compare_preflight_summaries_returns_code_deltas(pm):
     baseline = {
         "can_run": False,

@@ -646,6 +646,30 @@ AI_GEOMETRY_TOOLS = [
         }
     },
     {
+        "name": "run_preflight_scope",
+        "description": "Run deterministic preflight checks, then return both full-geometry and scoped-subtree diagnostics plus summary deltas.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "object",
+                    "description": "Scope selector object.",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "description": "Scope type (logical_volume or assembly; aliases like lv/asm accepted)."
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Logical volume or assembly name to scope preflight to."
+                        }
+                    }
+                }
+            },
+            "required": ["scope"]
+        }
+    },
+    {
         "name": "compare_preflight_summaries",
         "description": "Compare two preflight summaries and highlight added/resolved issue codes with deterministic deltas.",
         "parameters": {
