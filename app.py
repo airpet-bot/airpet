@@ -2595,6 +2595,108 @@ def list_preflight_versions(
     }
 
 
+
+def _normalize_preflight_scope_input(payload: Any) -> tuple[str, str]:
+    payload_obj = payload if isinstance(payload, dict) else {}
+    scope = payload_obj.get('scope') if isinstance(payload_obj.get('scope'), dict) else {}
+
+    # Canonical nested `scope.{type,name}` keys take precedence.
+    # If present (even null/blank), do not fall back to aliases.
+    if 'type' in scope:
+        scope_type_raw = scope.get('type')
+    elif 'scope_type' in scope:
+        scope_type_raw = scope.get('scope_type')
+    elif 'scopeType' in scope:
+        scope_type_raw = scope.get('scopeType')
+    else:
+        scope_type_raw = payload_obj.get('scope_type')
+        if scope_type_raw is None:
+            scope_type_raw = payload_obj.get('scopeType')
+
+    if 'name' in scope:
+        scope_name_raw = scope.get('name')
+    elif 'scope_name' in scope:
+        scope_name_raw = scope.get('scope_name')
+    elif 'scopeName' in scope:
+        scope_name_raw = scope.get('scopeName')
+    else:
+        scope_name_raw = payload_obj.get('scope_name')
+        if scope_name_raw is None:
+            scope_name_raw = payload_obj.get('scopeName')
+
+    scope_type_norm = str(scope_type_raw or '').strip().lower()
+    scope_name_norm = str(scope_name_raw or '').strip()
+
+    if not scope_type_norm or not scope_name_norm:
+        raise ValueError('Scope type and name are required for scoped preflight.')
+
+    scope_type_aliases = {
+        'logical_volume': 'logical_volume',
+        'logical volume': 'logical_volume',
+        'logical-volume': 'logical_volume',
+        'logicalvolume': 'logical_volume',
+        'lv': 'logical_volume',
+        'assembly': 'assembly',
+        'assemblies': 'assembly',
+        'asm': 'assembly',
+    }
+    scope_type_norm = scope_type_aliases.get(scope_type_norm, scope_type_norm)
+
+    if scope_type_norm not in {'logical_volume', 'assembly'}:
+        raise ValueError(f"Unsupported scope type '{scope_type_raw}'.")
+
+    return scope_type_norm, scope_name_norm
+
+
+
+def _build_scope_summary_delta(full_summary, scoped_summary):
+    def safe(summary, key):
+        if not isinstance(summary, dict):
+            summary = {}
+        value = summary.get(key, 0)
+        try:
+            return int(value)
+        except Exception:
+            return 0
+
+    stats_keys = ['errors', 'warnings', 'infos', 'issue_count']
+    scope_stats = {k: safe(scoped_summary, k) for k in stats_keys}
+    outside_stats = {
+        k: max(0, safe(full_summary, k) - scope_stats[k])
+        for k in stats_keys
+    }
+    return {'scope': scope_stats, 'outside_scope': outside_stats}
+
+
+@app.route('/api/preflight/check_scope', methods=['POST'])
+def preflight_scope_route():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        scope_type, scope_name = _normalize_preflight_scope_input(data)
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+
+    pm = get_project_manager_for_session()
+    full_report = pm.run_preflight_checks()
+    try:
+        scoped_report = pm.build_scoped_preflight_report(full_report, scope_type, scope_name)
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+
+    summary_delta = _build_scope_summary_delta(
+        full_report.get('summary', {}),
+        scoped_report.get('summary', {}),
+    )
+
+    return jsonify({
+        'success': True,
+        'scope': {'type': scope_type, 'name': scope_name},
+        'preflight_report': full_report,
+        'scoped_preflight_report': scoped_report,
+        'summary_delta': summary_delta,
+    })
+
 @app.route('/api/preflight/check', methods=['POST'])
 def preflight_check_route():
     pm = get_project_manager_for_session()
@@ -8663,6 +8765,7 @@ def _validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
         # with route contracts. These tools provide route-matched required-field
         # diagnostics (including alias-aware wording) in dispatch.
         route_aligned_required_fields = {
+            "run_preflight_scope": {"scope"},
             "compare_preflight_versions": {"baseline_version_id", "candidate_version_id"},
             "compare_autosave_preflight_vs_manual_saved_for_simulation_run": {"simulation_run_id"},
             "compare_autosave_preflight_vs_manual_saved_for_simulation_run_index": {"simulation_run_id"},
@@ -9076,6 +9179,32 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 "success": True,
                 "preflight_report": report,
                 "preflight_summary": report.get("summary", {}),
+            }
+
+
+        elif tool_name == "run_preflight_scope":
+            try:
+                scope_type, scope_name = _normalize_preflight_scope_input(args)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+
+            full_report = pm.run_preflight_checks()
+            try:
+                scoped_report = pm.build_scoped_preflight_report(full_report, scope_type, scope_name)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+
+            summary_delta = _build_scope_summary_delta(
+                full_report.get("summary", {}),
+                scoped_report.get("summary", {}),
+            )
+
+            return {
+                "success": True,
+                "scope": {"type": scope_type, "name": scope_name},
+                "preflight_report": full_report,
+                "scoped_preflight_report": scoped_report,
+                "summary_delta": summary_delta,
             }
 
         elif tool_name == "compare_preflight_summaries":

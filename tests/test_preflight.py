@@ -990,6 +990,59 @@ def test_preflight_route_returns_report():
         assert 'summary' in data['preflight_report']
 
 
+
+def test_preflight_scope_route_requires_scope():
+    app.config['TESTING'] = True
+    with app.test_client() as client:
+        pm = _make_pm()
+        with patch('app.get_project_manager_for_session', return_value=pm):
+            resp = client.post('/api/preflight/check_scope', json={})
+
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data['success'] is False
+        assert 'error' in data
+
+
+def test_preflight_scope_route_filters_to_logical_volume():
+    app.config['TESTING'] = True
+    with app.test_client() as client:
+        pm = _make_pm()
+        pm.current_geometry_state.logical_volumes['box_LV'].material_ref = None
+
+        with patch('app.get_project_manager_for_session', return_value=pm):
+            resp = client.post('/api/preflight/check_scope', json={
+                'scope': {'type': 'logical_volume', 'name': 'box_LV'},
+            })
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        scoped_report = data['scoped_preflight_report']
+        assert scoped_report['summary']['errors'] >= 1
+        codes = [issue['code'] for issue in scoped_report['issues']]
+        assert 'missing_material_reference' in codes
+        for issue in scoped_report['issues']:
+            refs = issue.get('object_refs', [])
+            assert any(str(ref) in ('box_LV', 'LV:box_LV') for ref in refs)
+        assert data['summary_delta']['scope']['errors'] == scoped_report['summary']['errors']
+
+
+def test_preflight_scope_route_invalid_scope_name():
+    app.config['TESTING'] = True
+    with app.test_client() as client:
+        pm = _make_pm()
+        with patch('app.get_project_manager_for_session', return_value=pm):
+            resp = client.post('/api/preflight/check_scope', json={
+                'scope': {'type': 'logical_volume', 'name': 'MissingLV'},
+            })
+
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data['success'] is False
+        assert 'error' in data
+
+
 def test_preflight_summary_includes_deterministic_metadata():
     pm = _make_pm()
     pm.current_geometry_state.logical_volumes['box_LV'].material_ref = 'CustomMissingMaterial'

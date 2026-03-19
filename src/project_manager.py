@@ -6045,6 +6045,116 @@ class ProjectManager:
 
         return self._preflight_finalize(report)
 
+
+    def _collect_preflight_scope_refs(self, scope_type, scope_name):
+        if not scope_type or not scope_name:
+            raise ValueError('Scope type and name are required for scoped preflight.')
+
+        state = self.current_geometry_state
+        if not state:
+            raise ValueError('No geometry state is loaded.')
+
+        scope_kind = str(scope_type).strip().lower()
+        scope_name = str(scope_name).strip()
+
+        scope_refs = set()
+        visited_lvs = set()
+        visited_assemblies = set()
+
+        def add_ref(value):
+            if value:
+                scope_refs.add(str(value))
+
+        def visit_assembly(asm_name):
+            if not asm_name or asm_name in visited_assemblies:
+                return
+            visited_assemblies.add(asm_name)
+
+            asm = state.assemblies.get(asm_name)
+            if not asm:
+                return
+
+            add_ref(asm.name)
+            add_ref(f"ASM:{asm.name}")
+
+            for pv in asm.placements:
+                add_ref(pv.id)
+                add_ref(pv.name)
+                placed_ref = str(getattr(pv, 'volume_ref', '') or '').strip()
+                if placed_ref in state.logical_volumes:
+                    visit_logical_volume(placed_ref)
+                elif placed_ref in state.assemblies:
+                    visit_assembly(placed_ref)
+
+        def visit_logical_volume(lv_name):
+            if not lv_name or lv_name in visited_lvs:
+                return
+            visited_lvs.add(lv_name)
+
+            lv = state.logical_volumes.get(lv_name)
+            if not lv:
+                return
+
+            add_ref(lv.name)
+            add_ref(f"LV:{lv.name}")
+            add_ref(lv.solid_ref)
+            add_ref(lv.material_ref)
+
+            if lv.content_type == 'physvol':
+                for pv in lv.content or []:
+                    add_ref(pv.id)
+                    add_ref(pv.name)
+                    placed_ref = str(getattr(pv, 'volume_ref', '') or '').strip()
+                    if placed_ref in state.logical_volumes:
+                        visit_logical_volume(placed_ref)
+                    elif placed_ref in state.assemblies:
+                        visit_assembly(placed_ref)
+            else:
+                proc = lv.content
+                placed_ref = str(getattr(proc, 'volume_ref', '') or '').strip()
+                if placed_ref in state.logical_volumes:
+                    visit_logical_volume(placed_ref)
+                elif placed_ref in state.assemblies:
+                    visit_assembly(placed_ref)
+
+        if scope_kind == 'logical_volume':
+            if scope_name not in state.logical_volumes:
+                raise ValueError(f"Logical volume '{scope_name}' not found.")
+            visit_logical_volume(scope_name)
+        elif scope_kind == 'assembly':
+            if scope_name not in state.assemblies:
+                raise ValueError(f"Assembly '{scope_name}' not found.")
+            visit_assembly(scope_name)
+        else:
+            raise ValueError(f"Unsupported scope type '{scope_type}'.")
+
+        if not scope_refs:
+            raise ValueError('Scoped preflight could not resolve any objects for the provided scope.')
+
+        return scope_refs
+
+    def build_scoped_preflight_report(self, full_report, scope_type, scope_name):
+        scope_refs = self._collect_preflight_scope_refs(scope_type, scope_name)
+        filtered_issues = []
+        for issue in full_report.get('issues', []):
+            refs = issue.get('object_refs', [])
+            if not isinstance(refs, list):
+                refs = [refs]
+
+            for ref in refs:
+                if ref is None:
+                    continue
+                if str(ref) in scope_refs:
+                    filtered_issues.append(issue)
+                    break
+
+        scoped_report = {
+            'version': full_report.get('version', 1),
+            'name': f"{full_report.get('name', 'geometry_preflight_v1')}_scope",
+            'issues': list(filtered_issues),
+        }
+        return self._preflight_finalize(scoped_report)
+
     def generate_macro_file(self, job_id, sim_params, build_dir, run_dir, version_dir):
         """
         Generates a Geant4 macro file from simulation parameters.
