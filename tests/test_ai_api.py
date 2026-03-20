@@ -399,6 +399,79 @@ def _seed_scoped_preflight_drift_replica_overlap_fixture(pm):
             'possible_overlap_aabb',
             'unknown_procedural_volume_reference',
         ],
+        'expected_issue_family_correlations': {
+            'scope': {
+                'issue_count': 5,
+                'issue_codes': [
+                    'invalid_replica_direction',
+                    'invalid_replica_instance_count',
+                    'invalid_replica_width',
+                    'possible_overlap_aabb',
+                    'unknown_procedural_volume_reference',
+                ],
+                'counts_by_code': {
+                    'invalid_replica_direction': 1,
+                    'invalid_replica_instance_count': 1,
+                    'invalid_replica_width': 1,
+                    'possible_overlap_aabb': 1,
+                    'unknown_procedural_volume_reference': 1,
+                },
+            },
+            'outside_scope': {
+                'issue_count': 1,
+                'issue_codes': ['unknown_material_reference'],
+                'counts_by_code': {
+                    'unknown_material_reference': 1,
+                },
+            },
+            'scope_only_issue_codes': [
+                'invalid_replica_direction',
+                'invalid_replica_instance_count',
+                'invalid_replica_width',
+                'possible_overlap_aabb',
+                'unknown_procedural_volume_reference',
+            ],
+            'outside_scope_only_issue_codes': ['unknown_material_reference'],
+            'shared_issue_codes': [],
+            'entries': [
+                {
+                    'issue_code': 'invalid_replica_direction',
+                    'correlation': 'scope',
+                    'scope_count': 1,
+                    'outside_scope_count': 0,
+                },
+                {
+                    'issue_code': 'invalid_replica_instance_count',
+                    'correlation': 'scope',
+                    'scope_count': 1,
+                    'outside_scope_count': 0,
+                },
+                {
+                    'issue_code': 'invalid_replica_width',
+                    'correlation': 'scope',
+                    'scope_count': 1,
+                    'outside_scope_count': 0,
+                },
+                {
+                    'issue_code': 'possible_overlap_aabb',
+                    'correlation': 'scope',
+                    'scope_count': 1,
+                    'outside_scope_count': 0,
+                },
+                {
+                    'issue_code': 'unknown_material_reference',
+                    'correlation': 'outside_scope',
+                    'scope_count': 0,
+                    'outside_scope_count': 1,
+                },
+                {
+                    'issue_code': 'unknown_procedural_volume_reference',
+                    'correlation': 'scope',
+                    'scope_count': 1,
+                    'outside_scope_count': 0,
+                },
+            ],
+        },
     }
 
 
@@ -777,6 +850,8 @@ def test_preflight_scope_route_and_ai_wrappers_lock_scoped_drift_delta_parity(pm
     assert full_report['summary']['issue_count'] == (
         scoped_report['summary']['issue_count'] + outside_scope_issue_count
     )
+
+    assert route_data['issue_family_correlations'] == fixture['expected_issue_family_correlations']
 
 
 def test_preflight_scope_route_and_ai_wrappers_share_validation_error_payloads(pm):

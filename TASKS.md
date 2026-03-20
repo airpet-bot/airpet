@@ -8,18 +8,42 @@
     - This aligns with north-star priority (Geant4 compatibility confidence) while following a product-forward UX checkpoint.
   - Checkpoints (2–5 plan):
     1. ✅ add first scoped-drift parity fixture path that pins mismatch classification/delta behavior when scoped edits regress overlap/replica-like constraints in one subtree.
-    2. **Current checkpoint:** add deterministic issue-family correlation expectations for scoped drift (`scope` vs `outside_scope`) in parity outputs.
-    3. add representative examples/docs for scoped-drift parity diagnostics.
+    2. ✅ add deterministic issue-family correlation expectations for scoped drift (`scope` vs `outside_scope`) in parity outputs.
+    3. **Current checkpoint:** add representative examples/docs for scoped-drift parity diagnostics.
   - Definition of done (current checkpoint):
-    - fixture matrix covers at least one mixed transition where scoped and outside-scope issue families diverge.
-    - parity assertions lock deterministic family-correlation output ordering and counts.
-    - targeted scoped-preflight + AI parity suites pass reproducibly.
+    - docs explicitly define `issue_family_correlations` semantics (`scope`, `outside_scope`, `scope_only`, `outside_scope_only`, `shared`, deterministic `entries` ordering).
+    - at least one representative scoped-drift example payload demonstrates mixed scoped/outside-scope family divergence.
+    - targeted scoped-preflight route↔AI parity suites remain green after docs/example additions.
   - Next checkpoint after current:
-    - add representative examples/docs for scoped-drift parity diagnostics.
+    - evaluate whether an additional shared-code (non-zero in both scope and outside_scope) fixture is needed to harden mixed-count correlations.
   - Risks/blockers:
-    - extending family-correlation expectations may require introducing deterministic normalization for future metadata fields.
+    - representative example payloads should stay synchronized with deterministic test fixtures to avoid docs drift.
 
 ## Recently Completed
+
+- **Geant4 confidence checkpoint completed (checkpoint 2/3): deterministic scoped drift issue-family correlations in route↔AI scoped preflight parity outputs** (2026-03-20)
+  - Added deterministic scoped issue-family correlation builder in `app.py`:
+    - new `_build_scope_issue_family_correlations(...)` derives stable scoped vs outside-scope issue-code partitions from preflight summary `counts_by_code`.
+    - output includes deterministic per-family counts and code lists plus sorted per-code entries with correlation class (`scope`, `outside_scope`, `shared`).
+  - Extended scoped preflight response contracts (both surfaces):
+    - `POST /api/preflight/check_scope`
+    - AI wrapper: `run_preflight_scope`
+    - both now return `issue_family_correlations` alongside `summary_delta`.
+  - Expanded scoped drift fixture expectations in both test suites:
+    - `tests/test_preflight.py::_seed_scoped_preflight_drift_replica_overlap_fixture`
+    - `tests/test_ai_api.py::_seed_scoped_preflight_drift_replica_overlap_fixture`
+    - fixture now pins deterministic family-correlation counts/order for mixed scoped vs outside-scope drift.
+  - Added parity assertions for deterministic family-correlation payloads:
+    - `tests/test_preflight.py::test_preflight_scope_route_drift_fixture_locks_scope_and_outside_scope_delta_semantics`
+    - `tests/test_ai_api.py::test_preflight_scope_route_and_ai_wrappers_lock_scoped_drift_delta_parity`
+  - Checks run:
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && python -m py_compile app.py tests/test_preflight.py tests/test_ai_api.py`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && pytest -q tests/test_preflight.py -k "preflight_scope_route"` (4 passed, 107 deselected)
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && pytest -q tests/test_ai_api.py -k "run_preflight_scope or scoped_drift_delta_parity or scope_route_and_ai_wrappers_share_success_payloads or scope_route_and_ai_wrappers_share_validation_error_payloads"` (4 passed, 121 deselected)
+  - Checkpoint finished:
+    - ✔ scoped-drift family-correlation payloads are deterministic and parity-locked across route and AI wrapper surfaces.
+    - ✔ fixture-backed assertions lock correlation ordering and counts for `scope` vs `outside_scope` issue families.
+    - ✔ existing scoped preflight success/validation parity contracts remain green.
 
 - **Geant4 confidence checkpoint completed (checkpoint 1/3): first scoped-drift parity fixture path for replica/overlap regression + locked scope/outside-scope deltas** (2026-03-19)
   - Added deterministic scoped-drift fixture seeding in both test suites:
