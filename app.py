@@ -282,44 +282,11 @@ def get_geant4_env(sim_params=None):
         if 'optical_physics' in sim_params:
             env['G4OPTICALPHYSICS'] = 'true' if sim_params['optical_physics'] else 'false'
 
-    # Also ensure the binary directory is in PATH
+   # Also ensure the binary directory is in PATH
     bin_dir = os.path.join(conda_prefix, "bin")
     if bin_dir not in env["PATH"]:
         env["PATH"] = bin_dir + os.pathsep + env["PATH"]
-    
-    # Source the Geant4 setup script to get proper library paths
-    setup_script = os.path.join(os.getcwd(), "setup_geant4.sh")
-    if os.path.exists(setup_script):
-        try:
-            result = subprocess.run(
-                ["bash", "-c", f"source {setup_script} && echo \"GEANT4_INSTALL=$GEANT4_INSTALL\" && echo \"LD_LIBRARY_PATH=$LD_LIBRARY_PATH\" && echo \"G4DATA=$G4DATA\""],
-                capture_output=True, text=True, timeout=10
-            )
-            if result.returncode == 0:
-                for line in result.stdout.strip().split('\n'):
-                    if '=' in line:
-                        key, value = line.split('=', 1)
-                        if key == 'GEANT4_INSTALL' and value:
-                            env['GEANT4_INSTALL'] = value
-                            env['GEANT4_DIR'] = value
-                            g4_bin = os.path.join(value, "bin")
-                            if g4_bin not in env.get("PATH", ""):
-                                env["PATH"] = g4_bin + os.pathsep + env.get("PATH", "")
-                            g4_lib = os.path.join(value, "lib")
-                            if g4_lib and os.path.isdir(g4_lib):
-                                if 'LD_LIBRARY_PATH' in env:
-                                    env['LD_LIBRARY_PATH'] = g4_lib + os.pathsep + env['LD_LIBRARY_PATH']
-                                else:
-                                    env['LD_LIBRARY_PATH'] = g4_lib
-                        elif key == 'G4DATA' and value and os.path.isdir(value):
-                            env['G4DATA'] = value
-                            env['G4NEUTRONHPDATA'] = value
-                            env['G4PIIData'] = value
-                            env['G4EMLOW'] = value
-                            env['G4NDL'] = value
-        except Exception as e:
-            print(f"Warning: Could not source setup_geant4.sh: {e}")
-        
+         
     return env
 
 # --- New Global Configuration ---
