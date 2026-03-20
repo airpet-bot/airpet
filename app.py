@@ -12443,7 +12443,9 @@ def ai_chat_route():
             }
 
             for turn in range(turn_limit):
-                print(f"\n=== Turn {turn + 1}/{turn_limit} ===")
+                import sys
+                print(f"\n=== Turn {turn + 1}/{turn_limit} ===", flush=True)
+                print(f"  Messages: {len(local_messages)}, Tools: {effective_require_tools}", flush=True)
                 invocation_request = TextGenerationRequest(
                     messages=tuple(local_messages),
                     require_tools=effective_require_tools,
@@ -12454,6 +12456,7 @@ def ai_chat_route():
                     tool_choice="auto" if effective_require_tools else None,
                 )
 
+                print(f"  Calling llama.cpp...", flush=True)
                 adapter_response = invoke_text_request_for_backend(
                     selected_backend_id,
                     invocation_request,
