@@ -805,6 +805,162 @@ export async function sendAiChatMessage(message, model, turnLimit = 10) {
 }
 
 /**
+ * Streams AI chat progress via Server-Sent Events.
+ * @param {string} message The user's message.
+ * @param {string} model The model to use.
+ * @param {number} turnLimit Maximum turns.
+ * @param {function} onProgress Callback for progress events.
+ * @returns {Promise<Object>} Final result.
+ */
+export async function streamAiChatMessage(message, model, turnLimit = 10, onProgress) {
+    const payload = { message, model, turn_limit: turnLimit };
+
+    const localPrefixes = {
+        'llama_cpp::': 'llama_cpp',
+        'lm_studio::': 'lm_studio'
+    };
+
+    for (const [prefix, backendId] of Object.entries(localPrefixes)) {
+        if (typeof model === 'string' && model.startsWith(prefix)) {
+            const localModelName = model.slice(prefix.length).trim();
+            if (!localModelName) break;
+
+            payload.backend_selector = {
+                preferred_backend_id: backendId,
+                allow_fallback: false,
+                runtime_config: {
+                    backends: {
+                        [backendId]: {
+                            enabled: true,
+                            model: localModelName
+                        }
+                    }
+                },
+                requirements: {
+                    require_tools: false,
+                    require_json_mode: true,
+                    require_streaming: false
+                }
+            };
+            break;
+        }
+    }
+
+    let abortController = null;
+    let recentTools = [];
+
+    const cleanup = () => {
+        if (abortController) {
+            abortController.abort();
+        }
+    };
+
+    const handleVisibilityChange = () => {
+        if (document.hidden && abortController) {
+            console.log('Stream paused: tab hidden');
+            onProgress?.({ type: 'paused', reason: 'tab_hidden' });
+        } else if (!document.hidden) {
+            console.log('Stream resumed: tab visible');
+            onProgress?.({ type: 'resumed' });
+        }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    try {
+        abortController = new AbortController();
+        
+        const response = await fetch(`${API_BASE_URL}/api/ai/chat/stream`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: abortController.signal
+        });
+
+        if (!response.ok) {
+            const error = await handleResponse(response);
+            throw new Error(error.error || 'Stream request failed');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalResult = null;
+        let lastToolUpdate = 0;
+
+        while (true) {
+            if (document.hidden) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                continue;
+            }
+
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            let newlineIndex;
+            while ((newlineIndex = buffer.indexOf('\n\n')) >= 0) {
+                const line = buffer.slice(0, newlineIndex);
+                buffer = buffer.slice(newlineIndex + 2);
+
+                if (line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        if (data.type === 'turn_start') {
+                            onProgress?.({ type: 'turn_start', turn: data.turn, turnLimit: data.turn_limit });
+                        } else if (data.type === 'tool_calls') {
+                            if (data.tools && data.tools.length > 0) {
+                                recentTools = [...recentTools, ...data.tools].slice(-3);
+                            }
+                            onProgress?.({ 
+                                type: 'tool_calls', 
+                                turn: data.turn, 
+                                tools: data.tools,
+                                recentTools: recentTools
+                            });
+                            lastToolUpdate = Date.now();
+                        } else if (data.type === 'complete') {
+                            finalResult = {
+                                success: true,
+                                message: data.message,
+                                extra_payload: data.extra_payload,
+                                job_id: data.job_id,
+                                version_id: data.version_id,
+                                project_state: data.project_state,
+                                scene_update: data.scene_update,
+                                response_type: data.response_type,
+                                project_name: data.project_name,
+                                history_status: data.history_status
+                            };
+                            onProgress?.({ type: 'complete' });
+                        } else if (data.type === 'error') {
+                            throw new Error(data.message);
+                        }
+                    } catch (parseErr) {
+                        console.warn('Failed to parse SSE data:', line, parseErr);
+                    }
+                }
+            }
+        }
+
+        if (!finalResult) {
+            const toolInfo = recentTools.length > 0 ? ` (Last tools: ${recentTools.join(', ')})` : '';
+            throw new Error(`Stream ended without completion${toolInfo}`);
+        }
+
+        return finalResult;
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            throw new Error('Stream was cancelled');
+        }
+        throw err;
+    } finally {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+        cleanup();
+    }
+}
+
+/**
  * Fetches the current AI chat history from the session.
  * @returns {Promise<Object>}
  */

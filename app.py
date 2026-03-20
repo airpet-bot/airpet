@@ -286,6 +286,39 @@ def get_geant4_env(sim_params=None):
     bin_dir = os.path.join(conda_prefix, "bin")
     if bin_dir not in env["PATH"]:
         env["PATH"] = bin_dir + os.pathsep + env["PATH"]
+    
+    # Source the Geant4 setup script to get proper library paths
+    setup_script = os.path.join(os.getcwd(), "setup_geant4.sh")
+    if os.path.exists(setup_script):
+        try:
+            result = subprocess.run(
+                ["bash", "-c", f"source {setup_script} && echo \"GEANT4_INSTALL=$GEANT4_INSTALL\" && echo \"LD_LIBRARY_PATH=$LD_LIBRARY_PATH\" && echo \"G4DATA=$G4DATA\""],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        if key == 'GEANT4_INSTALL' and value:
+                            env['GEANT4_INSTALL'] = value
+                            env['GEANT4_DIR'] = value
+                            g4_bin = os.path.join(value, "bin")
+                            if g4_bin not in env.get("PATH", ""):
+                                env["PATH"] = g4_bin + os.pathsep + env.get("PATH", "")
+                            g4_lib = os.path.join(value, "lib")
+                            if g4_lib and os.path.isdir(g4_lib):
+                                if 'LD_LIBRARY_PATH' in env:
+                                    env['LD_LIBRARY_PATH'] = g4_lib + os.pathsep + env['LD_LIBRARY_PATH']
+                                else:
+                                    env['LD_LIBRARY_PATH'] = g4_lib
+                        elif key == 'G4DATA' and value and os.path.isdir(value):
+                            env['G4DATA'] = value
+                            env['G4NEUTRONHPDATA'] = value
+                            env['G4PIIData'] = value
+                            env['G4EMLOW'] = value
+                            env['G4NDL'] = value
+        except Exception as e:
+            print(f"Warning: Could not source setup_geant4.sh: {e}")
         
     return env
 
@@ -12242,6 +12275,477 @@ def _build_chat_backend_diagnostics(
     )
 
     return diagnostics
+
+
+def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_selection_payload, selector_runtime_config, selector_requirements, use_local_text_adapter, is_gemini, chat_extra_payload, client_instance=None):
+    """Generator function for streaming AI chat progress via SSE."""
+    import time
+    
+    context_summary = pm.get_summarized_context()
+    formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nUser Message: {user_message}"
+
+    if use_local_text_adapter:
+        selected_backend_id = backend_selection_payload.get("resolved_backend_id") if backend_selection_payload else None
+        
+        pm.chat_history.append({
+            "role": "user",
+            "content": formatted_user_msg,
+            "metadata": {
+                "model_id": model_id,
+                "original_message": user_message,
+                "resolved_backend_id": selected_backend_id,
+            },
+        })
+
+        pm.begin_transaction()
+
+        try:
+            require_tools = bool((selector_requirements or {}).get("require_tools", False))
+            require_json_mode = bool((selector_requirements or {}).get("require_json_mode", True))
+            require_streaming = bool((selector_requirements or {}).get("require_streaming", False))
+            min_context_tokens = _coerce_optional_int((selector_requirements or {}).get("min_context_tokens"))
+
+            local_messages = _build_local_adapter_message_history(pm.chat_history)
+            if not local_messages:
+                local_messages = [
+                    TextMessage(role="system", content=load_system_prompt()),
+                    TextMessage(role="user", content=formatted_user_msg),
+                ]
+
+            openai_tool_schemas = tuple(_build_openai_tool_schema_from_ai_tools())
+            use_native_tool_loop = bool(selected_backend_id == "llama_cpp")
+            effective_require_tools = bool(require_tools or use_native_tool_loop)
+
+            job_id = None
+            version_id = None
+            last_execution_payload = {
+                "backend_id": selected_backend_id,
+                "model": None,
+                "usage": None,
+            }
+
+            for turn in range(turn_limit):
+                print(f"\n=== Stream Turn {turn + 1}/{turn_limit} ===", flush=True)
+                yield f"data: {json.dumps({'type': 'turn_start', 'turn': turn + 1, 'turn_limit': turn_limit})}\n\n"
+                
+                invocation_request = TextGenerationRequest(
+                    messages=tuple(local_messages),
+                    require_tools=effective_require_tools,
+                    require_json_mode=require_json_mode,
+                    require_streaming=require_streaming,
+                    min_context_tokens=min_context_tokens,
+                    tool_schemas=openai_tool_schemas if effective_require_tools else None,
+                    tool_choice="auto" if effective_require_tools else None,
+                )
+
+                adapter_response = invoke_text_request_for_backend(
+                    selected_backend_id,
+                    invocation_request,
+                    runtime_config=selector_runtime_config,
+                )
+
+                last_execution_payload = {
+                    "backend_id": adapter_response.backend_id,
+                    "model": adapter_response.model,
+                    "usage": adapter_response.usage,
+                }
+
+                assistant_payload = _extract_openai_assistant_payload(
+                    adapter_response.raw_response,
+                    fallback_text=adapter_response.text,
+                )
+                assistant_text = assistant_payload.get("content") or adapter_response.text or ""
+                parsed_tool_calls = assistant_payload.get("tool_calls") or []
+
+                if not parsed_tool_calls and isinstance(adapter_response.tool_calls, list):
+                    parsed_tool_calls = _normalize_tool_calls_payload(adapter_response.tool_calls)
+
+                executable_tool_calls = _build_executable_tool_calls(parsed_tool_calls, turn)
+                assistant_openai_tool_calls = _to_openai_tool_calls(executable_tool_calls, id_prefix=f"turn_{turn}")
+
+                tool_names = [tc.get("name") for tc in executable_tool_calls if tc.get("name")]
+                if tool_names:
+                    print(f"  Stream Tool Calls: {tool_names}", flush=True)
+                    yield f"data: {json.dumps({'type': 'tool_calls', 'turn': turn + 1, 'tools': tool_names})}\n\n"
+                    time.sleep(1.5)
+
+                assistant_history_entry = {
+                    "role": "assistant",
+                    "content": assistant_text,
+                    "metadata": {
+                        "resolved_backend_id": adapter_response.backend_id,
+                        "provider_model": adapter_response.model,
+                    },
+                }
+                if assistant_openai_tool_calls:
+                    assistant_history_entry["tool_calls"] = assistant_openai_tool_calls
+
+                pm.chat_history.append(assistant_history_entry)
+                local_messages.append(
+                    TextMessage(
+                        role="assistant",
+                        content=assistant_text,
+                        tool_calls=tuple(assistant_openai_tool_calls) if assistant_openai_tool_calls else None,
+                    )
+                )
+
+                if backend_selection_payload is not None:
+                    backend_selection_payload["execution_mode"] = "local_text_adapter"
+                    backend_selection_payload["resolved_model"] = adapter_response.model
+
+                if not executable_tool_calls:
+                    final_text = assistant_text or adapter_response.text or "Done."
+                    local_extra_payload = dict(chat_extra_payload or {})
+                    local_extra_payload["backend_execution"] = last_execution_payload
+
+                    pm.end_transaction(f"AI: {user_message[:50]}")
+                    print(f"  Stream Complete", flush=True)
+                    
+                    complete_payload = {
+                        'type': 'complete',
+                        'message': final_text,
+                        'extra_payload': local_extra_payload,
+                        'job_id': job_id,
+                        'version_id': version_id or pm.current_version_id,
+                        'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True),
+                        'scene_update': pm.get_threejs_description(),
+                        'response_type': 'full_with_exclusions',
+                        'project_name': pm.project_name,
+                        'success': True,
+                        'history_status': {
+                            'can_undo': pm.history_index > 0,
+                            'can_redo': pm.history_index < len(pm.history) - 1
+                        }
+                    }
+                    yield f"data: {json.dumps(complete_payload)}\n\n"
+                    return
+
+                for tool_call in executable_tool_calls:
+                    tool_name = tool_call.get("name")
+                    if not tool_name:
+                        continue
+
+                    args = tool_call.get("arguments", {})
+                    result = dispatch_ai_tool(pm, tool_name, args)
+
+                    if isinstance(result, dict):
+                        if "job_id" in result:
+                            job_id = result["job_id"]
+                        if "version_id" in result:
+                            version_id = result["version_id"]
+
+                    tool_result_payload = json.dumps(result)
+                    tool_call_id = str(tool_call.get("id") or f"call_{turn}_{tool_name}")
+                    pm.chat_history.append({
+                        "role": "tool",
+                        "name": tool_name,
+                        "content": tool_result_payload,
+                        "tool_call_id": tool_call_id,
+                    })
+                    local_messages.append(
+                        TextMessage(
+                            role="tool",
+                            content=tool_result_payload,
+                            name=tool_name,
+                            tool_call_id=tool_call_id,
+                        )
+                    )
+
+            pm.end_transaction(f"AI: {user_message[:50]}")
+            print(f"  Stream Complete (turn limit)", flush=True)
+            yield f"data: {json.dumps({'type': 'complete', 'message': 'Turn limit reached. Please try a more specific request.', 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id, 'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True), 'scene_update': pm.get_threejs_description(), 'response_type': 'full_with_exclusions', 'project_name': pm.project_name, 'success': True, 'history_status': {'can_undo': pm.history_index > 0, 'can_redo': pm.history_index < len(pm.history) - 1}})}\n\n"
+        except Exception as stream_err:
+            print(f"  Stream Error (local backend): {stream_err}", flush=True)
+            import traceback
+            traceback.print_exc()
+            pm.end_transaction(f"AI Error: {user_message[:50]}")
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Stream processing error: {str(stream_err)}'})}\n\n"
+        finally:
+            if pm._is_transaction_open:
+                pm.end_transaction(f"AI: {user_message[:50]}")
+
+    elif is_gemini:
+        from google.genai import types
+        
+        if client_instance is None:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Gemini client not configured. Check your API key.'})}\n\n"
+            return
+        
+        if backend_selection_payload is not None:
+            backend_selection_payload["execution_mode"] = "gemini_sdk"
+            backend_selection_payload["resolved_model"] = model_id
+        
+        pm.chat_history.append({
+            "role": "user", 
+            "parts": [{"text": formatted_user_msg}],
+            "metadata": {"model_id": model_id, "original_message": user_message}
+        })
+        
+        pm.begin_transaction()
+        
+        try:
+            sanitized_history = []
+            for msg in pm.chat_history:
+                sanitized_msg = {"role": msg["role"], "parts": msg["parts"]}
+                sanitized_history.append(sanitized_msg)
+            
+            job_id = None
+            version_id = None
+            
+            for turn in range(turn_limit):
+                print(f"\n=== Stream Turn {turn + 1}/{turn_limit} ===", flush=True)
+                yield f"data: {json.dumps({'type': 'turn_start', 'turn': turn + 1, 'turn_limit': turn_limit})}\n\n"
+                
+                time.sleep(1)
+                
+                try:
+                    response = client_instance.models.generate_content(
+                        model=model_id,
+                        contents=sanitized_history,
+                        config=types.GenerateContentConfig(
+                            tools=[{"function_declarations": AI_GEOMETRY_TOOLS}]
+                        )
+                    )
+                except Exception as api_err:
+                    pm.end_transaction("Gemini API Error")
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(api_err)})}\n\n"
+                    return
+                
+                candidates = getattr(response, 'candidates', None) or []
+                candidate = candidates[0] if candidates else None
+                content = getattr(candidate, 'content', None) if candidate else None
+                
+                if content is None:
+                    fallback_text = getattr(response, 'text', None)
+                    if fallback_text:
+                        pm.chat_history.append({"role": "model", "parts": [{"text": fallback_text}]})
+                        pm.end_transaction(f"AI: {user_message[:50]}")
+                        yield f"data: {json.dumps({'type': 'complete', 'message': fallback_text, 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id})}\n\n"
+                        return
+                    raise RuntimeError("Gemini returned an empty candidate content")
+                
+                response_parts = getattr(content, 'parts', None) or []
+                response_role = getattr(content, 'role', None) or 'model'
+                
+                sanitized_history.append(content)
+                
+                assistant_parts = []
+                for p in response_parts:
+                    if getattr(p, 'text', None):
+                        assistant_parts.append({"text": p.text})
+                    if getattr(p, 'function_call', None):
+                        assistant_parts.append({
+                            "function_call": {
+                                "name": p.function_call.name,
+                                "args": p.function_call.args
+                            }
+                        })
+                
+                if not assistant_parts and getattr(response, 'text', None):
+                    assistant_parts = [{"text": response.text}]
+                
+                pm.chat_history.append({"role": response_role, "parts": assistant_parts})
+                
+                tool_names = []
+                has_tool_call = False
+                tool_results_parts = []
+                
+                for part in response_parts:
+                    if getattr(part, 'function_call', None):
+                        has_tool_call = True
+                        tool_name = part.function_call.name
+                        args = part.function_call.args
+                        tool_names.append(tool_name)
+                        
+                        print(f"  Stream Tool Calls: {tool_name}", flush=True)
+                        result = dispatch_ai_tool(pm, tool_name, args)
+                        
+                        if "job_id" in result: job_id = result["job_id"]
+                        if "version_id" in result: version_id = result["version_id"]
+                        
+                        tool_results_parts.append(types.Part.from_function_response(
+                            name=tool_name,
+                            response=result
+                        ))
+                
+                if tool_names:
+                    yield f"data: {json.dumps({'type': 'tool_calls', 'turn': turn + 1, 'tools': tool_names})}\n\n"
+                    time.sleep(1.5)
+                
+                if not has_tool_call:
+                    pm.end_transaction(f"AI: {user_message[:50]}")
+                    
+                    final_text = getattr(response, 'text', None)
+                    if not final_text:
+                        text_parts = [p.get('text') for p in assistant_parts if isinstance(p, dict) and p.get('text')]
+                        final_text = "\n".join(text_parts) if text_parts else "Done."
+                    
+                    print(f"  Stream Complete", flush=True)
+                    complete_payload = {
+                        'type': 'complete',
+                        'message': final_text,
+                        'extra_payload': chat_extra_payload,
+                        'job_id': job_id,
+                        'version_id': version_id or pm.current_version_id,
+                        'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True),
+                        'scene_update': pm.get_threejs_description(),
+                        'response_type': 'full_with_exclusions',
+                        'project_name': pm.project_name,
+                        'success': True,
+                        'history_status': {
+                            'can_undo': pm.history_index > 0,
+                            'can_redo': pm.history_index < len(pm.history) - 1
+                        }
+                    }
+                    yield f"data: {json.dumps(complete_payload)}\n\n"
+                    return
+                
+                tool_response_msg = {"role": "function", "parts": tool_results_parts}
+                sanitized_history.append(tool_response_msg)
+                pm.chat_history.append(tool_response_msg)
+            
+            pm.end_transaction(f"AI: {user_message[:50]}")
+            print(f"  Stream Complete (turn limit)", flush=True)
+            yield f"data: {json.dumps({'type': 'complete', 'message': 'Turn limit reached. Please try a more specific request.', 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id, 'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True), 'scene_update': pm.get_threejs_description(), 'response_type': 'full_with_exclusions', 'project_name': pm.project_name, 'success': True, 'history_status': {'can_undo': pm.history_index > 0, 'can_redo': pm.history_index < len(pm.history) - 1}})}\n\n"
+        except Exception as stream_err:
+            print(f"  Stream Error (Gemini): {stream_err}", flush=True)
+            import traceback
+            traceback.print_exc()
+            pm.end_transaction(f"AI Error: {user_message[:50]}")
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Stream processing error: {str(stream_err)}'})}\n\n"
+        finally:
+            if pm._is_transaction_open:
+                pm.end_transaction(f"AI: {user_message[:50]}")
+    else:
+        yield f"data: {json.dumps({'type': 'error', 'message': 'Streaming not supported for this backend'})}\n\n"
+
+
+@app.route('/api/ai/chat/stream', methods=['POST'])
+def ai_chat_stream_route():
+    """Stream AI chat progress via Server-Sent Events."""
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+    user_message = data.get('message')
+    model_id = data.get('model', 'models/gemini-2.0-flash-exp')
+    turn_limit = data.get('turn_limit', 10)
+
+    if not user_message:
+        return Response(f"data: {json.dumps({'type': 'error', 'message': 'No message provided.'})}\n\n", mimetype='text/event-stream')
+
+    backend_selection_payload = None
+    selector_runtime_config = None
+    selector_requirements = None
+
+    selector_cfg_raw = data.get("backend_selector")
+    if selector_cfg_raw is not None and not isinstance(selector_cfg_raw, dict):
+        return Response(f"data: {json.dumps({'type': 'error', 'message': 'Invalid backend_selector payload.'})}\n\n", mimetype='text/event-stream')
+
+    selector_cfg = selector_cfg_raw if isinstance(selector_cfg_raw, dict) else None
+    selector_inferred_from_model = False
+
+    if selector_cfg is None:
+        inferred_selector_cfg, infer_error = _infer_local_backend_selector_from_model_id(model_id)
+        if inferred_selector_cfg is not None:
+            selector_cfg = inferred_selector_cfg
+            selector_inferred_from_model = True
+
+    if isinstance(selector_cfg, dict):
+        requirements_cfg = selector_cfg.get("requirements")
+        if not isinstance(requirements_cfg, dict):
+            requirements_cfg = {}
+
+        runtime_config = selector_cfg.get("runtime_config")
+        if not isinstance(runtime_config, dict):
+            runtime_config = None
+        selector_runtime_config = runtime_config
+
+        preferred_backend_id = (
+            selector_cfg.get("preferred_backend_id")
+            if selector_cfg.get("preferred_backend_id") is not None
+            else selector_cfg.get("preferred_backend")
+        )
+        if preferred_backend_id is not None:
+            preferred_backend_id = str(preferred_backend_id)
+
+        allow_fallback = _coerce_bool(selector_cfg.get("allow_fallback"), True)
+
+        text_request = TextGenerationRequest(
+            messages=(TextMessage(role="user", content=str(user_message)),),
+            require_tools=_coerce_bool(requirements_cfg.get("require_tools"), True),
+            require_json_mode=_coerce_bool(requirements_cfg.get("require_json_mode"), True),
+            require_streaming=_coerce_bool(requirements_cfg.get("require_streaming"), False),
+            min_context_tokens=_coerce_optional_int(requirements_cfg.get("min_context_tokens")),
+        )
+
+        requirements_payload = {
+            "require_tools": text_request.require_tools,
+            "require_json_mode": text_request.require_json_mode,
+            "require_streaming": text_request.require_streaming,
+            "min_context_tokens": text_request.min_context_tokens,
+        }
+        selector_requirements = dict(requirements_payload)
+
+        try:
+            selection = select_backend_for_text_request(
+                request=text_request,
+                runtime_config=runtime_config,
+                preferred_backend_id=preferred_backend_id,
+                allow_fallback=allow_fallback,
+            )
+        except ValueError as exc:
+            return Response(f"data: {json.dumps({'type': 'error', 'message': f'AI backend selection failed: {exc}'})}\n\n", mimetype='text/event-stream')
+
+        backend_selection_payload = {
+            "contract_version": ADAPTER_CONTRACT_VERSION,
+            "preferred_backend_id": preferred_backend_id,
+            "allow_fallback": allow_fallback,
+            "requirements": requirements_payload,
+            "resolved_backend_id": selection.backend_id,
+            "resolved_provider_family": selection.spec.provider_family,
+            "resolved_adapter_kind": selection.spec.adapter_kind,
+            "used_fallback": selection.used_fallback,
+            "tried": list(selection.tried),
+            "selector_source": "model_prefix" if selector_inferred_from_model else "request_payload",
+        }
+
+    selected_backend_id = backend_selection_payload.get("resolved_backend_id") if backend_selection_payload else None
+    local_text_backends = {"llama_cpp", "lm_studio"}
+    use_local_text_adapter = selected_backend_id in local_text_backends
+
+    if selected_backend_id == "gemini_remote":
+        is_gemini = True
+    elif selected_backend_id in local_text_backends:
+        is_gemini = False
+    else:
+        is_gemini = model_id.startswith("models/")
+
+    chat_extra_payload = {"backend_selection": backend_selection_payload} if backend_selection_payload else None
+
+    gemini_client = None
+    if is_gemini:
+        gemini_client = get_gemini_client_for_session()
+
+    if not pm.chat_history:
+        system_prompt = load_system_prompt()
+        if is_gemini:
+            pm.chat_history = [
+                {"role": "user", "parts": [{"text": system_prompt}]},
+                {"role": "model", "parts": [{"text": "Understood. I am AIRPET AI, your detector design assistant. I have my tools ready."}]}
+            ]
+        else:
+            pm.chat_history = [
+                {"role": "system", "content": system_prompt},
+                {"role": "assistant", "content": "Understood. I am AIRPET AI, your detector design assistant."}
+            ]
+
+    def generate():
+        yield from _stream_ai_chat_response(
+            pm, user_message, model_id, turn_limit,
+            backend_selection_payload, selector_runtime_config, selector_requirements,
+            use_local_text_adapter, is_gemini, chat_extra_payload, gemini_client
+        )
+
+    return Response(generate(), mimetype='text/event-stream')
 
 
 @app.route('/api/ai/chat', methods=['POST'])

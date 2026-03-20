@@ -648,6 +648,10 @@ export function initUI(cb) {
             bottomTabPanes.forEach(pane => {
                 pane.classList.toggle('active', pane.id === targetTabId);
             });
+            // Reload AI chat history when switching to AI panel
+            if (targetTabId === 'tab_ai_panel' && window.aiAssistant && window.aiAssistant.reloadHistory) {
+                window.aiAssistant.reloadHistory();
+            }
         });
     });
 

@@ -119,15 +119,20 @@ async function handleSend() {
     promptInput.value = '';
     scrollToBottom();
 
+    const thinkingIndicator = createThinkingIndicator();
+    
     try {
-        const result = await APIService.sendAiChatMessage(message, model, turnLimit);
+        const result = await APIService.streamAiChatMessage(message, model, turnLimit, (progress) => {
+            updateThinkingIndicator(thinkingIndicator, progress);
+        });
+        removeThinkingIndicator(thinkingIndicator);
         addMessageToUI('model', result.message);
         
-        // Notify main.js that geometry might have changed
         if (onGeometryUpdateCallback) {
             onGeometryUpdateCallback(result);
         }
     } catch (err) {
+        removeThinkingIndicator(thinkingIndicator);
         const backendError = formatBackendDiagnosticsError(err);
 
         if (backendError) {
@@ -143,7 +148,6 @@ async function handleSend() {
                     });
                 }
             } catch (_diagErr) {
-                // Ignore diagnostics refresh failure in chat error path.
             }
         } else {
             UIManager.showError("AI Error: " + err.message);
@@ -229,4 +233,49 @@ function scrollToBottomSmooth() {
         top: messageList.scrollHeight,
         behavior: 'smooth'
     });
+}
+
+function createThinkingIndicator() {
+    const indicator = document.createElement('div');
+    indicator.className = 'chat-message model thinking-indicator';
+    indicator.id = 'ai-thinking-indicator';
+    indicator.innerHTML = '<span class="thinking-text">Thinking...</span>';
+    messageList.appendChild(indicator);
+    scrollToBottom();
+    return indicator;
+}
+
+function updateThinkingIndicator(indicator, progress) {
+    if (!indicator || !indicator.isConnected) return;
+    
+    const thinkingText = indicator.querySelector('.thinking-text');
+    
+    if (progress.type === 'turn_start') {
+        thinkingText.innerHTML = `<span class="turn-badge">Turn ${progress.turn}/${progress.turnLimit}</span> Processing...`;
+    } else if (progress.type === 'tool_calls' && progress.tools && progress.tools.length > 0) {
+        const turnBadge = `<span class="turn-badge">Turn ${progress.turn}</span>`;
+        
+        if (progress.recentTools && progress.recentTools.length > 0) {
+            const toolsHtml = progress.recentTools.map(tool => 
+                `<div class="tool-entry">🛠️ ${tool}</div>`
+            ).join('');
+            thinkingText.innerHTML = `${turnBadge}<div class="tools-list">${toolsHtml}</div>`;
+        } else {
+            const toolCount = progress.tools.length;
+            const displayedTools = progress.tools.slice(0, 2).join(', ');
+            const remaining = toolCount > 2 ? ` +${toolCount - 2} more` : '';
+            thinkingText.innerHTML = `${turnBadge} 🛠️ Calling: ${displayedTools}${remaining}`;
+        }
+    } else if (progress.type === 'paused') {
+        thinkingText.innerHTML = `<span class="pause-badge">⏸️ Paused</span> ${progress.reason || 'tab hidden'}`;
+    } else if (progress.type === 'resumed') {
+    }
+    
+    scrollToBottom();
+}
+
+function removeThinkingIndicator(indicator) {
+    if (indicator && indicator.isConnected) {
+        indicator.remove();
+    }
 }
