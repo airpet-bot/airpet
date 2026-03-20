@@ -356,7 +356,7 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "manage_material",
-        "description": "Create or update a material or element.",
+        "description": "Create or update a material or element. For compound materials, use components array with element names as ref values (e.g., 'nickel', 'oxygen'). Elements will be auto-created if they don't exist.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -366,12 +366,13 @@ AI_GEOMETRY_TOOLS = [
                 "A": {"type": "string", "description": "Atomic mass expression"},
                 "components": {
                     "type": "array",
+                    "description": "Array of component elements for compound materials. Each component has 'ref' (element name like 'nickel' or 'oxygen'), 'fraction' (weight fraction as string), and optionally 'natoms'.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "ref": {"type": "string"},
-                            "fraction": {"type": "string"},
-                            "natoms": {"type": "string"}
+                            "ref": {"type": "string", "description": "Element name (lowercase, e.g., 'nickel', 'oxygen', 'carbon')"},
+                            "fraction": {"type": "string", "description": "Weight fraction as string (e.g., '0.787' for 78.7%)"},
+                            "natoms": {"type": "string", "description": "Number of atoms (optional)"}
                         }
                     }
                 }
@@ -1140,14 +1141,14 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "manage_particle_source",
-        "description": "Create or update a particle source (GPS commands, transform, activity, confinement).",
+        "description": "Create or update a particle source (GPS commands, transform, activity, confinement). All gps_commands values must be strings with units (e.g., 'energy' -> '100 keV', 'particle' -> 'electron').",
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["create", "update", "update_transform"]},
                 "source_id": {"type": "string", "description": "Required for update/update_transform."},
                 "name": {"type": "string"},
-                "gps_commands": {"type": "object"},
+                "gps_commands": {"type": "object", "description": "GPS commands as key-value pairs. ALL values must be strings with units. Examples: {'particle': 'electron', 'energy': '100 keV', 'pos/type': 'Point'}. Never use objects like {'value': 100, 'unit': 'keV'}."},
                 "position": {"type": "object"},
                 "rotation": {"type": "object"},
                 "activity": {"type": "number"},

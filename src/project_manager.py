@@ -2951,6 +2951,25 @@ class ProjectManager:
     def add_material(self, name_suggestion, properties_dict):
         if not self.current_geometry_state: return None, "No project loaded"
         name = self._generate_unique_name(name_suggestion, self.current_geometry_state.materials)
+        
+        # Auto-create missing elements referenced in components
+        components = properties_dict.get('components', [])
+        if components:
+            for comp in components:
+                ref_name = comp.get('ref', '')
+                if ref_name and ref_name not in self.current_geometry_state.elements:
+                    # Try to look up Z from periodic table
+                    ref_lower = ref_name.lower().strip()
+                    Z = getattr(self, '_get_element_z', lambda x: None)(ref_lower)
+                    if Z is None:
+                        # Check PERIODIC_TABLE from geometry_types
+                        from geometry_types import PERIODIC_TABLE
+                        Z = PERIODIC_TABLE.get(ref_lower)
+                    
+                    # Create a simple element with the referenced name
+                    new_element = Element(name=ref_name, Z=Z)
+                    self.current_geometry_state.elements[ref_name] = new_element
+        
         # Assumes properties_dict contains expression strings like Z_expr, A_expr, density_expr
         new_material = Material(name, **properties_dict)
         self.current_geometry_state.add_material(new_material)
@@ -4827,11 +4846,33 @@ class ProjectManager:
 
         return True, None
 
+    def _normalize_gps_commands(self, gps_commands):
+        """Normalize gps_commands values to strings to prevent [object Object] display issues."""
+        if not gps_commands:
+            return gps_commands
+        
+        normalized = {}
+        for key, value in gps_commands.items():
+            if isinstance(value, dict):
+                # Convert {"value": 100, "unit": "keV"} to "100 keV"
+                if 'value' in value and 'unit' in value:
+                    normalized[key] = f"{value['value']} {value['unit']}"
+                else:
+                    normalized[key] = str(value)
+            elif value is None:
+                normalized[key] = ""
+            else:
+                normalized[key] = str(value)
+        return normalized
+
     def add_source(self, name_suggestion, gps_commands, position, rotation, activity=1.0, confine_to_pv=None, volume_link_id=None):
         """Adds a new particle source to the project, optionally linked to a volume."""
         if not self.current_geometry_state:
             return None, "No project loaded"
 
+        # Normalize gps_commands to ensure all values are strings
+        gps_commands = self._normalize_gps_commands(gps_commands)
+        
         name = self._generate_unique_name(name_suggestion, self.current_geometry_state.sources)
         
         # If Linked, calculate global transform
@@ -4928,7 +4969,8 @@ class ProjectManager:
             self.current_geometry_state.sources[new_name] = source_to_update
 
         if new_gps_commands is not None:
-            source_to_update.gps_commands = new_gps_commands
+            # Normalize gps_commands to ensure all values are strings
+            source_to_update.gps_commands = self._normalize_gps_commands(new_gps_commands)
 
         if new_position is not None:
             source_to_update.position = new_position
