@@ -2963,7 +2963,7 @@ class ProjectManager:
                     Z = getattr(self, '_get_element_z', lambda x: None)(ref_lower)
                     if Z is None:
                         # Check PERIODIC_TABLE from geometry_types
-                        from geometry_types import PERIODIC_TABLE
+                        from .geometry_types import PERIODIC_TABLE
                         Z = PERIODIC_TABLE.get(ref_lower)
                     
                     # Create a simple element with the referenced name
