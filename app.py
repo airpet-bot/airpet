@@ -2668,6 +2668,87 @@ def _build_scope_summary_delta(full_summary, scoped_summary):
     return {'scope': scope_stats, 'outside_scope': outside_stats}
 
 
+def _build_scope_issue_family_correlations(full_summary, scoped_summary):
+    def _normalize_counts(summary):
+        if not isinstance(summary, dict):
+            return {}
+        raw_counts = summary.get('counts_by_code')
+        if not isinstance(raw_counts, dict):
+            return {}
+
+        normalized = {}
+        for code, count in raw_counts.items():
+            code_norm = str(code or '').strip()
+            if not code_norm:
+                continue
+            try:
+                count_norm = int(count)
+            except Exception:
+                continue
+            if count_norm <= 0:
+                continue
+            normalized[code_norm] = count_norm
+        return normalized
+
+    full_counts = _normalize_counts(full_summary)
+    scope_counts = _normalize_counts(scoped_summary)
+
+    all_codes = sorted(set(full_counts.keys()) | set(scope_counts.keys()))
+
+    scope_only_issue_codes = []
+    outside_scope_only_issue_codes = []
+    shared_issue_codes = []
+
+    scope_counts_by_code = {}
+    outside_scope_counts_by_code = {}
+    entries = []
+
+    for code in all_codes:
+        scope_count = scope_counts.get(code, 0)
+        outside_scope_count = max(0, full_counts.get(code, 0) - scope_count)
+
+        if scope_count > 0:
+            scope_counts_by_code[code] = scope_count
+        if outside_scope_count > 0:
+            outside_scope_counts_by_code[code] = outside_scope_count
+
+        if scope_count > 0 and outside_scope_count > 0:
+            correlation = 'shared'
+            shared_issue_codes.append(code)
+        elif scope_count > 0:
+            correlation = 'scope'
+            scope_only_issue_codes.append(code)
+        elif outside_scope_count > 0:
+            correlation = 'outside_scope'
+            outside_scope_only_issue_codes.append(code)
+        else:
+            continue
+
+        entries.append({
+            'issue_code': code,
+            'correlation': correlation,
+            'scope_count': scope_count,
+            'outside_scope_count': outside_scope_count,
+        })
+
+    return {
+        'scope': {
+            'issue_count': sum(scope_counts_by_code.values()),
+            'issue_codes': sorted(scope_counts_by_code.keys()),
+            'counts_by_code': scope_counts_by_code,
+        },
+        'outside_scope': {
+            'issue_count': sum(outside_scope_counts_by_code.values()),
+            'issue_codes': sorted(outside_scope_counts_by_code.keys()),
+            'counts_by_code': outside_scope_counts_by_code,
+        },
+        'scope_only_issue_codes': sorted(scope_only_issue_codes),
+        'outside_scope_only_issue_codes': sorted(outside_scope_only_issue_codes),
+        'shared_issue_codes': sorted(shared_issue_codes),
+        'entries': entries,
+    }
+
+
 @app.route('/api/preflight/check_scope', methods=['POST'])
 def preflight_scope_route():
     data = request.get_json(silent=True) or {}
@@ -2688,6 +2769,10 @@ def preflight_scope_route():
         full_report.get('summary', {}),
         scoped_report.get('summary', {}),
     )
+    issue_family_correlations = _build_scope_issue_family_correlations(
+        full_report.get('summary', {}),
+        scoped_report.get('summary', {}),
+    )
 
     return jsonify({
         'success': True,
@@ -2695,6 +2780,7 @@ def preflight_scope_route():
         'preflight_report': full_report,
         'scoped_preflight_report': scoped_report,
         'summary_delta': summary_delta,
+        'issue_family_correlations': issue_family_correlations,
     })
 
 @app.route('/api/preflight/check', methods=['POST'])
@@ -9198,6 +9284,10 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 full_report.get("summary", {}),
                 scoped_report.get("summary", {}),
             )
+            issue_family_correlations = _build_scope_issue_family_correlations(
+                full_report.get("summary", {}),
+                scoped_report.get("summary", {}),
+            )
 
             return {
                 "success": True,
@@ -9205,6 +9295,7 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 "preflight_report": full_report,
                 "scoped_preflight_report": scoped_report,
                 "summary_delta": summary_delta,
+                "issue_family_correlations": issue_family_correlations,
             }
 
         elif tool_name == "compare_preflight_summaries":
