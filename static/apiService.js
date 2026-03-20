@@ -861,7 +861,7 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
             onProgress?.({ type: 'paused', reason: 'tab_hidden' });
         } else if (!document.hidden) {
             console.log('Stream resumed: tab visible');
-            onProgress?.({ type: 'resumed' });
+            onProgress?.({ type: 'resumed', recentTools: recentTools });
         }
     };
 

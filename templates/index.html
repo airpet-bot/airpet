@@ -4,6 +4,7 @@
 <head>
     <title>AIrPET</title>
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -660,6 +661,100 @@
             border-radius: 4px;
             font-size: 12px;
             border-left: 2px solid #ffc107;
+        }
+
+        .chat-message.markdown-content {
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .chat-message.markdown-content p {
+            margin: 0.5em 0;
+        }
+
+        .chat-message.markdown-content p:first-child {
+            margin-top: 0;
+        }
+
+        .chat-message.markdown-content p:last-child {
+            margin-bottom: 0;
+        }
+
+        .chat-message.markdown-content code {
+            background-color: rgba(0, 0, 0, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+
+        .chat-message.user.markdown-content code {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .chat-message.markdown-content pre {
+            background-color: #2d2d2d;
+            color: #f8f8f2;
+            padding: 12px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 8px 0;
+        }
+
+        .chat-message.markdown-content pre code {
+            background-color: transparent;
+            padding: 0;
+            color: inherit;
+        }
+
+        .chat-message.markdown-content ul,
+        .chat-message.markdown-content ol {
+            margin: 8px 0;
+            padding-left: 24px;
+        }
+
+        .chat-message.markdown-content li {
+            margin: 4px 0;
+        }
+
+        .chat-message.markdown-content blockquote {
+            border-left: 4px solid #ccc;
+            margin: 8px 0;
+            padding-left: 12px;
+            color: #666;
+        }
+
+        .chat-message.markdown-content h1,
+        .chat-message.markdown-content h2,
+        .chat-message.markdown-content h3 {
+            margin: 12px 0 8px 0;
+            font-weight: 600;
+        }
+
+        .chat-message.markdown-content h1 { font-size: 1.4em; }
+        .chat-message.markdown-content h2 { font-size: 1.2em; }
+        .chat-message.markdown-content h3 { font-size: 1.1em; }
+
+        .chat-message.markdown-content table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 8px 0;
+        }
+
+        .chat-message.markdown-content th,
+        .chat-message.markdown-content td {
+            border: 1px solid #ddd;
+            padding: 6px 10px;
+            text-align: left;
+        }
+
+        .chat-message.markdown-content th {
+            background-color: rgba(0, 0, 0, 0.05);
+            font-weight: 600;
+        }
+
+        .chat-message.user.markdown-content th {
+            background-color: rgba(255, 255, 255, 0.15);
         }
 
         @keyframes pulse {

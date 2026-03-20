@@ -6,6 +6,10 @@ import { formatBackendDiagnosticsError } from './backendDiagnosticsUi.js';
 let messageList, promptInput, generateButton, clearButton, modelSelect, contextStatsEl;
 let isProcessing = false;
 let onGeometryUpdateCallback = () => {};
+let localUnsavedMessages = [];
+let currentRecentTools = [];
+let currentTurn = 1;
+let currentTurnLimit = 10;
 
 export function init(callbacks) {
     messageList = document.getElementById('ai_message_list');
@@ -48,6 +52,20 @@ async function loadHistory() {
         if (res.history) {
             renderHistory(res.history);
         }
+        
+        const savedMessages = localStorage.getItem('airpet_unsaved_messages');
+        if (savedMessages) {
+            try {
+                localUnsavedMessages = JSON.parse(savedMessages);
+                localUnsavedMessages.forEach(msg => {
+                    addMessageToUI(msg.role, msg.text);
+                });
+                localUnsavedMessages = [];
+                localStorage.removeItem('airpet_unsaved_messages');
+            } catch (e) {
+                console.error('Failed to parse unsaved messages:', e);
+            }
+        }
     } catch (err) {
         console.error("Failed to load chat history:", err);
     } finally {
@@ -63,7 +81,7 @@ function renderHistory(history) {
     messageList.innerHTML = '';
     // Skip the first two messages (system instructions)
     if (history.length <= 2) {
-        addMessageToUI('system', "Welcome to AIRPET AI. How can I help you with your detector geometry today?");
+        addMessageToUI('system', "Welcome to AIRPET AI. How can I help you with your detector geometry today?", false);
         return;
     }
     history.slice(2).forEach(msg => {
@@ -80,7 +98,7 @@ function renderHistory(history) {
         }
         
         if (text && !text.startsWith('[System Context Update]')) {
-            addMessageToUI(msg.role === 'user' ? 'user' : 'model', text);
+            addMessageToUI(msg.role === 'user' ? 'user' : 'model', text, false);
         }
     });
 
@@ -118,6 +136,10 @@ async function handleSend() {
     addMessageToUI('user', message);
     promptInput.value = '';
     scrollToBottom();
+
+    currentRecentTools = [];
+    currentTurn = 1;
+    currentTurnLimit = turnLimit;
 
     const thinkingIndicator = createThinkingIndicator();
     
@@ -173,23 +195,22 @@ async function handleClear() {
     }
 }
 
-function addMessageToUI(role, text) {
+function addMessageToUI(role, text, skipSave = false) {
     const div = document.createElement('div');
-    div.className = `chat-message ${role}`;
+    div.className = `chat-message ${role} markdown-content`;
     
-    // Simple markdown-ish rendering for code blocks or tool calls
-    // In the future, we could use a proper library like marked.js
-    let formattedText = text
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/\n/g, "<br>");
-    
-    // Highlight bracketed tool calls if present in the text (often added by AI explanation)
-    formattedText = formattedText.replace(/\[Tool: (.*?)\]/g, '<span class="tool-call">🛠️ $1</span>');
-
+    const formattedText = marked.marked(text);
     div.innerHTML = formattedText;
     messageList.appendChild(div);
+    
+    if (!skipSave && (role === 'user' || role === 'model')) {
+        localUnsavedMessages.push({ role, text });
+        try {
+            localStorage.setItem('airpet_unsaved_messages', JSON.stringify(localUnsavedMessages));
+        } catch (e) {
+            console.warn('Failed to save unsaved messages to localStorage:', e);
+        }
+    }
 }
 
 async function refreshContextStats() {
@@ -251,24 +272,44 @@ function updateThinkingIndicator(indicator, progress) {
     const thinkingText = indicator.querySelector('.thinking-text');
     
     if (progress.type === 'turn_start') {
-        thinkingText.innerHTML = `<span class="turn-badge">Turn ${progress.turn}/${progress.turnLimit}</span> Processing...`;
-    } else if (progress.type === 'tool_calls' && progress.tools && progress.tools.length > 0) {
-        const turnBadge = `<span class="turn-badge">Turn ${progress.turn}</span>`;
+        currentTurn = progress.turn;
+        currentTurnLimit = progress.turnLimit;
         
-        if (progress.recentTools && progress.recentTools.length > 0) {
-            const toolsHtml = progress.recentTools.map(tool => 
+        if (currentRecentTools.length > 0) {
+            const turnBadge = `<span class="turn-badge">Turn ${currentTurn}/${currentTurnLimit}</span>`;
+            const toolsHtml = currentRecentTools.map(tool => 
                 `<div class="tool-entry">🛠️ ${tool}</div>`
             ).join('');
             thinkingText.innerHTML = `${turnBadge}<div class="tools-list">${toolsHtml}</div>`;
         } else {
-            const toolCount = progress.tools.length;
-            const displayedTools = progress.tools.slice(0, 2).join(', ');
-            const remaining = toolCount > 2 ? ` +${toolCount - 2} more` : '';
-            thinkingText.innerHTML = `${turnBadge} 🛠️ Calling: ${displayedTools}${remaining}`;
+            thinkingText.innerHTML = `<span class="turn-badge">Turn ${currentTurn}/${currentTurnLimit}</span> Processing...`;
         }
+    } else if (progress.type === 'tool_calls' && progress.tools && progress.tools.length > 0) {
+        currentTurn = progress.turn;
+        
+        if (progress.recentTools && progress.recentTools.length > 0) {
+            currentRecentTools = progress.recentTools;
+        } else {
+            currentRecentTools = [...currentRecentTools, ...progress.tools].slice(-3);
+        }
+        
+        const turnBadge = `<span class="turn-badge">Turn ${currentTurn}/${currentTurnLimit}</span>`;
+        const toolsHtml = currentRecentTools.map(tool => 
+            `<div class="tool-entry">🛠️ ${tool}</div>`
+        ).join('');
+        thinkingText.innerHTML = `${turnBadge}<div class="tools-list">${toolsHtml}</div>`;
     } else if (progress.type === 'paused') {
         thinkingText.innerHTML = `<span class="pause-badge">⏸️ Paused</span> ${progress.reason || 'tab hidden'}`;
     } else if (progress.type === 'resumed') {
+        if (progress.recentTools && progress.recentTools.length > 0) {
+            currentRecentTools = progress.recentTools;
+        }
+        
+        const turnBadge = `<span class="turn-badge">Turn ${currentTurn}/${currentTurnLimit}</span>`;
+        const toolsHtml = currentRecentTools.map(tool => 
+            `<div class="tool-entry">🛠️ ${tool}</div>`
+        ).join('');
+        thinkingText.innerHTML = `${turnBadge}<div class="tools-list">${toolsHtml}</div>`;
     }
     
     scrollToBottom();
@@ -278,4 +319,5 @@ function removeThinkingIndicator(indicator) {
     if (indicator && indicator.isConnected) {
         indicator.remove();
     }
+    currentRecentTools = [];
 }
