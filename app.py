@@ -7545,8 +7545,9 @@ def add_physical_volume_route():
     position = data.get('position')
     rotation = data.get('rotation')
     scale = data.get('scale')
+    copy_number_expr = data.get('copy_number_expr', '0')
     
-    new_pv, error_msg = pm.add_physical_volume(parent_lv_name, name, volume_ref, position, rotation, scale)
+    new_pv, error_msg = pm.add_physical_volume(parent_lv_name, name, volume_ref, position, rotation, scale, copy_number_expr)
     
     if new_pv:
         return create_success_response(pm, "Physical Volume placed.")

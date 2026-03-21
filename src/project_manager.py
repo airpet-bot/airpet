@@ -3298,7 +3298,7 @@ class ProjectManager:
         self.recalculate_geometry_state()
         return True, None
 
-    def add_physical_volume(self, parent_lv_name, pv_name_suggestion, placed_lv_ref, position, rotation, scale):
+    def add_physical_volume(self, parent_lv_name, pv_name_suggestion, placed_lv_ref, position, rotation, scale, copy_number_expr="0"):
         if not self.current_geometry_state: return None, "No project loaded"
         
         state = self.current_geometry_state
@@ -3322,6 +3322,7 @@ class ProjectManager:
         # position_dict and rotation_dict are assumed to be {'x':val,...} in internal units
         new_pv = PhysicalVolumePlacement(pv_name, placed_lv_ref,
                                         parent_lv_name=parent_lv_name,
+                                        copy_number_expr=copy_number_expr,
                                         position_val_or_ref=position,
                                         rotation_val_or_ref=rotation,
                                         scale_val_or_ref=scale)
