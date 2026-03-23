@@ -2,24 +2,41 @@
 
 ## In Progress
 
-- **Geant4 confidence follow-on (multi-heartbeat): scoped preflight shared-code family-correlation hardening** (started 2026-03-20)
+- **Local-model optionality follow-on (multi-heartbeat): capability-override observability in readiness + chat diagnostics** (started 2026-03-23)
   - Why this task now:
-    - Scoped drift diagnostics now include deterministic shared-code correlation coverage, so the next confidence step is to harden malformed selector failure contracts around the same scoped route↔AI surface.
-    - This directly targets Geant4-facing confidence in scoped-vs-global drift interpretation and deterministic automation behavior.
+    - Recent scoped-selector work completed a regression-heavy streak; next checkpoint should deliberately rebalance toward feature/architecture progress (70/30 policy).
+    - Operators currently lack direct visibility into *effective* runtime capability overrides during backend selection/readiness checks, which slows local-model adoption/debugging.
   - Checkpoints (2–5 plan):
-    1. ✅ completed: evaluate and add a deterministic scoped-drift fixture where at least one issue code is non-zero in both `scope` and `outside_scope` (`correlation == shared`).
-    2. ✅ completed: expand malformed scoped-selector route↔AI parity assertions (canonical-null precedence, unsupported aliases, mixed malformed fallback paths) with metadata-clean 400 envelope guarantees.
-    3. **Current checkpoint:** add/update representative docs/examples for scoped-selector malformed-input semantics, including canonical-key precedence and metadata-clean failure envelopes.
+    1. **Current checkpoint:** extend diagnostics payloads to expose effective capability overrides (`supports_tools`, `supports_json_mode`, `supports_vision`, `supports_streaming`) for local backends in both readiness and chat-failure paths.
+    2. add deterministic contradiction/remediation hints when override claims conflict with observed backend behavior.
+    3. add route/AI regression coverage + docs/examples for the enriched diagnostics contract.
   - Definition of done (current checkpoint):
-    - operator-facing scoped diagnostics docs/examples include malformed-selector behavior for canonical-null precedence and malformed alias precedence.
-    - examples reflect route↔AI deterministic 400 failure envelope guarantees (`success`/`error` only).
-    - docs align with currently regression-locked selector semantics.
+    - backend diagnostics payloads include explicit effective capability-override fields for local backends.
+    - `/api/ai/chat` selector/runtime failure payloads surface the same effective override view.
+    - output shape is deterministic and covered by targeted tests.
   - Next checkpoint after current:
-    - reassess `Next Candidates` and select the highest-impact post-scoped checkpoint based on north-star impact and recent 70/30 feature-vs-regression balance.
+    - implement contradiction-class remediation hints and lock deterministic action-code guidance in tests/docs.
   - Risks/blockers:
-    - documenting malformed-selector matrices without overfitting implementation details requires contract-level wording discipline.
+    - distinguishing configuration intent vs runtime backend-probe reality without noisy false positives may require careful taxonomy wording.
 
 ## Recently Completed
+
+- **Geant4 confidence follow-on checkpoint completed (checkpoint 3/3): scoped-selector malformed-input docs/examples + metadata-clean 400 envelope reference matrix** (2026-03-23)
+  - Added scoped-selector normalization + failure-envelope contract documentation in `docs/PREFLIGHT_SCOPED_DIAGNOSTICS.md`:
+    - canonical/alias precedence order for `scope` selector keys
+    - canonical-null and malformed-alias precedence behavior
+    - explicit metadata-clean 400 failure-envelope contract (`success`/`error` only)
+  - Added representative route↔AI malformed-input parity artifact:
+    - `examples/preflight/scoped_preflight_selector_validation_error_matrix.json`
+    - includes canonical-null precedence and malformed alias precedence cases with payload-identical route/AI 400 responses
+    - explicitly documents exclusion of scoped success-only fields from failure envelopes
+  - Checks run:
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && python -m json.tool examples/preflight/scoped_preflight_selector_validation_error_matrix.json > /tmp/scoped_selector_matrix.pretty.json`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && pytest -q tests/test_ai_api.py -k "preflight_scope_route_and_ai_wrappers_share_validation_error_payloads"` (1 passed, 124 deselected)
+  - Checkpoint finished:
+    - ✔ operator-facing scoped diagnostics docs now cover canonical-null precedence and malformed alias precedence.
+    - ✔ examples now include deterministic route↔AI metadata-clean 400 envelope parity.
+    - ✔ contract wording is aligned with currently regression-locked selector semantics.
 
 - **Geant4 confidence checkpoint completed (checkpoint 2/3): malformed scoped-selector route↔AI parity matrix + metadata-clean 400 envelope hardening** (2026-03-23)
   - Expanded scoped-selector malformed-input regression matrix in `tests/test_ai_api.py::test_preflight_scope_route_and_ai_wrappers_share_validation_error_payloads`:

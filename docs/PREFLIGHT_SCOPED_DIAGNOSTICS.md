@@ -52,8 +52,44 @@ Each entry includes:
   - `outside_scope`: code appears only outside scope
   - `shared`: code appears in both scoped and outside-scope diagnostics
 
-## Representative scoped-drift payload
+## Scoped selector normalization + validation-failure semantics
 
-- `examples/preflight/scoped_preflight_drift_issue_family_correlations.json`
+Both scoped surfaces use the same selector normalization contract (`_normalize_preflight_scope_input(...)`).
 
-This fixture-backed example demonstrates mixed scoped vs outside-scope divergence with deterministic ordering and correlation classes.
+### Canonical + alias precedence
+
+- Canonical nested keys have strict precedence:
+  - scope type: `scope.type` > `scope.scope_type` > `scope.scopeType` > top-level `scope_type` > top-level `scopeType`
+  - scope name: `scope.name` > `scope.scope_name` > `scope.scopeName` > top-level `scope_name` > top-level `scopeName`
+- If a higher-precedence key is present, lower-precedence aliases are not consulted.
+
+### Canonical-null / malformed alias behavior
+
+- Canonical keys present-but-null/blank are treated as authoritative malformed input and do **not** fall back to aliases.
+- A malformed earlier alias (for example `scope_type: "volume_group"`) blocks fallback to later aliases (for example `scopeType: "logical_volume"`).
+- Unsupported nested alias keys such as `scope.scope_kind` / `scope.scope_label` are ignored and do not satisfy required selector fields.
+
+### Validation-failure envelope contract
+
+For scoped selector validation failures, both route and AI wrapper return deterministic 400 payloads with only:
+
+- `success` (always `false`)
+- `error` (string)
+
+Success-only scoped fields are excluded from failure envelopes:
+
+- `scope`
+- `preflight_report`
+- `scoped_preflight_report`
+- `summary_delta`
+- `issue_family_correlations`
+- `preflight_summary`
+
+## Representative examples
+
+- Scoped drift/correlation success payload:
+  - `examples/preflight/scoped_preflight_drift_issue_family_correlations.json`
+- Scoped selector malformed-input parity matrix (route ↔ AI, metadata-clean 400 envelopes):
+  - `examples/preflight/scoped_preflight_selector_validation_error_matrix.json`
+
+The malformed-input matrix includes canonical-null precedence and malformed-alias-precedence cases to document deterministic route/AI failure parity.
