@@ -1,12 +1,12 @@
 {
   "success": false,
-  "error": "AI backend invocation failed (lm_studio): connection refused",
+  "error": "AI backend invocation failed (lm_studio): tool call parse failure",
   "backend_selection": {
     "contract_version": "2026-03-16.local-tools",
     "preferred_backend_id": "lm_studio",
     "allow_fallback": false,
     "requirements": {
-      "require_tools": false,
+      "require_tools": true,
       "require_json_mode": true,
       "require_streaming": false,
       "min_context_tokens": null
@@ -27,11 +27,11 @@
     "effective_capability_overrides": {
       "supports_tools": true,
       "supports_json_mode": true,
-      "supports_vision": true,
-      "supports_streaming": false
+      "supports_vision": false,
+      "supports_streaming": true
     },
     "selector_requirements": {
-      "require_tools": false,
+      "require_tools": true,
       "require_json_mode": true,
       "require_vision": false,
       "require_streaming": false,
@@ -40,38 +40,51 @@
     "readiness": {
       "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
       "backend_id": "lm_studio",
-      "status": "unreachable",
-      "readiness_code": "backend_unreachable",
-      "ready": false,
-      "models_endpoint": "http://localhost:1234/v1/models",
+      "status": "healthy",
+      "readiness_code": "ok",
+      "ready": true,
       "effective_capability_overrides": {
         "supports_tools": true,
         "supports_json_mode": true,
-        "supports_vision": true,
-        "supports_streaming": false
+        "supports_vision": false,
+        "supports_streaming": true
       }
     },
-    "contradictions": [],
+    "contradictions": [
+      {
+        "code": "runtime_failure_despite_healthy_readiness",
+        "contradiction_class": "runtime_backend_mismatch",
+        "summary": "Runtime invocation failed even though backend readiness probe reported healthy status.",
+        "details": {
+          "readiness_status": "healthy",
+          "readiness_code": "ok"
+        }
+      }
+    ],
     "remediation": {
       "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
       "failure_stage": "backend_runtime",
       "error_code": "local_backend_invocation_failed",
       "backend_id": "lm_studio",
-      "readiness_status": "unreachable",
-      "summary": "LM Studio is unreachable from AIRPET.",
+      "readiness_status": "healthy",
+      "summary": "LM Studio failed at runtime despite a healthy readiness probe.",
       "action_codes": [
-        "start_local_backend_service",
-        "verify_backend_base_url_and_port",
-        "verify_models_endpoint_reachable"
+        "capture_runtime_backend_request_context",
+        "inspect_backend_runtime_logs",
+        "reprobe_backend_after_runtime_failure"
       ],
       "actions": [
-        "Start the local backend service (llama.cpp server or LM Studio local server).",
-        "Verify backend base_url and port match the running service.",
-        "Confirm '<base_url>/v1/models' is reachable from this machine."
+        "Capture the failing runtime request payload and response metadata for this backend.",
+        "Inspect local backend logs for model-runtime errors (model load, tool-call parsing, or context overflow).",
+        "Re-run backend diagnostics immediately after the failure to detect transient readiness drift."
       ],
-      "primary_contradiction_class": null,
-      "contradiction_classes": [],
-      "contradiction_codes": []
+      "primary_contradiction_class": "runtime_backend_mismatch",
+      "contradiction_classes": [
+        "runtime_backend_mismatch"
+      ],
+      "contradiction_codes": [
+        "runtime_failure_despite_healthy_readiness"
+      ]
     }
   }
 }

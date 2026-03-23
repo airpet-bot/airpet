@@ -178,7 +178,8 @@ def test_ai_chat_backend_selector_returns_deterministic_no_fallback_error_for_lm
                 },
                 "requirements": {
                     "require_tools": True,
-                    "require_json_mode": True
+                    "require_json_mode": True,
+                    "require_streaming": True,
                 }
             }
         }
@@ -212,7 +213,7 @@ def test_ai_chat_backend_selector_returns_deterministic_no_fallback_error_for_lm
             "require_tools": True,
             "require_json_mode": True,
             "require_vision": False,
-            "require_streaming": False,
+            "require_streaming": True,
             "min_context_tokens": None,
         }
         assert data["backend_diagnostics"]["contradictions"] == [
@@ -221,7 +222,11 @@ def test_ai_chat_backend_selector_returns_deterministic_no_fallback_error_for_lm
                 "contradiction_class": "selector_contract_mismatch",
                 "summary": "Selector-required capabilities are disabled in effective backend capability overrides.",
                 "details": {
-                    "required_capability_flags": ["supports_tools", "supports_json_mode"],
+                    "required_capability_flags": [
+                        "supports_tools",
+                        "supports_json_mode",
+                        "supports_streaming",
+                    ],
                     "unsatisfied_capability_flags": ["supports_tools"],
                     "effective_capability_overrides": {
                         "supports_tools": False,
@@ -234,6 +239,9 @@ def test_ai_chat_backend_selector_returns_deterministic_no_fallback_error_for_lm
         ]
         assert data["backend_diagnostics"]["remediation"]["summary"] == "Selector requirements conflict with effective backend capability overrides."
         assert data["backend_diagnostics"]["remediation"]["primary_contradiction_class"] == "selector_contract_mismatch"
+        assert data["backend_diagnostics"]["remediation"]["contradiction_classes"] == [
+            "selector_contract_mismatch",
+        ]
         assert data["backend_diagnostics"]["remediation"]["contradiction_codes"] == [
             "selector_requirement_capability_mismatch",
         ]
@@ -241,6 +249,69 @@ def test_ai_chat_backend_selector_returns_deterministic_no_fallback_error_for_lm
             "align_selector_requirements_with_effective_capabilities",
             "update_runtime_capability_overrides_for_selected_backend",
             "allow_fallback_or_choose_capability_compatible_backend",
+        ]
+
+
+def test_ai_chat_backend_selector_requirement_failure_without_capability_contradiction_keeps_requirement_remediation(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.build_local_backend_readiness_diagnostic', return_value={
+             'backend_id': 'lm_studio',
+             'status': 'healthy',
+             'readiness_code': 'ok',
+             'ready': True,
+         }):
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        payload = {
+            "message": "hello",
+            "backend_selector": {
+                "preferred_backend_id": "lm_studio",
+                "allow_fallback": False,
+                "runtime_config": {
+                    "backends": {
+                        "lm_studio": {
+                            "enabled": True,
+                            "max_context_tokens": 1024,
+                            "supports_tools": True,
+                            "supports_json_mode": True,
+                            "supports_streaming": True,
+                        }
+                    }
+                },
+                "requirements": {
+                    "require_tools": False,
+                    "require_json_mode": False,
+                    "require_streaming": False,
+                    "min_context_tokens": 4096,
+                }
+            }
+        }
+
+        response = client.post("/api/ai/chat", json=payload)
+
+        assert response.status_code == 400
+        data = response.get_json()
+        assert data["success"] is False
+        assert data["backend_diagnostics"]["failure_stage"] == "selector_requirements"
+        assert data["backend_diagnostics"]["selector_requirements"] == {
+            "require_tools": False,
+            "require_json_mode": False,
+            "require_vision": False,
+            "require_streaming": False,
+            "min_context_tokens": 4096,
+        }
+        assert data["backend_diagnostics"]["contradictions"] == []
+        assert data["backend_diagnostics"]["remediation"]["summary"] == "Selected backend cannot satisfy the requested capabilities."
+        assert data["backend_diagnostics"]["remediation"]["primary_contradiction_class"] is None
+        assert data["backend_diagnostics"]["remediation"]["contradiction_classes"] == []
+        assert data["backend_diagnostics"]["remediation"]["contradiction_codes"] == []
+        assert data["backend_diagnostics"]["remediation"]["action_codes"] == [
+            "review_backend_requirements",
+            "allow_backend_fallback",
+            "switch_backend_for_missing_capabilities",
         ]
 
 
@@ -572,6 +643,12 @@ def test_ai_chat_backend_selector_surfaces_runtime_backend_mismatch_when_readine
         ]
         assert data["backend_diagnostics"]["remediation"]["summary"] == "LM Studio failed at runtime despite a healthy readiness probe."
         assert data["backend_diagnostics"]["remediation"]["primary_contradiction_class"] == "runtime_backend_mismatch"
+        assert data["backend_diagnostics"]["remediation"]["contradiction_classes"] == [
+            "runtime_backend_mismatch",
+        ]
+        assert data["backend_diagnostics"]["remediation"]["contradiction_codes"] == [
+            "runtime_failure_despite_healthy_readiness",
+        ]
         assert data["backend_diagnostics"]["remediation"]["action_codes"] == [
             "capture_runtime_backend_request_context",
             "inspect_backend_runtime_logs",

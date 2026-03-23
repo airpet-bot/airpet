@@ -122,17 +122,40 @@ When local-selector chat paths fail, diagnostics now distinguish failure stages:
 
 This allows UI/workflow logic to separate user-input fixes from backend availability/remediation steps.
 
-### `/api/ai/chat` remediation payload
+### `/api/ai/chat` contradiction + remediation payloads
 
-`backend_diagnostics` now also includes a deterministic `remediation` object:
+`backend_diagnostics` now includes deterministic contradiction/remediation structures in addition to stage/readiness fields.
 
-- `summary`: human-readable one-line triage summary
-- `action_codes`: stable machine-readable next-step codes
-- `actions`: deterministic operator-facing guidance
+Core fields:
 
-This is intended to let the UI render stable copy for selector/input errors vs runtime failures without guessing from free-form exception text.
+- `effective_capability_overrides`: normalized local capability flags (`supports_tools`, `supports_json_mode`, `supports_vision`, `supports_streaming`)
+- `selector_requirements`: normalized selector requirements when provided
+- `contradictions[]`: machine-readable contradiction records
+  - `code`
+  - `contradiction_class`
+  - `summary`
+  - `details`
+- `remediation`:
+  - `summary`
+  - `action_codes`
+  - `actions`
+  - `primary_contradiction_class`
+  - `contradiction_classes`
+  - `contradiction_codes`
 
-## 9) Local-backend remediation playbook (Checkpoint 2/2)
+This is intended to let UI/automation logic branch on deterministic contradiction classes and remediation codes instead of parsing free-form exceptions.
+
+### Contradiction classes (checkpoint 3 enriched contract)
+
+- `selector_contract_mismatch`
+  - code: `selector_requirement_capability_mismatch`
+  - meaning: selector-required capabilities conflict with effective runtime capability overrides.
+
+- `runtime_backend_mismatch`
+  - code: `runtime_failure_despite_healthy_readiness`
+  - meaning: runtime invocation failed while readiness probes still classify the backend as healthy.
+
+## 9) Local-backend remediation playbook (Checkpoint 3/3)
 
 When `/api/ai/chat` returns `backend_diagnostics.failure_stage`, use this default remediation path:
 
@@ -142,12 +165,26 @@ When `/api/ai/chat` returns `backend_diagnostics.failure_stage`, use this defaul
     - `use_backend_model_selector_format`
     - `select_nonempty_local_model_name`
 
-- `selector_requirements`
-  - expected issue: selected backend cannot satisfy requested capabilities
+- `selector_requirements` + contradiction class `selector_contract_mismatch`
+  - expected issue: selector requirements conflict with effective capability overrides
+  - primary actions:
+    - `align_selector_requirements_with_effective_capabilities`
+    - `update_runtime_capability_overrides_for_selected_backend`
+    - `allow_fallback_or_choose_capability_compatible_backend`
+
+- `selector_requirements` with no contradiction classes
+  - expected issue: requirement mismatch not caused by capability override contradiction (for example context-window constraints)
   - primary actions:
     - `review_backend_requirements`
     - `allow_backend_fallback`
     - `switch_backend_for_missing_capabilities`
+
+- `backend_runtime` + contradiction class `runtime_backend_mismatch`
+  - expected issue: runtime/backend behavior drift relative to readiness probe
+  - primary actions:
+    - `capture_runtime_backend_request_context`
+    - `inspect_backend_runtime_logs`
+    - `reprobe_backend_after_runtime_failure`
 
 - `backend_runtime` + readiness `timeout`
   - primary actions:
@@ -172,3 +209,4 @@ Representative examples are available in:
 - `examples/ai_backends/chat_error_selector_validation.json`
 - `examples/ai_backends/chat_error_selector_requirements.json`
 - `examples/ai_backends/chat_error_backend_runtime_unreachable.json`
+- `examples/ai_backends/chat_error_backend_runtime_mismatch_healthy_readiness.json`
