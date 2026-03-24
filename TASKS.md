@@ -2,29 +2,25 @@
 
 ## In Progress
 
-- **Local-model optionality milestone (multi-heartbeat): session-scoped local backend runtime profiles + operator controls** (selected 2026-03-24)
-  - Why this task now:
-    - Local adapters are implemented, but operators still need to re-specify endpoint/runtime details per request payload.
-    - This friction suppresses day-to-day local-model usage more than additional diagnostics polish would.
-    - The highest-leverage next feature is making local backend config sticky and reusable across diagnostics + chat paths.
-  - Architecture intent:
-    - persist a session-scoped `runtime_config` profile for local backends (`llama_cpp`, `lm_studio`).
-    - deterministically merge session defaults with per-request overrides (request wins) so model-prefix selection keeps working while inheriting endpoint/auth/timeouts.
-    - expose first-class API surfaces so UI can manage profiles without custom payload hacks.
-  - Checkpoints (4 plan):
-    1. ✅ completed: add backend/session runtime-profile plumbing + deterministic merge semantics across diagnostics, health checks, and chat selector routes (with regression coverage).
-    2. ✅ completed: add frontend controls to read/write these runtime profiles (settings UX + validation/error surfacing).
-    3. ✅ completed: thread the saved profile into local backend diagnostics panels with explicit "using saved profile" visibility.
-    4. **Current checkpoint:** publish docs/examples for runtime-profile API + operator flow.
-  - Definition of done (current checkpoint):
-    - runtime-profile diagnostics payload shape and source/precedence semantics are explicitly documented.
-    - examples include representative built-in-default, session-profile, and session+request-override diagnostics payloads.
-    - operator-facing docs explain session scope and request-override precedence with API/UI touchpoints.
-  - Risks/blockers:
-    - avoiding confusing precedence between saved profile defaults and one-off request overrides.
-    - keeping session payload size bounded while allowing useful auth/header config.
+- **Next milestone selection pending (last in-progress milestone completed 2026-03-24).**
+  - Recommended starting point next heartbeat: pick one high-impact follow-on from `Next Candidates` and open a new 2–5 checkpoint plan.
 
 ## Recently Completed
+
+- **Local-model optionality checkpoint completed (checkpoint 4/4): runtime-profile API/operator docs + representative diagnostics payload examples** (2026-03-24)
+  - Updated operator/API contract docs in `docs/AI_BACKEND_ADAPTER_CONTRACT.md`:
+    - documented full `GET|POST|DELETE /api/ai/backends/runtime_config` semantics (request/response/validation behavior).
+    - documented runtime-profile diagnostics metadata contract for both top-level and per-backend payload surfaces.
+    - documented operator flow touchpoints (API workflow + AI panel `Local backends ⚙` runtime-profile controls).
+  - Added representative diagnostics payload artifacts under `examples/ai_backends/`:
+    - `backend_diagnostics_runtime_profile_built_in_defaults.json`
+    - `backend_diagnostics_runtime_profile_session_profile.json`
+    - `backend_diagnostics_runtime_profile_session_plus_request_overrides.json`
+  - Checkpoint finished:
+    - ✔ runtime-profile source/precedence semantics are now explicitly documented for operators and automation.
+    - ✔ examples now cover built-in defaults, saved session profile usage, and session+request override merge behavior.
+    - ✔ the 4-checkpoint session runtime-profile milestone is now complete end-to-end (backend plumbing, UI controls, diagnostics visibility, docs/examples).
+
 
 - **Local-model optionality checkpoint completed (checkpoint 3/4): diagnostics/runtime-profile visibility + precedence-aware status copy** (2026-03-24)
   - Extended backend diagnostics payload contract in `app.py`:
@@ -1644,10 +1640,10 @@
 
 ## Next Candidates
 
-1. **Local-model optionality follow-on: operator-facing capability override diagnostics in backend readiness/chat payloads**
-   - Surface effective capability overrides (`supports_tools` etc.) in diagnostics payloads so users can audit why a backend was/was not selected.
-   - Add deterministic remediation guidance when override config contradicts probed backend behavior.
-   - Impact: medium-high (reduces confusion while adopting local backends across diverse model servers).
+1. **Local-model optionality follow-on: end-to-end runtime-profile reproducibility matrix for chat + stream routes**
+   - Add focused route-level regression coverage that proves session profile defaults and request overrides are resolved identically across `/api/ai/chat` and `/api/ai/chat/stream` local selector paths.
+   - Include deterministic diagnostics assertions for source/precedence metadata in failure payloads when local runtime invocation fails.
+   - Impact: medium-high (locks operator trust that saved runtime profiles behave identically across diagnostics and both chat execution paths).
 
 2. **Reproducibility follow-on: end-to-end scoped preflight example workflow artifact**
    - Add a compact route/AI reproducibility artifact that shows selector input, scoped output, and deterministic drift diagnostics in one flow.

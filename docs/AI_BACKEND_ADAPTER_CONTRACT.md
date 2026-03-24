@@ -79,15 +79,63 @@ When a `backend_selector` payload is provided, `/api/ai/chat` now:
 
 ### 6.1) Session runtime profile defaults (local backends)
 
-To reduce repeated local backend wiring in per-request payloads, AIRPET now supports a
+To reduce repeated local backend wiring in per-request payloads, AIRPET supports a
 session-scoped local runtime profile at:
 
 - `GET|POST|DELETE /api/ai/backends/runtime_config`
 
-Effective runtime config used by local backend diagnostics + chat selection/invocation is:
+Runtime profile API contract:
 
-1. session runtime profile defaults
-2. merged with request `runtime_config` (request keys win)
+- `GET /api/ai/backends/runtime_config`
+  - returns `{ success: true, runtime_config: <object> }`
+  - returns `{}` when no profile is saved in the current session.
+- `POST /api/ai/backends/runtime_config`
+  - request body must include `runtime_config`.
+  - accepted values:
+    - object → saved as the current session profile
+    - `null` → clears saved profile (same effect as `DELETE`)
+  - validation failures:
+    - missing key: `Missing required field: runtime_config.` (400)
+    - non-object: `runtime_config must be a JSON object.` (400)
+- `DELETE /api/ai/backends/runtime_config`
+  - clears the session profile and returns `{ success: true, runtime_config: {} }`.
+
+Preferred payload shape:
+
+```json
+{
+  "runtime_config": {
+    "backends": {
+      "llama_cpp": {
+        "enabled": true,
+        "base_url": "http://127.0.0.1:8080",
+        "model": "Meta-Llama-3.1-8B-Instruct",
+        "timeout_seconds": 30,
+        "max_retries": 1,
+        "retry_backoff_seconds": 0.5,
+        "verify_tls": false,
+        "headers": {
+          "Authorization": "Bearer local-token"
+        }
+      },
+      "lm_studio": {
+        "enabled": true,
+        "base_url": "http://127.0.0.1:1234",
+        "model": "qwen2.5-7b-instruct"
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- Runtime profile storage is session-scoped (not global, not persisted across unrelated sessions).
+- Diagnostics/chat paths also accept request-level `runtime_config` payloads.
+- Effective runtime config is resolved by deterministic deep merge:
+
+  1. session runtime profile defaults
+  2. request `runtime_config` overrides (request keys win)
 
 This preserves deterministic per-request override control while making stable endpoint/auth/
 timeout defaults reusable across:
@@ -96,6 +144,63 @@ timeout defaults reusable across:
 - `/ai_health_check`
 - `/api/ai/chat`
 - `/api/ai/chat/stream`
+
+### 6.2) Runtime-profile diagnostics metadata contract
+
+`GET|POST /api/ai/backends/diagnostics` now emits runtime-profile provenance in two places:
+
+1. top-level `runtime_profile` summary
+2. per-backend `diagnostics[].runtime_profile`
+
+Top-level summary fields:
+
+- `source`: one of
+  - `built_in_defaults`
+  - `session_profile`
+  - `request_overrides`
+  - `session_profile_plus_request_overrides`
+- `session_profile_active` (bool)
+- `request_overrides_active` (bool)
+- `merge_precedence`: `request_overrides_win_over_session_profile`
+- `supported_sources`: deterministic enum list above
+
+Per-backend usage fields:
+
+- `source` (same enum as above)
+- `uses_session_profile` (bool)
+- `uses_request_overrides` (bool)
+- `label` (operator-facing short text)
+- `message` (operator-facing precedence context)
+
+Representative payloads:
+
+- built-in defaults only:
+  - `examples/ai_backends/backend_diagnostics_runtime_profile_built_in_defaults.json`
+- session profile active (no request overrides):
+  - `examples/ai_backends/backend_diagnostics_runtime_profile_session_profile.json`
+- session profile + request override merge:
+  - `examples/ai_backends/backend_diagnostics_runtime_profile_session_plus_request_overrides.json`
+
+### 6.3) Operator flow (API + UI touchpoints)
+
+API-first workflow:
+
+1. Save defaults once with `POST /api/ai/backends/runtime_config`.
+2. Verify source/precedence with `GET /api/ai/backends/diagnostics` (`runtime_profile` fields).
+3. Run chat with optional request-level `backend_selector.runtime_config` for one-off overrides.
+4. Clear defaults with `DELETE /api/ai/backends/runtime_config` when done.
+
+UI workflow (AI panel):
+
+- Open **"Local backends ⚙"**.
+- Edit/save session runtime profile defaults for `llama_cpp` / `lm_studio`.
+- Use the runtime-profile status chip and diagnostics tooltips to confirm whether AIRPET is using:
+  - built-in defaults
+  - saved session profile
+  - request overrides
+  - saved profile + request overrides
+
+This keeps local-backend operations deterministic while still allowing one-off request-specific overrides.
 
 ## 7) Current matrix
 
