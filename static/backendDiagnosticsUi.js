@@ -18,6 +18,9 @@ const REMEDIATION_ACTION_LABELS = Object.freeze({
     review_backend_requirements: 'Review backend selector requirements (tools/json/streaming/context) for this backend.',
     allow_backend_fallback: 'Enable allow_fallback=true to permit backend fallback.',
     switch_backend_for_missing_capabilities: 'Switch to a backend that supports the missing capabilities.',
+    align_selector_requirements_with_effective_capabilities: 'Align selector requirements with effective backend capability overrides.',
+    update_runtime_capability_overrides_for_selected_backend: 'Update runtime capability overrides for the selected backend profile.',
+    allow_fallback_or_choose_capability_compatible_backend: 'Allow fallback or choose a capability-compatible backend.',
     disable_tool_requirement_for_local_backends: 'Set require_tools=false for local text-first backends.',
     switch_to_cloud_backend_for_tool_calls: 'Use a Gemini/Ollama model when tool calling is required.',
     increase_backend_timeout: 'Increase backend timeout_seconds or reduce prompt size.',
@@ -31,6 +34,9 @@ const REMEDIATION_ACTION_LABELS = Object.freeze({
     validate_openai_compatible_models_payload: "Validate '/v1/models' returns an OpenAI-compatible payload.",
     retry_request: 'Retry once to rule out a transient backend failure.',
     inspect_backend_logs: 'Inspect local backend logs for runtime errors.',
+    capture_runtime_backend_request_context: 'Capture runtime request context and backend metadata for debugging.',
+    inspect_backend_runtime_logs: 'Inspect backend runtime logs for contradiction between readiness and execution.',
+    reprobe_backend_after_runtime_failure: 'Re-run backend readiness probes immediately after runtime failure.',
     refresh_backend_diagnostics: 'Refresh backend diagnostics and retry.',
 });
 
@@ -70,7 +76,11 @@ export function getBackendRemediationActions(remediation) {
 
     if (Array.isArray(remediation.action_codes) && remediation.action_codes.length > 0) {
         return remediation.action_codes
-            .map(code => REMEDIATION_ACTION_LABELS[String(code)] || null)
+            .map(code => {
+                const normalizedCode = String(code || '').trim();
+                if (!normalizedCode) return null;
+                return REMEDIATION_ACTION_LABELS[normalizedCode] || `Action code: ${normalizedCode}`;
+            })
             .filter(Boolean);
     }
 
@@ -78,8 +88,10 @@ export function getBackendRemediationActions(remediation) {
 }
 
 export function formatBackendDiagnosticsError(err) {
-    const diagnostics = err?.data?.backend_diagnostics;
-    if (!diagnostics || typeof diagnostics !== 'object') return null;
+    const diagnostics = (err?.data?.backend_diagnostics && typeof err.data.backend_diagnostics === 'object')
+        ? err.data.backend_diagnostics
+        : ((err?.backend_diagnostics && typeof err.backend_diagnostics === 'object') ? err.backend_diagnostics : null);
+    if (!diagnostics) return null;
 
     const stage = String(diagnostics.failure_stage || '').toLowerCase();
     const stageLabel = getBackendFailureStageLabel(stage);
@@ -93,6 +105,16 @@ export function formatBackendDiagnosticsError(err) {
     const readinessCode = String(readiness.readiness_code || 'unknown');
     const readinessMessage = String(readiness.message || diagnostics.message || err.message || 'Unknown backend error.');
 
+    const runtimeProfile = diagnostics.runtime_profile && typeof diagnostics.runtime_profile === 'object'
+        ? diagnostics.runtime_profile
+        : (readiness.runtime_profile && typeof readiness.runtime_profile === 'object' ? readiness.runtime_profile : null);
+    const runtimeProfileLabel = runtimeProfile ? getRuntimeProfileLabel(runtimeProfile) : null;
+    const runtimeProfileDetail = runtimeProfile ? getRuntimeProfileDetail(runtimeProfile) : '';
+
+    const contradictions = Array.isArray(diagnostics.contradictions)
+        ? diagnostics.contradictions.filter(item => item && typeof item === 'object')
+        : [];
+
     const remediation = diagnostics.remediation && typeof diagnostics.remediation === 'object'
         ? diagnostics.remediation
         : null;
@@ -101,18 +123,53 @@ export function formatBackendDiagnosticsError(err) {
         : 'Follow backend diagnostics guidance and retry.';
     const remediationActions = getBackendRemediationActions(remediation);
 
+    const backendSelection = err?.data?.backend_selection && typeof err.data.backend_selection === 'object'
+        ? err.data.backend_selection
+        : null;
+
     const alertMessage = `${backendLabel}: ${stageLabel} (${readinessStatus})`;
     const detailLines = [
         'AI backend failure',
         `Stage: ${stageLabel}`,
         `Backend: ${backendLabel}`,
         `Readiness: ${readinessStatus} (${readinessCode})`,
-        `Detail: ${readinessMessage}`,
-        `Remediation: ${remediationSummary}`,
     ];
+
+    if (runtimeProfileLabel) {
+        detailLines.push(`Runtime profile: ${runtimeProfileLabel}`);
+    }
+    if (runtimeProfileDetail) {
+        detailLines.push(`Runtime profile detail: ${runtimeProfileDetail}`);
+    }
+
+    if (backendSelection) {
+        const selectionBackendId = backendSelection.resolved_backend_id || diagnostics.backend_id;
+        const selectionBackendLabel = getBackendLabel(selectionBackendId);
+        const selectionModel = backendSelection.resolved_model
+            ? `::${backendSelection.resolved_model}`
+            : '';
+        const executionMode = backendSelection.execution_mode
+            ? ` (${backendSelection.execution_mode})`
+            : '';
+        detailLines.push(`Selection: ${selectionBackendLabel}${selectionModel}${executionMode}`);
+    }
+
+    detailLines.push(`Detail: ${readinessMessage}`);
+    detailLines.push(`Remediation: ${remediationSummary}`);
 
     if (typeof diagnostics.error_code === 'string' && diagnostics.error_code) {
         detailLines.push(`Error code: ${diagnostics.error_code}`);
+    }
+
+    if (contradictions.length > 0) {
+        detailLines.push('Contradictions:');
+        contradictions.slice(0, 3).forEach((item, index) => {
+            const summary = String(item.summary || item.code || 'Unspecified contradiction.');
+            const contradictionClass = item.contradiction_class
+                ? `[${item.contradiction_class}] `
+                : '';
+            detailLines.push(`${index + 1}. ${contradictionClass}${summary}`);
+        });
     }
 
     if (remediationActions.length > 0) {
@@ -126,6 +183,7 @@ export function formatBackendDiagnosticsError(err) {
         alertMessage,
         chatMessage: detailLines.join('\n'),
         readiness,
+        backendSelection,
     };
 }
 

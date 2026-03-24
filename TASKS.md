@@ -3,9 +3,31 @@
 ## In Progress
 
 - **Next milestone selection pending (last in-progress milestone completed 2026-03-24).**
-  - Recommended starting point next heartbeat: scope a short 2–3 checkpoint frontend follow-on to surface new `/api/ai/chat/stream` `backend_diagnostics` error payloads in the AI panel.
+  - Recommended starting point next heartbeat: scope a compact reproducibility artifact for scoped-preflight route↔AI workflow replay (current Next Candidate #2).
 
 ## Recently Completed
+
+- **Local-model optionality follow-on completed: stream error diagnostics are now surfaced with chat-parity runtime/remediation context in the AI panel** (2026-03-24)
+  - Fixed SSE error handling in `static/apiService.js` for `/api/ai/chat/stream`:
+    - stream `type=error` payloads now throw structured errors that preserve `backend_diagnostics` + `backend_selection` metadata.
+    - parser flow now separates JSON parse failures from backend-emitted stream errors, preventing stream errors from being silently swallowed as parse warnings.
+    - non-2xx stream bootstrap failures now propagate the existing `handleResponse(...)` diagnostics envelope directly.
+  - Extended diagnostics rendering in `static/backendDiagnosticsUi.js`:
+    - `formatBackendDiagnosticsError(...)` now renders runtime-profile source/detail lines and stream backend-selection context (`resolved_backend_id`, `resolved_model`, `execution_mode`).
+    - contradiction summaries are now surfaced in deterministic numbered lines.
+    - remediation action-code mapping was expanded for contradiction-aware/runtime-mismatch actions, with deterministic fallback text for unknown codes.
+  - Added focused frontend regression coverage in `tests/js/backend_diagnostics_panels.test.mjs`:
+    - new stream-style diagnostics test locks runtime-profile copy, contradiction rendering, selection-context rendering, remediation action list parity, and status-chip runtime-profile suffix behavior.
+  - Checks run:
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --check static/apiService.js`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --check static/backendDiagnosticsUi.js`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --test tests/js/backend_diagnostics_panels.test.mjs` (5 passed)
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --test tests/js/backend_diagnostics_panels.test.mjs tests/js/replica_inspector_bindings.test.mjs tests/js/division_inspector_bindings.test.mjs tests/js/ai_runtime_config_ui.test.mjs` (19 passed)
+  - Follow-on finished:
+    - ✔ stream SSE local-backend failures now preserve machine-readable diagnostics instead of collapsing to generic stream-end errors.
+    - ✔ AI panel messaging now surfaces runtime-profile + contradiction/remediation details for stream failures.
+    - ✔ readiness status chip/runtime-profile suffix updates remain deterministic after stream failures.
+
 
 - **Local-model optionality follow-on completed: `/api/ai/chat` + `/api/ai/chat/stream` runtime-profile merge parity + failure provenance diagnostics lock** (2026-03-24)
   - Extended local-selector runtime-config plumbing in `app.py` so both chat routes now carry explicit:

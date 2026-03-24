@@ -912,8 +912,7 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
         });
 
         if (!response.ok) {
-            const error = await handleResponse(response);
-            throw new Error(error.error || 'Stream request failed');
+            await handleResponse(response);
         }
 
         const reader = response.body.getReader();
@@ -937,42 +936,59 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
                 const line = buffer.slice(0, newlineIndex);
                 buffer = buffer.slice(newlineIndex + 2);
 
-                if (line.startsWith('data: ')) {
-                    try {
-                        const data = JSON.parse(line.slice(6));
-                        if (data.type === 'turn_start') {
-                            onProgress?.({ type: 'turn_start', turn: data.turn, turnLimit: data.turn_limit });
-                        } else if (data.type === 'tool_calls') {
-                            if (data.tools && data.tools.length > 0) {
-                                recentTools = [...recentTools, ...data.tools].slice(-3);
-                            }
-                            onProgress?.({ 
-                                type: 'tool_calls', 
-                                turn: data.turn, 
-                                tools: data.tools,
-                                recentTools: recentTools
-                            });
-                            lastToolUpdate = Date.now();
-                        } else if (data.type === 'complete') {
-                            finalResult = {
-                                success: true,
-                                message: data.message,
-                                extra_payload: data.extra_payload,
-                                job_id: data.job_id,
-                                version_id: data.version_id,
-                                project_state: data.project_state,
-                                scene_update: data.scene_update,
-                                response_type: data.response_type,
-                                project_name: data.project_name,
-                                history_status: data.history_status
-                            };
-                            onProgress?.({ type: 'complete' });
-                        } else if (data.type === 'error') {
-                            throw new Error(data.message);
-                        }
-                    } catch (parseErr) {
-                        console.warn('Failed to parse SSE data:', line, parseErr);
+                if (!line.startsWith('data: ')) {
+                    continue;
+                }
+
+                let data;
+                try {
+                    data = JSON.parse(line.slice(6));
+                } catch (parseErr) {
+                    console.warn('Failed to parse SSE data:', line, parseErr);
+                    continue;
+                }
+
+                if (data.type === 'turn_start') {
+                    onProgress?.({ type: 'turn_start', turn: data.turn, turnLimit: data.turn_limit });
+                } else if (data.type === 'tool_calls') {
+                    if (data.tools && data.tools.length > 0) {
+                        recentTools = [...recentTools, ...data.tools].slice(-3);
                     }
+                    onProgress?.({
+                        type: 'tool_calls',
+                        turn: data.turn,
+                        tools: data.tools,
+                        recentTools: recentTools
+                    });
+                    lastToolUpdate = Date.now();
+                } else if (data.type === 'complete') {
+                    finalResult = {
+                        success: true,
+                        message: data.message,
+                        extra_payload: data.extra_payload,
+                        job_id: data.job_id,
+                        version_id: data.version_id,
+                        project_state: data.project_state,
+                        scene_update: data.scene_update,
+                        response_type: data.response_type,
+                        project_name: data.project_name,
+                        history_status: data.history_status
+                    };
+                    onProgress?.({ type: 'complete' });
+                } else if (data.type === 'error') {
+                    const streamError = new Error(
+                        data.message || data.error || 'AI stream request failed.'
+                    );
+                    streamError.type = data.error_type || 'stream_backend_error';
+                    streamError.status = Number.isFinite(data.status) ? data.status : 500;
+                    streamError.data = {
+                        success: false,
+                        error: data.error || data.message || 'AI stream request failed.',
+                        error_type: streamError.type,
+                        backend_diagnostics: data.backend_diagnostics,
+                        backend_selection: data.backend_selection,
+                    };
+                    throw streamError;
                 }
             }
         }

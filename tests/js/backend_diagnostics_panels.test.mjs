@@ -168,3 +168,64 @@ test('chat remediation prefers explicit actions over action-code lookup and retu
 
     assert.equal(formatBackendDiagnosticsError({ message: 'plain error' }), null);
 });
+
+test('stream SSE backend diagnostics keep runtime-profile, contradiction, and selection details', () => {
+    const streamErr = {
+        message: 'Stream processing error: timed out while contacting local backend.',
+        data: {
+            backend_selection: {
+                resolved_backend_id: 'llama_cpp',
+                resolved_model: 'qwen2.5-coder',
+                execution_mode: 'local_text_adapter',
+            },
+            backend_diagnostics: {
+                failure_stage: 'backend_runtime',
+                backend_id: 'llama_cpp',
+                error_code: 'local_backend_invocation_failed',
+                runtime_profile: {
+                    source: 'session_profile_plus_request_overrides',
+                },
+                readiness: {
+                    backend_id: 'llama_cpp',
+                    status: 'timeout',
+                    readiness_code: 'backend_timeout',
+                    message: 'Timed out while waiting for local backend completion.',
+                    runtime_profile: {
+                        source: 'session_profile_plus_request_overrides',
+                    },
+                },
+                contradictions: [
+                    {
+                        code: 'runtime_failure_despite_healthy_readiness',
+                        contradiction_class: 'runtime_backend_mismatch',
+                        summary: 'Readiness probe appears healthy but runtime call failed.',
+                    },
+                ],
+                remediation: {
+                    summary: 'Backend timed out during runtime invocation.',
+                    action_codes: [
+                        'increase_backend_timeout',
+                        'capture_runtime_backend_request_context',
+                    ],
+                },
+            },
+        },
+    };
+
+    const formatted = formatBackendDiagnosticsError(streamErr);
+    assert.ok(formatted);
+    assert.equal(formatted.alertMessage, 'llama.cpp: backend runtime failure (timeout)');
+    assert.equal(formatted.backendSelection?.resolved_backend_id, 'llama_cpp');
+
+    assert.ok(formatted.chatMessage.includes('Runtime profile: using saved profile + request overrides'));
+    assert.ok(formatted.chatMessage.includes('Selection: llama.cpp::qwen2.5-coder (local_text_adapter)'));
+    assert.ok(formatted.chatMessage.includes('Contradictions:'));
+    assert.ok(formatted.chatMessage.includes('1. [runtime_backend_mismatch] Readiness probe appears healthy but runtime call failed.'));
+    assert.ok(formatted.chatMessage.includes('1. Increase backend timeout_seconds or reduce prompt size.'));
+    assert.ok(formatted.chatMessage.includes('2. Capture runtime request context and backend metadata for debugging.'));
+
+    const streamChip = buildBackendStatusChip('llama_cpp::qwen2.5-coder', {
+        llama_cpp: formatted.readiness,
+    });
+    assert.equal(streamChip.text, '🟠 llama.cpp: timeout · saved profile + request overrides');
+});
