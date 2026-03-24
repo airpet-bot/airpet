@@ -77,6 +77,26 @@ When a `backend_selector` payload is provided, `/api/ai/chat` now:
   - `gemini_remote` → Gemini SDK path
   - no selector (or non-selector local model choice) → existing Ollama path
 
+### 6.1) Session runtime profile defaults (local backends)
+
+To reduce repeated local backend wiring in per-request payloads, AIRPET now supports a
+session-scoped local runtime profile at:
+
+- `GET|POST|DELETE /api/ai/backends/runtime_config`
+
+Effective runtime config used by local backend diagnostics + chat selection/invocation is:
+
+1. session runtime profile defaults
+2. merged with request `runtime_config` (request keys win)
+
+This preserves deterministic per-request override control while making stable endpoint/auth/
+timeout defaults reusable across:
+
+- `/api/ai/backends/diagnostics`
+- `/ai_health_check`
+- `/api/ai/chat`
+- `/api/ai/chat/stream`
+
 ## 7) Current matrix
 
 See `docs/AI_BACKEND_CAPABILITY_MATRIX.json`.

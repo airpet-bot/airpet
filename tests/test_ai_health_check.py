@@ -4,7 +4,7 @@ from unittest.mock import patch
 import pytest
 import requests
 
-from app import app
+from app import app, LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY
 
 
 class StubResponse:
@@ -245,3 +245,96 @@ def test_ai_backend_diagnostics_route_surfaces_runtime_capability_overrides(clie
         'supports_vision': True,
         'supports_streaming': False,
     }
+
+
+def test_ai_backend_runtime_config_route_supports_get_set_and_clear(client):
+    with client.session_transaction() as sess:
+        sess[LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY] = {
+            'backends': {
+                'llama_cpp': {'base_url': 'http://session-llama'}
+            }
+        }
+
+    get_response = client.get('/api/ai/backends/runtime_config')
+    assert get_response.status_code == 200
+    assert get_response.get_json()['runtime_config'] == {
+        'backends': {
+            'llama_cpp': {'base_url': 'http://session-llama'}
+        }
+    }
+
+    set_response = client.post('/api/ai/backends/runtime_config', json={
+        'runtime_config': {
+            'backends': {
+                'llama_cpp': {'base_url': 'http://updated-llama', 'enabled': True},
+                'lm_studio': {'base_url': 'http://updated-lm'},
+            }
+        }
+    })
+    assert set_response.status_code == 200
+    assert set_response.get_json()['runtime_config']['backends']['llama_cpp']['base_url'] == 'http://updated-llama'
+
+    clear_response = client.delete('/api/ai/backends/runtime_config')
+    assert clear_response.status_code == 200
+    assert clear_response.get_json()['runtime_config'] == {}
+
+
+def test_ai_backend_diagnostics_route_merges_session_runtime_config_with_request_overrides(client):
+    with client.session_transaction() as sess:
+        sess[LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY] = {
+            'backends': {
+                'llama_cpp': {
+                    'base_url': 'http://session-llama',
+                    'timeout_seconds': 1.0,
+                }
+            }
+        }
+
+    def fake_get(url, timeout=0):
+        assert url == 'http://request-llama/v1/models'
+        return StubResponse(payload={'data': [{'id': 'llama-from-request'}]}, ok=True, status_code=200)
+
+    with patch('app.requests.get', side_effect=fake_get):
+        response = client.post('/api/ai/backends/diagnostics', json={
+            'backends': ['llama_cpp'],
+            'runtime_config': {
+                'backends': {
+                    'llama_cpp': {
+                        'base_url': 'http://request-llama',
+                    }
+                }
+            },
+        })
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data['success'] is True
+    assert data['diagnostics'][0]['models'] == ['llama-from-request']
+
+
+def test_ai_health_check_uses_session_runtime_config_for_local_backends(client):
+    with client.session_transaction() as sess:
+        sess[LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY] = {
+            'backends': {
+                'llama_cpp': {'base_url': 'http://session-llama', 'timeout_seconds': 1.0},
+                'lm_studio': {'base_url': 'http://session-lm', 'timeout_seconds': 1.0},
+            }
+        }
+
+    def fake_get(url, timeout=0):
+        if url == 'http://localhost:11434/api/tags':
+            return StubResponse(payload={'models': []})
+        if url == 'http://session-llama/v1/models':
+            return StubResponse(payload={'data': [{'id': 'llama-session-model'}]})
+        if url == 'http://session-lm/v1/models':
+            return StubResponse(payload={'data': [{'id': 'lm-session-model'}]})
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    with patch('app.requests.get', side_effect=fake_get), \
+         patch('app.get_gemini_client_for_session', return_value=None):
+        response = client.get('/ai_health_check')
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data['models']['llama_cpp'] == ['llama-session-model']
+    assert data['models']['lm_studio'] == ['lm-session-model']

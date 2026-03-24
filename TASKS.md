@@ -2,22 +2,56 @@
 
 ## In Progress
 
-- **Local-model optionality follow-on (multi-heartbeat): post-diagnostics milestone selection** (started 2026-03-23)
+- **Local-model optionality milestone (multi-heartbeat): session-scoped local backend runtime profiles + operator controls** (selected 2026-03-24)
   - Why this task now:
-    - The contradiction-aware diagnostics contract checkpoint is now implementation + docs + example complete.
-    - Next step is to deliberately pick the highest-impact local-model optionality milestone (instead of drifting into low-impact polish-only work).
-  - Checkpoints (2 plan):
-    1. ✅ completed: close contradiction-aware diagnostics contract publication (tests/docs/examples).
-    2. **Current checkpoint:** choose and scope the next local-model optionality implementation milestone.
+    - Local adapters are implemented, but operators still need to re-specify endpoint/runtime details per request payload.
+    - This friction suppresses day-to-day local-model usage more than additional diagnostics polish would.
+    - The highest-leverage next feature is making local backend config sticky and reusable across diagnostics + chat paths.
+  - Architecture intent:
+    - persist a session-scoped `runtime_config` profile for local backends (`llama_cpp`, `lm_studio`).
+    - deterministically merge session defaults with per-request overrides (request wins) so model-prefix selection keeps working while inheriting endpoint/auth/timeouts.
+    - expose first-class API surfaces so UI can manage profiles without custom payload hacks.
+  - Checkpoints (4 plan):
+    1. ✅ completed: add backend/session runtime-profile plumbing + deterministic merge semantics across diagnostics, health checks, and chat selector routes (with regression coverage).
+    2. **Current checkpoint:** add frontend controls to read/write these runtime profiles (settings UX + validation/error surfacing).
+    3. thread the saved profile into local backend diagnostics panels with explicit "using saved profile" visibility.
+    4. publish docs/examples for runtime-profile API + operator flow.
   - Definition of done (current checkpoint):
-    - one concrete milestone is selected with architecture intent + expected operator impact.
-    - TASKS.md contains a 2–5 checkpoint execution plan and explicit done criteria.
-  - Next checkpoint after current:
-    - start implementation of the selected local-model optionality milestone.
+    - frontend can GET/POST/DELETE `/api/ai/backends/runtime_config` without manual console calls.
+    - local backend settings are editable from UI and persisted for the active session.
+    - error states (invalid payload/shape) are surfaced in-panel with actionable copy.
   - Risks/blockers:
-    - balancing feature-forward impact with deterministic regression discipline while keeping the local backend contract concise.
+    - avoiding confusing precedence between saved profile defaults and one-off request overrides.
+    - keeping session payload size bounded while allowing useful auth/header config.
 
 ## Recently Completed
+
+- **Local-model optionality checkpoint completed (checkpoint 1/4): session runtime-profile backend plumbing + merge semantics** (2026-03-24)
+  - Selected and scoped the post-diagnostics milestone toward operator-facing local-model usability (session runtime profiles).
+  - Added session runtime-profile helpers in `app.py`:
+    - JSON-safe normalization for persisted runtime config payloads.
+    - deterministic deep-merge of session defaults + request overrides (request precedence).
+  - Added new API route:
+    - `GET|POST|DELETE /api/ai/backends/runtime_config` for session-scoped local backend runtime profile management.
+  - Integrated effective runtime config resolution across existing local-backend paths:
+    - `/api/ai/backends/diagnostics`
+    - `/ai_health_check`
+    - `/api/ai/chat`
+    - `/api/ai/chat/stream`
+  - Expanded regression coverage:
+    - `tests/test_ai_health_check.py`
+      - runtime_config route CRUD behavior.
+      - diagnostics merge precedence (session defaults overridden by request payload).
+      - health-check probing via session-configured local backend base URLs.
+    - `tests/test_ai_integration.py`
+      - local model-prefix chat selection now verified to inherit session runtime defaults (base_url/timeout/headers) while preserving per-request model and enabled overrides.
+  - Checks run:
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && python -m py_compile app.py tests/test_ai_health_check.py tests/test_ai_integration.py`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && pytest tests/test_ai_health_check.py tests/test_ai_integration.py -q` (27 passed)
+  - Checkpoint finished:
+    - ✔ local backend runtime defaults can now be persisted per session and reused across diagnostics + chat.
+    - ✔ request-level runtime overrides remain deterministic and higher precedence.
+    - ✔ behavior is regression-locked in backend diagnostics + chat integration tests.
 
 - **Local-model optionality checkpoint completed (checkpoint 3/3): contradiction-aware diagnostics contract publication (regression matrix + docs/examples)** (2026-03-23)
   - Expanded `/api/ai/chat` regression matrix coverage in `tests/test_ai_integration.py`:

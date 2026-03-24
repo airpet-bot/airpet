@@ -21,6 +21,7 @@ import shutil
 import sched
 import time
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 from datetime import datetime
@@ -7749,6 +7750,57 @@ def get_defines_by_type_route():
 
 LOCAL_BACKEND_DIAGNOSTICS_SCHEMA_VERSION = "2026-03-15.local-backend-diagnostics.checkpoint3"
 LOCAL_BACKEND_STATUS_VALUES = ("healthy", "timeout", "unreachable", "misconfigured")
+LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY = "airpet_local_backend_runtime_config"
+
+
+def _normalize_runtime_config_payload(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    try:
+        # Keep session payload JSON-serializable and detached from mutable callers.
+        return json.loads(json.dumps(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_runtime_config_dicts(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    merged = deepcopy(base)
+    for key, override_value in overrides.items():
+        base_value = merged.get(key)
+        if isinstance(base_value, dict) and isinstance(override_value, dict):
+            merged[key] = _merge_runtime_config_dicts(base_value, override_value)
+        else:
+            merged[key] = deepcopy(override_value)
+    return merged
+
+
+def _get_session_local_backend_runtime_config() -> Optional[Dict[str, Any]]:
+    return _normalize_runtime_config_payload(session.get(LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY))
+
+
+def _set_session_local_backend_runtime_config(runtime_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    normalized = _normalize_runtime_config_payload(runtime_config)
+    if normalized is None:
+        session.pop(LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY, None)
+        session.modified = True
+        return {}
+
+    session[LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY] = normalized
+    session.modified = True
+    return deepcopy(normalized)
+
+
+def _resolve_effective_runtime_config(runtime_config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    session_cfg = _get_session_local_backend_runtime_config()
+    request_cfg = _normalize_runtime_config_payload(runtime_config)
+
+    if isinstance(session_cfg, dict) and isinstance(request_cfg, dict):
+        return _merge_runtime_config_dicts(session_cfg, request_cfg)
+    if isinstance(request_cfg, dict):
+        return request_cfg
+    if isinstance(session_cfg, dict):
+        return session_cfg
+    return None
 
 
 def _resolve_effective_local_capability_overrides(
@@ -8030,6 +8082,41 @@ def _build_local_backend_diagnostics_payload(
     }
 
 
+@app.route('/api/ai/backends/runtime_config', methods=['GET', 'POST', 'DELETE'])
+def ai_backend_runtime_config_route():
+    if request.method == 'GET':
+        return jsonify({
+            "success": True,
+            "runtime_config": _get_session_local_backend_runtime_config() or {},
+        })
+
+    if request.method == 'DELETE':
+        cleared = _set_session_local_backend_runtime_config(None)
+        return jsonify({"success": True, "runtime_config": cleared})
+
+    payload = request.get_json(silent=True) or {}
+    if "runtime_config" not in payload:
+        return jsonify({
+            "success": False,
+            "error": "Missing required field: runtime_config.",
+        }), 400
+
+    runtime_config = payload.get("runtime_config")
+    if runtime_config is None:
+        stored = _set_session_local_backend_runtime_config(None)
+        return jsonify({"success": True, "runtime_config": stored})
+
+    normalized = _normalize_runtime_config_payload(runtime_config)
+    if normalized is None:
+        return jsonify({
+            "success": False,
+            "error": "runtime_config must be a JSON object.",
+        }), 400
+
+    stored = _set_session_local_backend_runtime_config(normalized)
+    return jsonify({"success": True, "runtime_config": stored})
+
+
 @app.route('/api/ai/backends/diagnostics', methods=['GET', 'POST'])
 def ai_backend_diagnostics_route():
     payload = request.get_json(silent=True) if request.method == 'POST' else request.args
@@ -8046,7 +8133,9 @@ def ai_backend_diagnostics_route():
             return jsonify({"success": False, "error": "backends must be a string or list of strings."}), 400
 
     runtime_config_raw = payload.get('runtime_config')
-    runtime_config = runtime_config_raw if isinstance(runtime_config_raw, dict) else None
+    if runtime_config_raw is not None and not isinstance(runtime_config_raw, dict):
+        return jsonify({"success": False, "error": "runtime_config must be an object when provided."}), 400
+    runtime_config = _resolve_effective_runtime_config(runtime_config_raw)
 
     try:
         diagnostics_payload = _build_local_backend_diagnostics_payload(
@@ -8094,7 +8183,9 @@ def ai_health_check_route():
         response_data["error_ollama"] = str(e)
 
     # 2. Check local OpenAI-compatible model servers (llama.cpp + LM Studio)
-    local_diag_payload = _build_local_backend_diagnostics_payload()
+    local_diag_payload = _build_local_backend_diagnostics_payload(
+        runtime_config=_resolve_effective_runtime_config(),
+    )
     diagnostics_by_id = {
         item["backend_id"]: item
         for item in local_diag_payload.get("diagnostics", [])
@@ -13063,9 +13154,10 @@ def ai_chat_stream_route():
         if not isinstance(requirements_cfg, dict):
             requirements_cfg = {}
 
-        runtime_config = selector_cfg.get("runtime_config")
-        if not isinstance(runtime_config, dict):
-            runtime_config = None
+        runtime_config_raw = selector_cfg.get("runtime_config")
+        if runtime_config_raw is not None and not isinstance(runtime_config_raw, dict):
+            runtime_config_raw = None
+        runtime_config = _resolve_effective_runtime_config(runtime_config_raw)
         selector_runtime_config = runtime_config
 
         preferred_backend_id = (
@@ -13212,9 +13304,10 @@ def ai_chat_route():
         if not isinstance(requirements_cfg, dict):
             requirements_cfg = {}
 
-        runtime_config = selector_cfg.get("runtime_config")
-        if not isinstance(runtime_config, dict):
-            runtime_config = None
+        runtime_config_raw = selector_cfg.get("runtime_config")
+        if runtime_config_raw is not None and not isinstance(runtime_config_raw, dict):
+            runtime_config_raw = None
+        runtime_config = _resolve_effective_runtime_config(runtime_config_raw)
         selector_runtime_config = runtime_config
 
         preferred_backend_id = (

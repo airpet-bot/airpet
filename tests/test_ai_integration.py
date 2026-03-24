@@ -1,7 +1,7 @@
 import pytest
 import json
 from unittest.mock import MagicMock, patch
-from app import app, dispatch_ai_tool
+from app import app, dispatch_ai_tool, LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY
 from src.project_manager import ProjectManager
 from src.expression_evaluator import ExpressionEvaluator
 from src.ai_tools import AI_GEOMETRY_TOOLS
@@ -690,6 +690,53 @@ def test_ai_chat_infers_local_backend_selector_from_model_prefix(client):
         assert invocation_request.require_tools is True
         assert invocation_request.require_json_mode is True
         assert invocation_request.require_streaming is False
+
+
+def test_ai_chat_model_prefix_uses_session_runtime_config_defaults(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.invoke_text_request_for_backend') as MockInvokeAdapter:
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        with client.session_transaction() as sess:
+            sess[LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY] = {
+                'backends': {
+                    'llama_cpp': {
+                        'base_url': 'http://session-llama',
+                        'timeout_seconds': 33,
+                        'enabled': False,
+                        'headers': {'Authorization': 'Bearer session-token'},
+                    }
+                }
+            }
+
+        MockInvokeAdapter.return_value = MagicMock(
+            backend_id='llama_cpp',
+            model='qwen-local',
+            text='{"ok":true}',
+            usage={'prompt_tokens': 3, 'completion_tokens': 2},
+            raw_response={},
+        )
+
+        response = client.post('/api/ai/chat', json={
+            'message': 'Return compact JSON.',
+            'model': 'llama_cpp::qwen-local',
+        })
+
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data['success'] is True
+        assert data['backend_selection']['selector_source'] == 'model_prefix'
+
+        runtime_config = MockInvokeAdapter.call_args.kwargs['runtime_config']
+        llama_cfg = runtime_config['backends']['llama_cpp']
+        assert llama_cfg['base_url'] == 'http://session-llama'
+        assert llama_cfg['timeout_seconds'] == 33
+        assert llama_cfg['headers'] == {'Authorization': 'Bearer session-token'}
+        assert llama_cfg['enabled'] is True
+        assert llama_cfg['model'] == 'qwen-local'
 
 
 def test_ai_chat_rejects_local_model_prefix_without_model_name(client):
