@@ -2,6 +2,11 @@
 import * as APIService from './apiService.js';
 import * as UIManager from './uiManager.js';
 import { formatBackendDiagnosticsError } from './backendDiagnosticsUi.js';
+import {
+    runtimeConfigToFormState,
+    buildRuntimeConfigPayloadFromFormState,
+    getLocalRuntimeBackendIds,
+} from './aiRuntimeConfigUi.js';
 
 let messageList, promptInput, generateButton, clearButton, modelSelect, contextStatsEl;
 let isProcessing = false;
@@ -11,6 +16,12 @@ let currentRecentTools = [];
 let currentTurn = 1;
 let currentTurnLimit = 10;
 
+let runtimeConfigButton, runtimeConfigStatusEl;
+let runtimeConfigModal, runtimeConfigErrorEl;
+let runtimeConfigReloadBtn, runtimeConfigClearBtn, runtimeConfigCancelBtn, runtimeConfigSaveBtn;
+let runtimeConfigFormEls = {};
+let runtimeConfigLoaded = false;
+
 export function init(callbacks) {
     messageList = document.getElementById('ai_message_list');
     promptInput = document.getElementById('ai_prompt_input');
@@ -18,7 +29,9 @@ export function init(callbacks) {
     clearButton = document.getElementById('clear_chat_btn');
     modelSelect = document.getElementById('ai_model_select');
     contextStatsEl = document.getElementById('ai_context_stats');
-    
+
+    initRuntimeConfigUi();
+
     if (callbacks && callbacks.onGeometryUpdate) {
         onGeometryUpdateCallback = callbacks.onGeometryUpdate;
     }
@@ -44,6 +57,247 @@ export function init(callbacks) {
 
     // Load existing history
     loadHistory();
+    loadRuntimeConfigProfile({ quiet: true });
+}
+
+function initRuntimeConfigUi() {
+    runtimeConfigButton = document.getElementById('ai_runtime_config_btn');
+    runtimeConfigStatusEl = document.getElementById('ai_runtime_config_status');
+    runtimeConfigModal = document.getElementById('aiRuntimeConfigModal');
+    runtimeConfigErrorEl = document.getElementById('ai_runtime_config_error');
+    runtimeConfigReloadBtn = document.getElementById('ai_runtime_config_reload_btn');
+    runtimeConfigClearBtn = document.getElementById('ai_runtime_config_clear_btn');
+    runtimeConfigCancelBtn = document.getElementById('ai_runtime_config_cancel_btn');
+    runtimeConfigSaveBtn = document.getElementById('ai_runtime_config_save_btn');
+
+    runtimeConfigFormEls = {};
+    getLocalRuntimeBackendIds().forEach((backendId) => {
+        runtimeConfigFormEls[backendId] = {
+            enabled: document.getElementById(`ai_runtime_${backendId}_enabled`),
+            base_url: document.getElementById(`ai_runtime_${backendId}_base_url`),
+            endpoint_path: document.getElementById(`ai_runtime_${backendId}_endpoint_path`),
+            model: document.getElementById(`ai_runtime_${backendId}_model`),
+            timeout_seconds: document.getElementById(`ai_runtime_${backendId}_timeout_seconds`),
+            max_retries: document.getElementById(`ai_runtime_${backendId}_max_retries`),
+            retry_backoff_seconds: document.getElementById(`ai_runtime_${backendId}_retry_backoff_seconds`),
+            verify_tls: document.getElementById(`ai_runtime_${backendId}_verify_tls`),
+            headers_json: document.getElementById(`ai_runtime_${backendId}_headers_json`),
+        };
+    });
+
+    setRuntimeConfigStatus('Runtime profile: loading…', 'info');
+
+    if (runtimeConfigButton) {
+        runtimeConfigButton.addEventListener('click', () => {
+            if (!runtimeConfigModal) return;
+            runtimeConfigModal.style.display = 'block';
+            setRuntimeConfigError('', 'neutral');
+            if (!runtimeConfigLoaded) {
+                loadRuntimeConfigProfile({ quiet: true });
+            }
+        });
+    }
+
+    if (runtimeConfigCancelBtn) {
+        runtimeConfigCancelBtn.addEventListener('click', () => {
+            if (runtimeConfigModal) runtimeConfigModal.style.display = 'none';
+        });
+    }
+
+    if (runtimeConfigReloadBtn) {
+        runtimeConfigReloadBtn.addEventListener('click', () => {
+            loadRuntimeConfigProfile({ quiet: false });
+        });
+    }
+
+    if (runtimeConfigSaveBtn) {
+        runtimeConfigSaveBtn.addEventListener('click', handleSaveRuntimeConfigProfile);
+    }
+
+    if (runtimeConfigClearBtn) {
+        runtimeConfigClearBtn.addEventListener('click', handleClearRuntimeConfigProfile);
+    }
+}
+
+function setRuntimeConfigStatus(message, kind = 'info') {
+    if (!runtimeConfigStatusEl) return;
+
+    runtimeConfigStatusEl.className = 'ai-model-info ai-runtime-config-status';
+    runtimeConfigStatusEl.classList?.add(`status-${kind}`);
+    runtimeConfigStatusEl.textContent = message;
+}
+
+function setRuntimeConfigError(message, kind = 'error') {
+    if (!runtimeConfigErrorEl) return;
+
+    runtimeConfigErrorEl.className = `ai-runtime-feedback ${kind}`;
+    runtimeConfigErrorEl.textContent = message || '';
+    runtimeConfigErrorEl.style.display = message ? 'block' : 'none';
+}
+
+function setRuntimeConfigFormBusy(isBusy) {
+    const fieldGroups = Object.values(runtimeConfigFormEls || {});
+    fieldGroups.forEach((fields) => {
+        Object.values(fields || {}).forEach((el) => {
+            if (el) el.disabled = isBusy;
+        });
+    });
+
+    if (runtimeConfigSaveBtn) runtimeConfigSaveBtn.disabled = isBusy;
+    if (runtimeConfigReloadBtn) runtimeConfigReloadBtn.disabled = isBusy;
+    if (runtimeConfigClearBtn) runtimeConfigClearBtn.disabled = isBusy;
+}
+
+function collectRuntimeConfigFormState() {
+    const backends = {};
+
+    getLocalRuntimeBackendIds().forEach((backendId) => {
+        const fields = runtimeConfigFormEls[backendId] || {};
+        backends[backendId] = {
+            enabled: !!fields.enabled?.checked,
+            base_url: fields.base_url?.value ?? '',
+            endpoint_path: fields.endpoint_path?.value ?? '',
+            model: fields.model?.value ?? '',
+            timeout_seconds: fields.timeout_seconds?.value ?? '',
+            max_retries: fields.max_retries?.value ?? '',
+            retry_backoff_seconds: fields.retry_backoff_seconds?.value ?? '',
+            verify_tls: !!fields.verify_tls?.checked,
+            headers_json: fields.headers_json?.value ?? '',
+        };
+    });
+
+    return { backends };
+}
+
+function applyRuntimeConfigFormState(formState) {
+    const backendForms = formState?.backends || {};
+
+    getLocalRuntimeBackendIds().forEach((backendId) => {
+        const fields = runtimeConfigFormEls[backendId] || {};
+        const values = backendForms[backendId] || {};
+
+        if (fields.enabled) fields.enabled.checked = !!values.enabled;
+        if (fields.base_url) fields.base_url.value = values.base_url ?? '';
+        if (fields.endpoint_path) fields.endpoint_path.value = values.endpoint_path ?? '';
+        if (fields.model) fields.model.value = values.model ?? '';
+        if (fields.timeout_seconds) fields.timeout_seconds.value = values.timeout_seconds ?? '';
+        if (fields.max_retries) fields.max_retries.value = values.max_retries ?? '';
+        if (fields.retry_backoff_seconds) fields.retry_backoff_seconds.value = values.retry_backoff_seconds ?? '';
+        if (fields.verify_tls) fields.verify_tls.checked = !!values.verify_tls;
+        if (fields.headers_json) fields.headers_json.value = values.headers_json ?? '{}';
+    });
+}
+
+function hasSessionRuntimeOverrides(runtimeConfig) {
+    if (!runtimeConfig || typeof runtimeConfig !== 'object') return false;
+    const backendMap = runtimeConfig.backends && typeof runtimeConfig.backends === 'object'
+        ? runtimeConfig.backends
+        : runtimeConfig;
+
+    return getLocalRuntimeBackendIds().some((backendId) => {
+        const value = backendMap[backendId];
+        return value && typeof value === 'object' && Object.keys(value).length > 0;
+    });
+}
+
+async function refreshRuntimeConfigDiagnostics() {
+    try {
+        const diagResponse = await APIService.getAiBackendDiagnostics(['llama_cpp', 'lm_studio']);
+        if (diagResponse?.success && Array.isArray(diagResponse.diagnostics)) {
+            diagResponse.diagnostics.forEach(diagnostic => {
+                UIManager.upsertAiBackendDiagnostic?.(diagnostic);
+            });
+        }
+    } catch (_diagErr) {
+    }
+}
+
+async function loadRuntimeConfigProfile({ quiet = false } = {}) {
+    if (!quiet) {
+        setRuntimeConfigError('', 'neutral');
+    }
+
+    setRuntimeConfigFormBusy(true);
+    try {
+        const response = await APIService.getAiBackendRuntimeConfig();
+        const runtimeConfig = response?.runtime_config || {};
+        applyRuntimeConfigFormState(runtimeConfigToFormState(runtimeConfig));
+        runtimeConfigLoaded = true;
+
+        if (hasSessionRuntimeOverrides(runtimeConfig)) {
+            setRuntimeConfigStatus('Runtime profile: custom session settings active.', 'ok');
+        } else {
+            setRuntimeConfigStatus('Runtime profile: using built-in defaults.', 'info');
+        }
+
+        if (!quiet) {
+            setRuntimeConfigError('Runtime profile reloaded from the current session.', 'ok');
+        }
+    } catch (err) {
+        const message = `Failed to load runtime profile: ${err.message || err}`;
+        setRuntimeConfigStatus('Runtime profile: load failed.', 'error');
+        setRuntimeConfigError(message, 'error');
+    } finally {
+        setRuntimeConfigFormBusy(false);
+    }
+}
+
+async function handleSaveRuntimeConfigProfile() {
+    setRuntimeConfigError('', 'neutral');
+
+    const payloadResult = buildRuntimeConfigPayloadFromFormState(collectRuntimeConfigFormState());
+    if (!payloadResult.ok) {
+        setRuntimeConfigStatus('Runtime profile: validation error.', 'error');
+        setRuntimeConfigError(payloadResult.error, 'error');
+        return;
+    }
+
+    setRuntimeConfigFormBusy(true);
+    try {
+        const response = await APIService.saveAiBackendRuntimeConfig(payloadResult.runtimeConfig);
+        const runtimeConfig = response?.runtime_config || {};
+
+        applyRuntimeConfigFormState(runtimeConfigToFormState(runtimeConfig));
+        runtimeConfigLoaded = true;
+
+        setRuntimeConfigStatus('Runtime profile: saved for this session.', 'ok');
+        setRuntimeConfigError('Saved. These settings are now reused by diagnostics and chat for this session.', 'ok');
+
+        await refreshRuntimeConfigDiagnostics();
+    } catch (err) {
+        const message = `Failed to save runtime profile: ${err.message || err}`;
+        setRuntimeConfigStatus('Runtime profile: save failed.', 'error');
+        setRuntimeConfigError(message, 'error');
+    } finally {
+        setRuntimeConfigFormBusy(false);
+    }
+}
+
+async function handleClearRuntimeConfigProfile() {
+    const shouldClear = confirm('Clear the saved local runtime profile for this session and revert to defaults?');
+    if (!shouldClear) return;
+
+    setRuntimeConfigError('', 'neutral');
+    setRuntimeConfigFormBusy(true);
+
+    try {
+        const response = await APIService.clearAiBackendRuntimeConfig();
+        const runtimeConfig = response?.runtime_config || {};
+
+        applyRuntimeConfigFormState(runtimeConfigToFormState(runtimeConfig));
+        runtimeConfigLoaded = true;
+
+        setRuntimeConfigStatus('Runtime profile: cleared (defaults active).', 'info');
+        setRuntimeConfigError('Saved session profile cleared. Built-in backend defaults are now active.', 'ok');
+
+        await refreshRuntimeConfigDiagnostics();
+    } catch (err) {
+        const message = `Failed to clear runtime profile: ${err.message || err}`;
+        setRuntimeConfigStatus('Runtime profile: clear failed.', 'error');
+        setRuntimeConfigError(message, 'error');
+    } finally {
+        setRuntimeConfigFormBusy(false);
+    }
 }
 
 async function loadHistory() {

@@ -13,18 +13,50 @@
     - expose first-class API surfaces so UI can manage profiles without custom payload hacks.
   - Checkpoints (4 plan):
     1. ✅ completed: add backend/session runtime-profile plumbing + deterministic merge semantics across diagnostics, health checks, and chat selector routes (with regression coverage).
-    2. **Current checkpoint:** add frontend controls to read/write these runtime profiles (settings UX + validation/error surfacing).
-    3. thread the saved profile into local backend diagnostics panels with explicit "using saved profile" visibility.
+    2. ✅ completed: add frontend controls to read/write these runtime profiles (settings UX + validation/error surfacing).
+    3. **Current checkpoint:** thread the saved profile into local backend diagnostics panels with explicit "using saved profile" visibility.
     4. publish docs/examples for runtime-profile API + operator flow.
   - Definition of done (current checkpoint):
-    - frontend can GET/POST/DELETE `/api/ai/backends/runtime_config` without manual console calls.
-    - local backend settings are editable from UI and persisted for the active session.
-    - error states (invalid payload/shape) are surfaced in-panel with actionable copy.
+    - diagnostics/status surfaces clearly show whether session defaults are active vs built-in defaults.
+    - local-backend readiness views can be refreshed after runtime-profile updates without manual page reloads.
+    - copy explicitly clarifies session-scope behavior and request-override precedence where users see diagnostics.
   - Risks/blockers:
     - avoiding confusing precedence between saved profile defaults and one-off request overrides.
     - keeping session payload size bounded while allowing useful auth/header config.
 
 ## Recently Completed
+
+- **Local-model optionality checkpoint completed (checkpoint 2/4): operator-facing runtime-profile UI controls + validation feedback** (2026-03-24)
+  - Added session runtime-profile client APIs in `static/apiService.js`:
+    - `getAiBackendRuntimeConfig()`
+    - `saveAiBackendRuntimeConfig(runtimeConfig)`
+    - `clearAiBackendRuntimeConfig()`
+  - Added deterministic runtime-profile UI helper module in `static/aiRuntimeConfigUi.js`:
+    - default-value hydration for `llama_cpp` + `lm_studio`
+    - form-state ↔ runtime-config normalization
+    - numeric/boolean/header-json validation with actionable error copy
+  - Added AI panel runtime-profile controls in `templates/index.html` + `static/aiAssistant.js`:
+    - new "Local backends ⚙" action in the AI status bar
+    - session status chip (`using built-in defaults` vs `custom session settings active`)
+    - modal editor for local backend endpoint/model/timeout/retry/TLS/header settings
+    - in-panel validation/success/error feedback for load/save/clear actions
+    - diagnostics refresh hook after save/clear so readiness chips update without manual reload
+  - Added frontend regression coverage in `tests/js/ai_runtime_config_ui.test.mjs`:
+    - default hydration behavior
+    - session/legacy payload normalization
+    - deterministic payload serialization
+    - actionable validation failures (headers JSON + numeric bounds)
+  - Checks run:
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --check static/aiRuntimeConfigUi.js`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --check static/aiAssistant.js`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --check static/apiService.js`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --test tests/js/ai_runtime_config_ui.test.mjs tests/js/backend_diagnostics_panels.test.mjs` (8 passed)
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --test tests/js/backend_diagnostics_panels.test.mjs tests/js/replica_inspector_bindings.test.mjs tests/js/division_inspector_bindings.test.mjs tests/js/ai_runtime_config_ui.test.mjs` (18 passed)
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && pytest -q tests/test_ai_health_check.py tests/test_ai_integration.py -k "runtime_config or backend_diagnostics"` (7 passed, 20 deselected)
+  - Checkpoint finished:
+    - ✔ frontend can read/save/clear session runtime profiles without manual API calls.
+    - ✔ local backend runtime settings are editable from the AI panel UI and persisted for the active session.
+    - ✔ validation and API failures are surfaced in-panel with actionable copy.
 
 - **Local-model optionality checkpoint completed (checkpoint 1/4): session runtime-profile backend plumbing + merge semantics** (2026-03-24)
   - Selected and scoped the post-diagnostics milestone toward operator-facing local-model usability (session runtime profiles).

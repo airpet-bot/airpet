@@ -810,6 +810,14 @@
             flex-wrap: wrap;
         }
 
+        .ai-status-right {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
         .ai-model-info {
             font-size: 11px;
             color: #6c757d;
@@ -849,6 +857,137 @@
             color: #6b21a8;
             border-color: #e9d5ff;
             background: #faf5ff;
+        }
+
+        .ai-runtime-config-status {
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 1px 6px;
+            background: #f8fafc;
+            color: #475569;
+        }
+
+        .ai-runtime-config-status.status-ok {
+            color: #166534;
+            border-color: #bbf7d0;
+            background: #f0fdf4;
+        }
+
+        .ai-runtime-config-status.status-error {
+            color: #991b1b;
+            border-color: #fecaca;
+            background: #fef2f2;
+        }
+
+        .ai-runtime-config-btn {
+            border: 1px solid #cbd5e1;
+            background: #f8fafc;
+            color: #1e293b;
+            border-radius: 6px;
+            padding: 3px 8px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+
+        .ai-runtime-config-btn:hover {
+            background: #eef2ff;
+        }
+
+        .ai-runtime-modal-body {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .ai-runtime-help {
+            margin: 0;
+            color: #334155;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .ai-runtime-backend-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .ai-runtime-backend-card {
+            border: 1px solid #dbe3ef;
+            border-radius: 6px;
+            padding: 8px;
+            background: #f8fafc;
+            min-width: 0;
+        }
+
+        @media (max-width: 1100px) {
+            .ai-runtime-backend-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .ai-runtime-backend-card legend {
+            font-size: 12px;
+            font-weight: 600;
+            color: #1e293b;
+            padding: 0 4px;
+        }
+
+        .ai-runtime-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-bottom: 7px;
+        }
+
+        .ai-runtime-field label {
+            font-size: 11px;
+            color: #334155;
+        }
+
+        .ai-runtime-field input,
+        .ai-runtime-field textarea {
+            width: 100%;
+            font-size: 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            padding: 4px 6px;
+            box-sizing: border-box;
+            font-family: inherit;
+        }
+
+        .ai-runtime-field textarea {
+            min-height: 78px;
+            resize: vertical;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+
+        .ai-runtime-inline-check {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: #334155;
+            margin-right: 10px;
+        }
+
+        .ai-runtime-feedback {
+            display: none;
+            font-size: 12px;
+            border-radius: 4px;
+            padding: 6px 8px;
+        }
+
+        .ai-runtime-feedback.error {
+            color: #991b1b;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+        }
+
+        .ai-runtime-feedback.ok {
+            color: #166534;
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
         }
 
         #clear_chat_btn {
@@ -2316,7 +2455,11 @@
                                 <span class="ai-model-info">Max turns: <input type="number" id="ai_turn_limit" value="10" min="1" max="50" style="width: 44px; font-size: 11px;"></span>
                                 <span class="ai-model-info" id="ai_context_stats">Context: n/a</span>
                             </div>
-                            <button id="clear_chat_btn">Clear History</button>
+                            <div class="ai-status-right">
+                                <button id="ai_runtime_config_btn" class="ai-runtime-config-btn" title="Edit session runtime profile for local backends">Local backends ⚙</button>
+                                <span class="ai-model-info ai-runtime-config-status" id="ai_runtime_config_status">Runtime profile: loading…</span>
+                                <button id="clear_chat_btn">Clear History</button>
+                            </div>
                         </div>
                         <div id="ai_input_row">
                             <textarea id="ai_prompt_input" placeholder="Type a message or geometry instruction..." rows="1"></textarea>
@@ -3463,6 +3606,111 @@
             <div class="modal-footer">
                 <button id="cancelApiKey">Cancel</button>
                 <button id="saveApiKey" class="confirm-button">Save and Apply</button>
+            </div>
+        </div>
+    </div>
+    <div id="aiRuntimeConfigModal" class="editor-modal">
+        <div class="modal-content" style="width: 980px; height: auto; max-height: 90vh;">
+            <div class="modal-header">
+                <h4>Local Backend Runtime Profile</h4>
+            </div>
+            <div class="modal-body ai-runtime-modal-body" style="padding: 14px;">
+                <p class="ai-runtime-help">
+                    Session-scoped settings for <b>llama.cpp</b> and <b>LM Studio</b>. These defaults are merged with per-request overrides (request values win).
+                </p>
+                <div id="ai_runtime_config_error" class="ai-runtime-feedback"></div>
+
+                <div class="ai-runtime-backend-grid">
+                    <fieldset class="ai-runtime-backend-card">
+                        <legend>llama.cpp</legend>
+
+                        <label class="ai-runtime-inline-check" for="ai_runtime_llama_cpp_enabled">
+                            <input type="checkbox" id="ai_runtime_llama_cpp_enabled" checked>
+                            Enabled for selector routing
+                        </label>
+                        <label class="ai-runtime-inline-check" for="ai_runtime_llama_cpp_verify_tls">
+                            <input type="checkbox" id="ai_runtime_llama_cpp_verify_tls" checked>
+                            Verify TLS
+                        </label>
+
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_base_url">Base URL</label>
+                            <input type="text" id="ai_runtime_llama_cpp_base_url" placeholder="http://127.0.0.1:8080">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_endpoint_path">Endpoint path</label>
+                            <input type="text" id="ai_runtime_llama_cpp_endpoint_path" placeholder="/v1/chat/completions">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_model">Default model</label>
+                            <input type="text" id="ai_runtime_llama_cpp_model" placeholder="local-model">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_timeout_seconds">Timeout (seconds)</label>
+                            <input type="number" id="ai_runtime_llama_cpp_timeout_seconds" step="0.1" min="0.1">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_max_retries">Max retries</label>
+                            <input type="number" id="ai_runtime_llama_cpp_max_retries" step="1" min="0">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_retry_backoff_seconds">Retry backoff (seconds)</label>
+                            <input type="number" id="ai_runtime_llama_cpp_retry_backoff_seconds" step="0.05" min="0">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_headers_json">Headers (JSON object)</label>
+                            <textarea id="ai_runtime_llama_cpp_headers_json" placeholder='{"Authorization": "Bearer ..."}'></textarea>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="ai-runtime-backend-card">
+                        <legend>LM Studio</legend>
+
+                        <label class="ai-runtime-inline-check" for="ai_runtime_lm_studio_enabled">
+                            <input type="checkbox" id="ai_runtime_lm_studio_enabled" checked>
+                            Enabled for selector routing
+                        </label>
+                        <label class="ai-runtime-inline-check" for="ai_runtime_lm_studio_verify_tls">
+                            <input type="checkbox" id="ai_runtime_lm_studio_verify_tls" checked>
+                            Verify TLS
+                        </label>
+
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_base_url">Base URL</label>
+                            <input type="text" id="ai_runtime_lm_studio_base_url" placeholder="http://127.0.0.1:1234">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_endpoint_path">Endpoint path</label>
+                            <input type="text" id="ai_runtime_lm_studio_endpoint_path" placeholder="/v1/chat/completions">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_model">Default model</label>
+                            <input type="text" id="ai_runtime_lm_studio_model" placeholder="local-model">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_timeout_seconds">Timeout (seconds)</label>
+                            <input type="number" id="ai_runtime_lm_studio_timeout_seconds" step="0.1" min="0.1">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_max_retries">Max retries</label>
+                            <input type="number" id="ai_runtime_lm_studio_max_retries" step="1" min="0">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_retry_backoff_seconds">Retry backoff (seconds)</label>
+                            <input type="number" id="ai_runtime_lm_studio_retry_backoff_seconds" step="0.05" min="0">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_headers_json">Headers (JSON object)</label>
+                            <textarea id="ai_runtime_lm_studio_headers_json" placeholder='{"Authorization": "Bearer ..."}'></textarea>
+                        </div>
+                    </fieldset>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="ai_runtime_config_reload_btn">Reload</button>
+                <button id="ai_runtime_config_clear_btn">Clear Session Profile</button>
+                <button id="ai_runtime_config_cancel_btn">Close</button>
+                <button id="ai_runtime_config_save_btn" class="confirm-button">Save Profile</button>
             </div>
         </div>
     </div>

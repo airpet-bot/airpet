@@ -755,6 +755,40 @@ export async function getAiBackendDiagnostics(backends = null) {
 }
 
 /**
+ * Loads the session-scoped local backend runtime profile.
+ * @returns {Promise<Object>}
+ */
+export async function getAiBackendRuntimeConfig() {
+    const response = await fetch(`${API_BASE_URL}/api/ai/backends/runtime_config`);
+    return handleResponse(response);
+}
+
+/**
+ * Persists the session-scoped local backend runtime profile.
+ * @param {Object} runtimeConfig
+ * @returns {Promise<Object>}
+ */
+export async function saveAiBackendRuntimeConfig(runtimeConfig) {
+    const response = await fetch(`${API_BASE_URL}/api/ai/backends/runtime_config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runtime_config: runtimeConfig }),
+    });
+    return handleResponse(response);
+}
+
+/**
+ * Clears the session-scoped local backend runtime profile.
+ * @returns {Promise<Object>}
+ */
+export async function clearAiBackendRuntimeConfig() {
+    const response = await fetch(`${API_BASE_URL}/api/ai/backends/runtime_config`, {
+        method: 'DELETE',
+    });
+    return handleResponse(response);
+}
+
+/**
  * Sends a message to the stateful AI chat assistant.
  * @param {string} message - The user's text message.
  * @param {string} model - The model ID to use.
