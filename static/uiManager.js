@@ -441,6 +441,25 @@ export function initUI(cb) {
     // Create ring array button
     createRingArrayButton.addEventListener('click', () => callbacks.onAddRingArrayClicked());
 
+    // Tools dropdown toggle
+    const toolsDropdownButton = document.getElementById('toolsDropdownButton');
+    const toolsDropdownContent = document.getElementById('toolsDropdownContent');
+    if (toolsDropdownButton && toolsDropdownContent) {
+        toolsDropdownButton.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const dropdown = toolsDropdownButton.parentElement;
+            dropdown.classList.toggle('show');
+        });
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!toolsDropdownButton.contains(e.target) && !toolsDropdownContent.contains(e.target)) {
+                const dropdown = toolsDropdownButton.parentElement;
+                dropdown.classList.remove('show');
+            }
+        });
+    }
+
     // Project history and undo/redo listeners
     historyButton.addEventListener('click', callbacks.onHistoryButtonClicked);
     closeHistoryPanel.addEventListener('click', hideHistoryPanel);

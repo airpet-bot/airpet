@@ -346,6 +346,46 @@
             margin-bottom: 0;
         }
 
+        /* Tools dropdown in hierarchy tab */
+        .tab_header .dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        .tab_header .dropdown .dropdown_content {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 100%;
+            background-color: #f9f9f9;
+            min-width: 180px;
+            box-shadow: 0px 8px 16px 0px rgba(0, 0, 0, 0.2);
+            z-index: 1000;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        .tab_header .dropdown .dropdown_content button {
+            color: black;
+            padding: 8px 12px;
+            text-decoration: none;
+            display: block;
+            text-align: left;
+            width: 100%;
+            border: none;
+            background-color: transparent;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .tab_header .dropdown .dropdown_content button:hover {
+            background-color: #ddd;
+        }
+
+        .tab_header .dropdown.show .dropdown_content {
+            display: block;
+        }
+
         #menu_bar .dropdown_content .snap-input-row label {
             margin-right: 8px;
             /* Space between label and input */
@@ -2156,13 +2196,19 @@
             <div id="tab_structure" class="tab_pane active">
                 <!-- Structure (Volumes) Hierarchy will be built here -->
                 <div class="tab_header">
-                    <span class="tab-title">World Structure</span>
-                    <div>
-                        <button class="add_button" data-add-type="particle_source"
-                            title="Add a General Particle Source">+ GPS</button>
-                        <button id="addPVButton" title="Place a volume inside the selected one" disabled>+ PV</button>
-                    </div>
-                </div>
+                     <span class="tab-title">World Structure</span>
+                     <div>
+                         <button class="add_button" data-add-type="particle_source"
+                             title="Add a General Particle Source">+ GPS</button>
+                         <button id="addPVButton" title="Place a volume inside the selected one" disabled>+ PV</button>
+                         <div class="dropdown">
+                             <button id="toolsDropdownButton">+ Tools</button>
+                             <div id="toolsDropdownContent" class="dropdown_content" style="display: none;">
+                                 <button id="createRingArrayButton">Create Ring Array</button>
+                             </div>
+                         </div>
+                     </div>
+                 </div>
                 <ul id="structure_tree_root"></ul>
             </div>
             <div id="tab_volumes" class="tab_pane">
@@ -2397,12 +2443,10 @@
                         <button id="showAllBtn">Show All (Shift+J)</button>
                     </div>
                 </li>
-                <!-- Object Menu -->
+                <!-- Optimize Menu -->
                 <li>
-                    <button>Object</button>
+                    <button>Optimize</button>
                     <div class="dropdown_content">
-                        <button id="createRingArrayButton">Create Ring Array</button>
-                        <hr class="dropdown-separator">
                         <button id="parameterRegistryButton">Parameter Registry...</button>
                         <button id="paramStudiesButton">Param Studies...</button>
                     </div>
