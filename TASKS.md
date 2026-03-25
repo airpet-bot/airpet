@@ -1829,11 +1829,11 @@
 
 ## Next Candidates
 
-1. **Scoped-workflow UX follow-on: bucket-aware issue-code chips with one-click list focus**
-   - Add compact clickable issue-code chips under each bucket so users can jump directly to a single issue-code slice (within the active scoped/global issue mode).
-   - Keep deterministic fallback behavior when `issue_family_correlations` metadata is absent.
-   - Add focused frontend regression coverage for chip selection precedence and deterministic empty-state copy.
-   - Impact: medium-high (faster scoped-debugging loops when bucket counts are large).
+1. **Scoped-workflow UX follow-on: copy active scoped diagnostics filter context (scope + bucket + issue-code focus)**
+   - Add a compact "Copy filter context" action in the preflight panel that captures current scope label, issue mode, bucket filter, and active issue-code focus into a deterministic one-line payload.
+   - Reuse this payload for quick bug reports/repro notes without requiring screenshot transcription.
+   - Add focused frontend regression coverage for clipboard payload shape and fallback behavior when scoped metadata is absent.
+   - Impact: medium-high (faster handoff from interactive debugging to actionable reports).
 
 2. **Reproducibility follow-on: optional replay harness mode for malformed-selector matrix (`--artifact` against validation failure corpus)**
    - Extend `scripts/run_scoped_preflight_replay.py` to support replaying the selector-validation matrix artifact(s) and summarizing route↔AI 400-envelope parity in one compact report.
