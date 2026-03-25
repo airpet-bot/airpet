@@ -3,9 +3,34 @@
 ## In Progress
 
 - **Next milestone selection pending (last in-progress milestone completed 2026-03-25).**
-  - Recommended starting point next heartbeat: implement bucket-aware issue-code chips with one-click list focus in scoped preflight diagnostics (`scope-only` / `outside-scope-only` / `shared`).
+  - Recommended starting point next heartbeat: add a tiny scoped diagnostics "copy active filter context" action (scope + bucket + issue-code focus) to speed bug-report handoff.
 
 ## Recently Completed
+
+- **Scoped-workflow UX follow-on completed: scoped diagnostics now expose bucket-aware issue-code chips with one-click list focus** (2026-03-25)
+  - Extended scoped diagnostics helpers in `static/preflightScopedDiagnosticsUi.js`:
+    - added deterministic `buildScopedIssueCodeChips(...)` for scoped issue-code aggregation.
+    - chips now preserve bucket metadata (`scope_only` / `outside_scope_only` / `shared`) and deterministic sorting.
+    - helper keeps metadata-absent fallback behavior aligned with existing scoped bucket filters.
+  - Updated Simulation preflight panel UI in `templates/index.html` + `static/uiManager.js`:
+    - added scoped issue-code chip row (`#preflight_issue_code_chip_row`) rendered only when bucket metadata is available.
+    - clicking a chip now instantly focuses the issue list to that code; clicking again (or `Clear focus`) resets.
+    - focus state survives rerenders when valid, auto-clears when bucket/mode changes invalidate the selected code.
+    - scoped issue labels now include active code focus context (`code: ...`) for clearer operator state.
+  - Expanded frontend regression coverage in `tests/js/preflight_scoped_diagnostics_ui.test.mjs`:
+    - deterministic bucket-aware chip ordering/counts.
+    - scoped-bucket selection filtering for chips.
+    - metadata-absent fallback behavior with stable chip payloads.
+  - Checks run:
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --check static/preflightScopedDiagnosticsUi.js`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --check static/uiManager.js`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --test tests/js/preflight_scoped_diagnostics_ui.test.mjs`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --test tests/js/preflight_scoped_diagnostics_ui.test.mjs tests/js/backend_diagnostics_panels.test.mjs tests/js/replica_inspector_bindings.test.mjs tests/js/division_inspector_bindings.test.mjs tests/js/ai_runtime_config_ui.test.mjs` (27 passed)
+  - Checkpoint finished:
+    - ✔ scoped diagnostics now provide one-click issue-code focus directly in-panel.
+    - ✔ chip rendering/focus behavior is deterministic and regression-locked.
+    - ✔ bucket context (`scope-only` / `outside-scope-only` / `shared`) now stays actionable through code-level pivots.
+
 
 - **Reproducibility follow-on completed: executable scoped-workflow replay harness now provides a deterministic route↔AI pass/fail diff outside pytest** (2026-03-25)
   - Added reusable replay harness core in `src/scoped_preflight_replay.py`:

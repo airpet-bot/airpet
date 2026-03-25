@@ -21,6 +21,7 @@ import {
 } from './divisionInspectorBindings.js';
 import {
     buildScopedIssueFamilyBucketSummary,
+    buildScopedIssueCodeChips,
     filterScopedIssuesByBucket,
     getScopedIssueBucketDisplayLabel,
 } from './preflightScopedDiagnosticsUi.js';
@@ -81,6 +82,7 @@ let simEventsInput, runSimButton, stopSimButton, preflightButton, simOptionsButt
     preflightPanel, preflightSummaryLine, preflightScopeLine, preflightDeltaLine, preflightScopeHintLine,
     preflightScopeBucketsLine, preflightScopeBucketFilterRow,
     preflightBucketAllBtn, preflightBucketScopeOnlyBtn, preflightBucketOutsideOnlyBtn, preflightBucketSharedBtn,
+    preflightIssueCodeChipRow,
     preflightIssueToggleRow, preflightShowScopeIssuesBtn, preflightShowGlobalIssuesBtn,
     preflightIssuesLabel, preflightIssuesList;
 
@@ -88,6 +90,7 @@ let simEventsInput, runSimButton, stopSimButton, preflightButton, simOptionsButt
 let preflightLastRenderState = null;
 let preflightIssueDisplayMode = 'auto'; // auto | scoped | global
 let preflightScopedBucketFilter = 'all'; // all | scope_only | outside_scope_only | shared
+let preflightScopedIssueCodeFocus = ''; // active scoped issue-code focus chip
 
 // Analysis control variables
 let energyBinsInput, spatialBinsInput, refreshAnalysisButton, analysisStatusDisplay;
@@ -292,6 +295,7 @@ export function initUI(cb) {
     preflightBucketScopeOnlyBtn = document.getElementById('preflight_bucket_scope_only_btn');
     preflightBucketOutsideOnlyBtn = document.getElementById('preflight_bucket_outside_only_btn');
     preflightBucketSharedBtn = document.getElementById('preflight_bucket_shared_btn');
+    preflightIssueCodeChipRow = document.getElementById('preflight_issue_code_chip_row');
     preflightIssueToggleRow = document.getElementById('preflight_issue_toggle_row');
     preflightShowScopeIssuesBtn = document.getElementById('preflight_show_scope_issues_btn');
     preflightShowGlobalIssuesBtn = document.getElementById('preflight_show_global_issues_btn');
@@ -2449,10 +2453,66 @@ function updatePreflightBucketFilterState({ showRow = false, activeBucket = 'all
     });
 }
 
+function normalizePreflightIssueCode(value) {
+    return String(value || '').trim();
+}
+
+function renderPreflightIssueCodeChips({ showRow = false, chips = [], activeCode = '' } = {}) {
+    if (!preflightIssueCodeChipRow) return;
+
+    preflightIssueCodeChipRow.innerHTML = '';
+    preflightIssueCodeChipRow.style.display = showRow ? 'flex' : 'none';
+
+    if (!showRow || chips.length === 0) {
+        return;
+    }
+
+    const label = document.createElement('span');
+    label.className = 'preflight_issue_code_chip_label';
+    label.textContent = 'Issue codes:';
+    preflightIssueCodeChipRow.appendChild(label);
+
+    chips.forEach((chip) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'preflight_toggle_btn preflight_issue_code_chip';
+        button.classList.toggle('active', activeCode === chip.code);
+        button.textContent = `${chip.code} (${chip.count})`;
+
+        if (chip.bucketLabel) {
+            button.title = `${chip.bucketLabel} (${chip.count})`;
+        }
+
+        button.addEventListener('click', () => {
+            preflightScopedIssueCodeFocus = preflightScopedIssueCodeFocus === chip.code ? '' : chip.code;
+            if (preflightLastRenderState) {
+                renderPreflightReport(preflightLastRenderState.report, preflightLastRenderState.details);
+            }
+        });
+
+        preflightIssueCodeChipRow.appendChild(button);
+    });
+
+    if (activeCode) {
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.className = 'preflight_toggle_btn preflight_issue_code_chip_clear';
+        clearBtn.textContent = 'Clear focus';
+        clearBtn.addEventListener('click', () => {
+            preflightScopedIssueCodeFocus = '';
+            if (preflightLastRenderState) {
+                renderPreflightReport(preflightLastRenderState.report, preflightLastRenderState.details);
+            }
+        });
+        preflightIssueCodeChipRow.appendChild(clearBtn);
+    }
+}
+
 export function clearPreflightReport() {
     preflightLastRenderState = null;
     preflightIssueDisplayMode = 'auto';
     preflightScopedBucketFilter = 'all';
+    preflightScopedIssueCodeFocus = '';
 
     if (preflightSummaryLine) {
         preflightSummaryLine.textContent = 'Preflight: not run yet.';
@@ -2476,6 +2536,7 @@ export function clearPreflightReport() {
     }
     updatePreflightIssueToggleState({ showToggle: false, activeMode: 'global' });
     updatePreflightBucketFilterState({ showRow: false, activeBucket: 'all' });
+    renderPreflightIssueCodeChips({ showRow: false });
 
     if (preflightIssuesLabel) {
         preflightIssuesLabel.textContent = 'Issues';
@@ -2603,16 +2664,32 @@ export function renderPreflightReport(report, details = {}) {
         activeBucket: preflightScopedBucketFilter,
     });
 
+    const scopedIssueCodeView = (hasScopedIssueSet && activeIssueMode === 'scoped')
+        ? buildScopedIssueCodeChips(scopedReport.issues, issueFamilyCorrelations, preflightScopedBucketFilter)
+        : null;
+    const scopedIssueCodeSet = new Set((scopedIssueCodeView?.chips || []).map((chip) => chip.code));
+    if (preflightScopedIssueCodeFocus && !scopedIssueCodeSet.has(preflightScopedIssueCodeFocus)) {
+        preflightScopedIssueCodeFocus = '';
+    }
+
+    renderPreflightIssueCodeChips({
+        showRow: !!(scopedIssueCodeView?.hasBucketMetadata && scopedIssueCodeView?.chips?.length),
+        chips: scopedIssueCodeView?.chips || [],
+        activeCode: preflightScopedIssueCodeFocus,
+    });
+
+    const activeScopedIssueCodeFocus = normalizePreflightIssueCode(preflightScopedIssueCodeFocus);
     const scopedBucketLabel = getScopedIssueBucketDisplayLabel(preflightScopedBucketFilter);
 
     if (preflightIssuesLabel) {
         if (hasScopedIssueSet && activeIssueMode === 'scoped') {
-            if (scopeLabel && showBucketFilterRow && preflightScopedBucketFilter !== 'all') {
-                preflightIssuesLabel.textContent = `Scoped issues (${scopeLabel} · ${scopedBucketLabel})`;
-            } else if (scopeLabel) {
-                preflightIssuesLabel.textContent = `Scoped issues (${scopeLabel})`;
-            } else if (showBucketFilterRow && preflightScopedBucketFilter !== 'all') {
-                preflightIssuesLabel.textContent = `Scoped issues (${scopedBucketLabel})`;
+            const scopedLabelParts = [];
+            if (scopeLabel) scopedLabelParts.push(scopeLabel);
+            if (showBucketFilterRow && preflightScopedBucketFilter !== 'all') scopedLabelParts.push(scopedBucketLabel);
+            if (activeScopedIssueCodeFocus) scopedLabelParts.push(`code: ${activeScopedIssueCodeFocus}`);
+
+            if (scopedLabelParts.length > 0) {
+                preflightIssuesLabel.textContent = `Scoped issues (${scopedLabelParts.join(' · ')})`;
             } else {
                 preflightIssuesLabel.textContent = 'Scoped issues';
             }
@@ -2630,11 +2707,16 @@ export function renderPreflightReport(report, details = {}) {
     const issues = (scopedBucketView && scopedBucketView.hasBucketMetadata)
         ? scopedBucketView.filteredIssues
         : baseIssues;
+    const focusedIssues = activeScopedIssueCodeFocus
+        ? issues.filter((issue) => normalizePreflightIssueCode(issue?.code) === activeScopedIssueCodeFocus)
+        : issues;
 
-    if (issues.length === 0) {
+    if (focusedIssues.length === 0) {
         const empty = document.createElement('div');
         empty.style.color = '#64748b';
-        if (scopedBucketView && scopedBucketView.hasBucketMetadata && scopedBucketView.emptyMessage) {
+        if (activeScopedIssueCodeFocus) {
+            empty.textContent = `No scoped issues with code "${activeScopedIssueCodeFocus}" for the current bucket view.`;
+        } else if (scopedBucketView && scopedBucketView.hasBucketMetadata && scopedBucketView.emptyMessage) {
             empty.textContent = scopedBucketView.emptyMessage;
         } else if (hasScopedIssueSet && activeIssueMode === 'scoped') {
             empty.textContent = 'No issues detected in the selected scope.';
@@ -2647,7 +2729,7 @@ export function renderPreflightReport(report, details = {}) {
         return;
     }
 
-    issues.forEach(issue => {
+    focusedIssues.forEach(issue => {
         const row = document.createElement('div');
         row.className = 'preflight_issue';
 

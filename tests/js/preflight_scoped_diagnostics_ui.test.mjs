@@ -5,6 +5,7 @@ import {
     normalizeScopedIssueFamilyCorrelations,
     buildScopedIssueFamilyBucketSummary,
     filterScopedIssuesByBucket,
+    buildScopedIssueCodeChips,
     getScopedIssueBucketDisplayLabel,
     normalizeScopedBucketFilterSelection,
 } from '../../static/preflightScopedDiagnosticsUi.js';
@@ -106,4 +107,72 @@ test('bucket filtering returns deterministic empty-result messaging', () => {
         outsideOnlyView.emptyMessage,
         'No outside-scope-only issues detected in the selected scope.',
     );
+});
+
+test('issue-code chips are deterministic and bucket-aware when scoped metadata is available', () => {
+    const issues = [
+        { code: 'possible_overlap_aabb', message: 'Potential overlap A.' },
+        { code: 'invalid_replica_width', message: 'Replica width is invalid.' },
+        { code: 'possible_overlap_aabb', message: 'Potential overlap B.' },
+        { code: 'placement_hierarchy_cycle', message: 'Placement cycle found.' },
+    ];
+    const correlations = {
+        scope_only_issue_codes: ['invalid_replica_width'],
+        outside_scope_only_issue_codes: ['possible_overlap_aabb'],
+        shared_issue_codes: ['placement_hierarchy_cycle'],
+    };
+
+    const allChips = buildScopedIssueCodeChips(issues, correlations, 'all');
+    assert.equal(allChips.hasBucketMetadata, true);
+    assert.deepEqual(allChips.chips, [
+        {
+            code: 'invalid_replica_width',
+            count: 1,
+            bucket: 'scope_only',
+            bucketLabel: 'Scope-only issues',
+        },
+        {
+            code: 'possible_overlap_aabb',
+            count: 2,
+            bucket: 'outside_scope_only',
+            bucketLabel: 'Outside-scope-only issues',
+        },
+        {
+            code: 'placement_hierarchy_cycle',
+            count: 1,
+            bucket: 'shared',
+            bucketLabel: 'Shared issues',
+        },
+    ]);
+
+    const outsideOnlyChips = buildScopedIssueCodeChips(issues, correlations, 'outside_scope_only');
+    assert.equal(outsideOnlyChips.effectiveBucket, 'outside_scope_only');
+    assert.deepEqual(outsideOnlyChips.chips.map((chip) => chip.code), ['possible_overlap_aabb']);
+    assert.equal(outsideOnlyChips.chips[0].count, 2);
+});
+
+test('issue-code chips fall back gracefully when scoped bucket metadata is absent', () => {
+    const issues = [
+        { code: 'unknown_world_volume_reference', message: 'Unknown world volume.' },
+        { code: 'unknown_world_volume_reference', message: 'Unknown world volume again.' },
+        { code: 'possible_overlap_aabb', message: 'Potential overlap.' },
+    ];
+
+    const fallbackView = buildScopedIssueCodeChips(issues, null, 'shared');
+    assert.equal(fallbackView.hasBucketMetadata, false);
+    assert.equal(fallbackView.effectiveBucket, 'all');
+    assert.deepEqual(fallbackView.chips, [
+        {
+            code: 'possible_overlap_aabb',
+            count: 1,
+            bucket: null,
+            bucketLabel: '',
+        },
+        {
+            code: 'unknown_world_volume_reference',
+            count: 2,
+            bucket: null,
+            bucketLabel: '',
+        },
+    ]);
 });

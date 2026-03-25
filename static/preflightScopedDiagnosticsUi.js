@@ -7,6 +7,8 @@ const SCOPED_BUCKET_LABELS = {
     shared: 'Shared issues',
 };
 
+const SCOPED_BUCKET_ORDER = ['scope_only', 'outside_scope_only', 'shared'];
+
 const SCOPED_BUCKET_EMPTY_MESSAGES = {
     all: 'No issues detected in the selected scope.',
     scope_only: 'No scope-only issues detected in the selected scope.',
@@ -145,5 +147,69 @@ export function filterScopedIssuesByBucket(issues, correlations, selection = 'al
         hasBucketMetadata: true,
         filteredIssues,
         emptyMessage: filteredIssues.length === 0 ? SCOPED_BUCKET_EMPTY_MESSAGES[effectiveBucket] : '',
+    };
+}
+
+export function buildScopedIssueCodeChips(issues, correlations, selection = 'all') {
+    const bucketView = filterScopedIssuesByBucket(issues, correlations, selection);
+    const issueList = Array.isArray(bucketView.filteredIssues) ? bucketView.filteredIssues : [];
+
+    const codeCounts = new Map();
+    issueList.forEach((issue) => {
+        const issueCode = normalizeIssueCode(issue?.code);
+        if (!issueCode) return;
+        codeCounts.set(issueCode, (codeCounts.get(issueCode) || 0) + 1);
+    });
+
+    if (codeCounts.size === 0) {
+        return {
+            ...bucketView,
+            chips: [],
+        };
+    }
+
+    const normalizedCorrelations = normalizeScopedIssueFamilyCorrelations(correlations);
+    const codeBucketLookup = new Map();
+
+    if (normalizedCorrelations) {
+        const bucketCodesBySelection = {
+            scope_only: normalizedCorrelations.scopeOnlyIssueCodes,
+            outside_scope_only: normalizedCorrelations.outsideScopeOnlyIssueCodes,
+            shared: normalizedCorrelations.sharedIssueCodes,
+        };
+
+        SCOPED_BUCKET_ORDER.forEach((bucket) => {
+            (bucketCodesBySelection[bucket] || []).forEach((code) => {
+                if (!codeBucketLookup.has(code)) {
+                    codeBucketLookup.set(code, bucket);
+                }
+            });
+        });
+    }
+
+    const chips = Array.from(codeCounts.entries())
+        .map(([code, count]) => {
+            const bucket = codeBucketLookup.get(code) || null;
+            return {
+                code,
+                count,
+                bucket,
+                bucketLabel: bucket ? getScopedIssueBucketDisplayLabel(bucket) : '',
+            };
+        })
+        .sort((left, right) => {
+            const leftRankRaw = left.bucket ? SCOPED_BUCKET_ORDER.indexOf(left.bucket) : -1;
+            const rightRankRaw = right.bucket ? SCOPED_BUCKET_ORDER.indexOf(right.bucket) : -1;
+            const leftRank = leftRankRaw >= 0 ? leftRankRaw : Number.MAX_SAFE_INTEGER;
+            const rightRank = rightRankRaw >= 0 ? rightRankRaw : Number.MAX_SAFE_INTEGER;
+            if (leftRank !== rightRank) {
+                return leftRank - rightRank;
+            }
+            return left.code.localeCompare(right.code);
+        });
+
+    return {
+        ...bucketView,
+        chips,
     };
 }

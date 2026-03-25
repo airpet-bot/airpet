@@ -1109,6 +1109,7 @@
         }
 
         #preflight_scope_bucket_filter_row,
+        #preflight_issue_code_chip_row,
         #preflight_issue_toggle_row {
             display: none;
             align-items: center;
@@ -1132,6 +1133,21 @@
             border-color: #60a5fa;
             color: #1d4ed8;
             font-weight: 600;
+        }
+
+        .preflight_issue_code_chip_label {
+            font-size: 10px;
+            color: #475569;
+            font-weight: 600;
+            margin-right: 2px;
+        }
+
+        .preflight_issue_code_chip {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        }
+
+        .preflight_issue_code_chip_clear {
+            margin-left: 2px;
         }
 
         #preflight_issues_label {
@@ -2554,6 +2570,7 @@
                             <button id="preflight_bucket_outside_only_btn" class="preflight_toggle_btn" type="button">Outside-scope-only</button>
                             <button id="preflight_bucket_shared_btn" class="preflight_toggle_btn" type="button">Shared</button>
                         </div>
+                        <div id="preflight_issue_code_chip_row"></div>
                         <div id="preflight_issue_toggle_row">
                             <button id="preflight_show_scope_issues_btn" class="preflight_toggle_btn" type="button">Scoped issues</button>
                             <button id="preflight_show_global_issues_btn" class="preflight_toggle_btn" type="button">Full-geometry issues</button>
