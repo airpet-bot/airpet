@@ -23,6 +23,7 @@ import {
     buildScopedIssueFamilyBucketSummary,
     buildScopedIssueCodeChips,
     buildScopedIssueFilterContextCopyText,
+    buildScopedIssueExcerptCopyText,
     filterScopedIssuesByBucket,
     getScopedIssueBucketDisplayLabel,
 } from './preflightScopedDiagnosticsUi.js';
@@ -84,7 +85,7 @@ let simEventsInput, runSimButton, stopSimButton, preflightButton, simOptionsButt
     preflightScopeBucketsLine, preflightScopeBucketFilterRow,
     preflightBucketAllBtn, preflightBucketScopeOnlyBtn, preflightBucketOutsideOnlyBtn, preflightBucketSharedBtn,
     preflightIssueCodeChipRow,
-    preflightScopeContextRow, preflightCopyScopeContextBtn, preflightScopeContextStatus,
+    preflightScopeContextRow, preflightCopyScopeContextBtn, preflightCopyScopeIssueExcerptBtn, preflightScopeContextStatus,
     preflightIssueToggleRow, preflightShowScopeIssuesBtn, preflightShowGlobalIssuesBtn,
     preflightIssuesLabel, preflightIssuesList;
 
@@ -94,6 +95,7 @@ let preflightIssueDisplayMode = 'auto'; // auto | scoped | global
 let preflightScopedBucketFilter = 'all'; // all | scope_only | outside_scope_only | shared
 let preflightScopedIssueCodeFocus = ''; // active scoped issue-code focus chip
 let preflightLastScopedContextCopyText = '';
+let preflightLastScopedIssueExcerptCopyText = '';
 
 // Analysis control variables
 let energyBinsInput, spatialBinsInput, refreshAnalysisButton, analysisStatusDisplay;
@@ -301,6 +303,7 @@ export function initUI(cb) {
     preflightIssueCodeChipRow = document.getElementById('preflight_issue_code_chip_row');
     preflightScopeContextRow = document.getElementById('preflight_scope_context_row');
     preflightCopyScopeContextBtn = document.getElementById('preflight_copy_scope_context_btn');
+    preflightCopyScopeIssueExcerptBtn = document.getElementById('preflight_copy_scope_issue_excerpt_btn');
     preflightScopeContextStatus = document.getElementById('preflight_scope_context_status');
     preflightIssueToggleRow = document.getElementById('preflight_issue_toggle_row');
     preflightShowScopeIssuesBtn = document.getElementById('preflight_show_scope_issues_btn');
@@ -617,7 +620,23 @@ export function initUI(cb) {
 
             const copied = await copyTextToClipboard(preflightLastScopedContextCopyText);
             if (copied) {
-                setPreflightScopeContextStatus('Copied context.', 'success');
+                setPreflightScopeContextStatus('Copied filter context.', 'success');
+            } else {
+                setPreflightScopeContextStatus('Copy failed.', 'error');
+            }
+        });
+    }
+
+    if (preflightCopyScopeIssueExcerptBtn) {
+        preflightCopyScopeIssueExcerptBtn.addEventListener('click', async () => {
+            if (!preflightLastScopedIssueExcerptCopyText) {
+                setPreflightScopeContextStatus('Nothing to copy yet.', 'warning');
+                return;
+            }
+
+            const copied = await copyTextToClipboard(preflightLastScopedIssueExcerptCopyText);
+            if (copied) {
+                setPreflightScopeContextStatus('Copied issue excerpt.', 'success');
             } else {
                 setPreflightScopeContextStatus('Copy failed.', 'error');
             }
@@ -2585,8 +2604,9 @@ function updatePreflightScopeContextCopyState({
     issueCodeFocus = '',
     visibleIssueCount = null,
     totalScopedIssueCount = null,
+    visibleIssues = [],
 } = {}) {
-    const copyText = showRow
+    const copyContextText = showRow
         ? buildScopedIssueFilterContextCopyText({
             scopeLabel,
             hasBucketMetadata,
@@ -2597,15 +2617,35 @@ function updatePreflightScopeContextCopyState({
         })
         : '';
 
-    preflightLastScopedContextCopyText = copyText;
+    const copyExcerptText = showRow
+        ? buildScopedIssueExcerptCopyText({
+            scopeLabel,
+            hasBucketMetadata,
+            bucketSelection,
+            issueCodeFocus,
+            visibleIssueCount,
+            totalScopedIssueCount,
+            visibleIssues,
+        })
+        : '';
 
+    preflightLastScopedContextCopyText = copyContextText;
+    preflightLastScopedIssueExcerptCopyText = copyExcerptText;
+
+    const hasCopyActions = !!(copyContextText || copyExcerptText);
     if (preflightScopeContextRow) {
-        preflightScopeContextRow.style.display = copyText ? 'flex' : 'none';
+        preflightScopeContextRow.style.display = hasCopyActions ? 'flex' : 'none';
     }
     if (preflightCopyScopeContextBtn) {
-        preflightCopyScopeContextBtn.disabled = !copyText;
-        preflightCopyScopeContextBtn.title = copyText
+        preflightCopyScopeContextBtn.disabled = !copyContextText;
+        preflightCopyScopeContextBtn.title = copyContextText
             ? 'Copy active scoped preflight filters for bug-report handoff.'
+            : 'Run scoped preflight and pick filters to enable copy.';
+    }
+    if (preflightCopyScopeIssueExcerptBtn) {
+        preflightCopyScopeIssueExcerptBtn.disabled = !copyExcerptText;
+        preflightCopyScopeIssueExcerptBtn.title = copyExcerptText
+            ? 'Copy active scoped filters plus currently visible issue lines.'
             : 'Run scoped preflight and pick filters to enable copy.';
     }
 
@@ -2618,6 +2658,7 @@ export function clearPreflightReport() {
     preflightScopedBucketFilter = 'all';
     preflightScopedIssueCodeFocus = '';
     preflightLastScopedContextCopyText = '';
+    preflightLastScopedIssueExcerptCopyText = '';
 
     if (preflightSummaryLine) {
         preflightSummaryLine.textContent = 'Preflight: not run yet.';
@@ -2825,6 +2866,7 @@ export function renderPreflightReport(report, details = {}) {
         issueCodeFocus: activeScopedIssueCodeFocus,
         visibleIssueCount: focusedIssues.length,
         totalScopedIssueCount: Array.isArray(scopedReport?.issues) ? scopedReport.issues.length : null,
+        visibleIssues: focusedIssues,
     });
 
     if (focusedIssues.length === 0) {

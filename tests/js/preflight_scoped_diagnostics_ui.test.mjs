@@ -7,6 +7,7 @@ import {
     filterScopedIssuesByBucket,
     buildScopedIssueCodeChips,
     buildScopedIssueFilterContextCopyText,
+    buildScopedIssueExcerptCopyText,
     getScopedIssueBucketDisplayLabel,
     normalizeScopedBucketFilterSelection,
 } from '../../static/preflightScopedDiagnosticsUi.js';
@@ -207,4 +208,82 @@ test('copy-context helper falls back cleanly when bucket metadata/focus are unav
         'Scoped preflight filter context; scope=Assembly "wheel"; bucket=metadata_unavailable; issue_code=all',
     );
     assert.equal(buildScopedIssueFilterContextCopyText({}), '');
+});
+
+test('copy-excerpt helper emits deterministic scoped issue lines with context header', () => {
+    const text = buildScopedIssueExcerptCopyText({
+        scopeLabel: 'LV "detector_module"',
+        hasBucketMetadata: true,
+        bucketSelection: 'scope_only',
+        issueCodeFocus: 'invalid_replica_width',
+        visibleIssueCount: 2,
+        totalScopedIssueCount: 5,
+        visibleIssues: [
+            {
+                severity: 'ERROR',
+                code: 'invalid_replica_width',
+                message: 'Replica width is invalid; expected > 0',
+                hint: 'Set width to positive value',
+            },
+            {
+                severity: 'warning',
+                code: 'invalid_replica_width',
+                message: 'Replica count mismatches width sum',
+            },
+        ],
+    });
+
+    assert.equal(
+        text,
+        'Scoped preflight issue excerpt\n'
+        + 'Scoped preflight filter context; scope=LV "detector_module"; bucket=scope_only (Scope-only issues); issue_code=invalid_replica_width; visible_issues=2; total_scoped_issues=5\n'
+        + 'visible_issue_lines:\n'
+        + '1.; severity=error; code=invalid_replica_width; message=Replica width is invalid, expected > 0; hint=Set width to positive value\n'
+        + '2.; severity=warning; code=invalid_replica_width; message=Replica count mismatches width sum',
+    );
+});
+
+test('copy-excerpt helper handles empty issue views and deterministic truncation markers', () => {
+    const emptyText = buildScopedIssueExcerptCopyText({
+        scopeLabel: 'Assembly "wheel"',
+        hasBucketMetadata: false,
+        issueCodeFocus: '',
+        visibleIssueCount: 0,
+        totalScopedIssueCount: 0,
+        visibleIssues: [],
+    });
+
+    assert.equal(
+        emptyText,
+        'Scoped preflight issue excerpt\n'
+        + 'Scoped preflight filter context; scope=Assembly "wheel"; bucket=metadata_unavailable; issue_code=all; visible_issues=0; total_scoped_issues=0\n'
+        + 'visible_issue_lines=none',
+    );
+
+    const truncatedText = buildScopedIssueExcerptCopyText({
+        scopeLabel: 'Assembly "wheel"',
+        hasBucketMetadata: true,
+        bucketSelection: 'all',
+        issueCodeFocus: '',
+        visibleIssueCount: 3,
+        totalScopedIssueCount: 3,
+        maxIssueLines: 2,
+        visibleIssues: [
+            { severity: 'error', code: 'a', message: 'Issue A' },
+            { severity: 'warning', code: 'b', message: 'Issue B' },
+            { severity: 'info', code: 'c', message: 'Issue C' },
+        ],
+    });
+
+    assert.equal(
+        truncatedText,
+        'Scoped preflight issue excerpt\n'
+        + 'Scoped preflight filter context; scope=Assembly "wheel"; bucket=all (All scoped issues); issue_code=all; visible_issues=3; total_scoped_issues=3\n'
+        + 'visible_issue_lines:\n'
+        + '1.; severity=error; code=a; message=Issue A\n'
+        + '2.; severity=warning; code=b; message=Issue B\n'
+        + 'truncated_issue_lines=1',
+    );
+
+    assert.equal(buildScopedIssueExcerptCopyText({}), '');
 });

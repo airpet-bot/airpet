@@ -252,3 +252,65 @@ export function buildScopedIssueFilterContextCopyText(options = {}) {
 
     return parts.join('; ');
 }
+
+function normalizeIssueSeverity(value) {
+    const sev = String(value || '').trim().toLowerCase();
+    if (!sev) return 'info';
+    return sev;
+}
+
+function normalizeIssueTextFragment(value, fallback = '') {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text) return fallback;
+    return text.replace(/;/g, ',');
+}
+
+function normalizeIssueExcerptLimit(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 12;
+    return Math.min(100, Math.max(1, Math.trunc(parsed)));
+}
+
+export function buildScopedIssueExcerptCopyText(options = {}) {
+    const contextText = buildScopedIssueFilterContextCopyText(options);
+    if (!contextText) return '';
+
+    const visibleIssues = Array.isArray(options.visibleIssues) ? options.visibleIssues : [];
+    const maxIssueLines = normalizeIssueExcerptLimit(options.maxIssueLines);
+    const excerptIssues = visibleIssues.slice(0, maxIssueLines);
+
+    const lines = [
+        'Scoped preflight issue excerpt',
+        contextText,
+    ];
+
+    if (excerptIssues.length === 0) {
+        lines.push('visible_issue_lines=none');
+        return lines.join('\n');
+    }
+
+    lines.push('visible_issue_lines:');
+
+    excerptIssues.forEach((issue, idx) => {
+        const severity = normalizeIssueSeverity(issue?.severity);
+        const code = normalizeIssueCode(issue?.code) || 'none';
+        const message = normalizeIssueTextFragment(issue?.message, 'Unknown preflight issue');
+        const hint = normalizeIssueTextFragment(issue?.hint, '');
+        const parts = [
+            `${idx + 1}.`,
+            `severity=${severity}`,
+            `code=${code}`,
+            `message=${message}`,
+        ];
+        if (hint) {
+            parts.push(`hint=${hint}`);
+        }
+        lines.push(parts.join('; '));
+    });
+
+    if (visibleIssues.length > excerptIssues.length) {
+        lines.push(`truncated_issue_lines=${visibleIssues.length - excerptIssues.length}`);
+    }
+
+    return lines.join('\n');
+}

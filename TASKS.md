@@ -3,9 +3,32 @@
 ## In Progress
 
 - **Next milestone selection pending (last in-progress milestone completed 2026-03-25).**
-  - Recommended starting point next heartbeat: add a scoped diagnostics “copy issue excerpt” action that includes the active scope filter context plus the currently visible issue list lines for faster ticket handoff.
+  - Recommended starting point next heartbeat: add a scoped diagnostics “copy issue excerpt as JSON” action (same active scope filter context + currently visible issue lines) so bug trackers/automation can consume deterministic structured payloads directly.
 
 ## Recently Completed
+
+- **Scoped-workflow UX follow-on completed: preflight panel now provides one-click “copy issue excerpt” handoff text with active scoped filters + currently visible issue lines** (2026-03-25)
+  - Extended scoped diagnostics helper module `static/preflightScopedDiagnosticsUi.js`:
+    - added deterministic `buildScopedIssueExcerptCopyText(...)` builder.
+    - excerpt text now includes the existing scoped filter-context header plus ordered visible issue lines (`severity`, `code`, `message`, optional `hint`).
+    - added deterministic overflow marker (`truncated_issue_lines=...`) when issue lists exceed configured excerpt size.
+  - Updated Simulation preflight panel UI in `templates/index.html` + `static/uiManager.js`:
+    - added a `Copy issue excerpt` action beside `Copy filter context` in `#preflight_scope_context_row`.
+    - wired scoped-render state so excerpt text always reflects the active scope, bucket selection, issue-code focus, and currently visible issue list.
+    - reused clipboard fallback path and added explicit success/error status feedback for excerpt copy.
+  - Expanded frontend regression coverage in `tests/js/preflight_scoped_diagnostics_ui.test.mjs`:
+    - deterministic excerpt formatting contract with sanitized message/hint fields.
+    - empty-visible-list behavior (`visible_issue_lines=none`) and deterministic truncation marker behavior.
+  - Checks run:
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --check static/preflightScopedDiagnosticsUi.js`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --check static/uiManager.js`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --test tests/js/preflight_scoped_diagnostics_ui.test.mjs`
+    - `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda activate airpet && node --test tests/js/preflight_scoped_diagnostics_ui.test.mjs tests/js/backend_diagnostics_panels.test.mjs tests/js/replica_inspector_bindings.test.mjs tests/js/division_inspector_bindings.test.mjs tests/js/ai_runtime_config_ui.test.mjs` (31 passed)
+  - Checkpoint finished:
+    - ✔ scoped diagnostics now provide copy-ready issue excerpts (not just filter state) for faster ticket/debug handoff.
+    - ✔ excerpt output is deterministic and regression-locked.
+    - ✔ operator copy flow now supports both lightweight context-only and richer context+issues handoff.
+
 
 - **Scoped-workflow UX follow-on completed: preflight panel now provides one-click “copy active filter context” handoff text for scoped diagnostics** (2026-03-25)
   - Extended scoped diagnostics helper module `static/preflightScopedDiagnosticsUi.js`:
