@@ -27,7 +27,7 @@ let obStatusEl, obStageEl, obErrorsList, obWarningsList;
 let wizardCard, wizardStep1, wizardStep2, wizardStep3;
 let wizardParamSearch, wizardAutoDetectBtn, wizardParamList, wizardSelectedCount;
 let wizardStep1NextBtn, wizardStep2BackBtn, wizardStep2NextBtn;
-let wizardStep3BackBtn, wizardCreateBtn;
+let wizardStep3BackBtn, wizardCreateBtn, wizardPreviewBtn;
 let wizardPresetList, wizardMetricsList, wizardBudgetSlider, wizardBudgetValue, wizardSummary;
 
 // Wizard state
@@ -142,16 +142,28 @@ function _setLegacyObjectivesVisible(visible) {
     if (legacyObjectivesToggleInput) legacyObjectivesToggleInput.checked = !!visible;
 }
 
-function _setParamStudiesViewMode(mode = 'basic') {
-    const normalized = String(mode || 'basic').toLowerCase() === 'advanced' ? 'advanced' : 'basic';
-    if (viewModeInput && viewModeInput.value !== normalized) {
-        viewModeInput.value = normalized;
+function _setParamStudiesViewMode(mode = 'wizard') {
+    const normalized = String(mode || 'wizard').toLowerCase();
+    const validModes = ['wizard', 'basic', 'advanced'];
+    const finalMode = validModes.includes(normalized) ? normalized : 'wizard';
+    const currentMode = viewModeInput?.value || 'wizard';
+    
+    if (viewModeInput && viewModeInput.value !== finalMode) {
+        viewModeInput.value = finalMode;
     }
     if (!modal) return;
 
-    const advancedEls = modal.querySelectorAll('[data-ps-view="advanced"]');
-    advancedEls.forEach((el) => {
-        el.hidden = normalized !== 'advanced';
+    // Clear wizard state when leaving wizard mode (optional - gives clean slate)
+    if (currentMode === 'wizard' && finalMode !== 'wizard') {
+        // Don't clear - keep wizard state in case user wants to go back
+    }
+    
+    // Handle elements with data-ps-view attribute (can be comma-separated)
+    const allViewEls = modal.querySelectorAll('[data-ps-view]');
+    allViewEls.forEach((el) => {
+        const viewAttr = el.getAttribute('data-ps-view');
+        const views = viewAttr.split(',').map(v => v.trim());
+        el.hidden = !views.includes(finalMode);
     });
 }
 
@@ -2642,6 +2654,7 @@ export function init(newCallbacks = {}) {
     wizardStep2NextBtn = document.getElementById('psWizardStep2NextBtn');
     wizardStep3BackBtn = document.getElementById('psWizardStep3BackBtn');
     wizardCreateBtn = document.getElementById('psWizardCreateBtn');
+    wizardPreviewBtn = document.getElementById('psWizardPreviewBtn');
     wizardPresetList = document.getElementById('psWizardPresetList');
     wizardMetricsList = document.getElementById('psWizardMetricsList');
     wizardBudgetSlider = document.getElementById('psWizardBudgetSlider');
@@ -2802,6 +2815,7 @@ export function init(newCallbacks = {}) {
     if (wizardStep2NextBtn) wizardStep2NextBtn.addEventListener('click', () => _wizardGoToStep(3));
     if (wizardStep3BackBtn) wizardStep3BackBtn.addEventListener('click', () => _wizardGoToStep(2));
     if (wizardCreateBtn) wizardCreateBtn.addEventListener('click', _wizardCreateStudy);
+    if (wizardPreviewBtn) wizardPreviewBtn.addEventListener('click', _wizardPreviewInBasic);
     if (wizardBudgetSlider) wizardBudgetSlider.addEventListener('input', _updateWizardBudget);
     if (wizardPresetList) wizardPresetList.addEventListener('click', (e) => {
         if (e.target.classList.contains('ps-wizard-preset-btn')) {
@@ -3341,11 +3355,19 @@ async function _wizardCreateStudy() {
             });
         }
         
+        // Sync wizard state to legacy form
+        _syncWizardToLegacyForm(studyName, studyPayload);
+        
         // Create the study
         const result = await callbacks.onUpsertParamStudy?.(studyName, studyPayload);
         
         if (result && result.success) {
-            _showNotice('Optimization study created successfully!', 'success', 5000);
+            _showNotice('Optimization study created successfully! Switch to Basic/Advanced view to see details.', 'success', 6000);
+            // Switch to basic view to show the form
+            setTimeout(() => {
+                if (viewModeInput) viewModeInput.value = 'basic';
+                _setParamStudiesViewMode('basic');
+            }, 1000);
             // Refresh the table
             await callbacks.onRefresh?.();
         } else {
@@ -3359,6 +3381,101 @@ async function _wizardCreateStudy() {
         wizardCreateBtn.disabled = false;
         wizardCreateBtn.textContent = '🚀 Create & Run';
     }
+}
+
+function _syncWizardToLegacyForm(studyName, studyPayload) {
+    // Populate name field
+    if (nameInput) nameInput.value = studyName;
+    
+    // Populate mode field
+    if (modeInput) modeInput.value = studyPayload.mode;
+    
+    // Populate parameters
+    if (paramsInput && studyPayload.parameters) {
+        if (paramsInput.tagName === 'SELECT') {
+            // For select, we need to rebuild options
+            paramsInput.innerHTML = '';
+            studyPayload.parameters.forEach(paramName => {
+                const option = document.createElement('option');
+                option.value = paramName;
+                option.textContent = paramName;
+                option.selected = true;
+                paramsInput.appendChild(option);
+            });
+        } else {
+            paramsInput.value = studyPayload.parameters.join(', ');
+        }
+    }
+    
+    // Populate samples/budget
+    if (samplesInput && studyPayload.samples) {
+        samplesInput.value = studyPayload.samples;
+    }
+    
+    // Sync objectives to objective builder if available
+    if (studyPayload.objectives && studyPayload.objectives.length > 0) {
+        // Build a formula from objectives for the objective builder
+        const objectiveNames = studyPayload.objectives.map((obj, idx) => {
+            const dir = obj.direction === 'minimize' ? '-' : '';
+            const weight = obj.reduce || 'sum';
+            return `${dir}${weight}(${obj.metric})`;
+        }).join(' + ');
+        
+        if (obFormulaInput) {
+            obFormulaInput.value = objectiveNames;
+        }
+    }
+}
+
+function _clearWizardState() {
+    wizardState = {
+        step: 1,
+        selectedParams: new Map(),
+        selectedMetrics: [],
+        budget: 20,
+        discoveredParams: [],
+    };
+    if (wizardStep1) wizardStep1.style.display = 'block';
+    if (wizardStep2) wizardStep2.style.display = 'none';
+    if (wizardStep3) wizardStep3.style.display = 'none';
+    if (wizardParamList) wizardParamList.innerHTML = '<div style="color: #64748b; font-size: 12px;">Click "Auto-Detect" to discover optimizable parameters from your geometry.</div>';
+    if (wizardMetricsList) wizardMetricsList.innerHTML = '<div style="color: #94a3b8; font-size: 12px;">Select a preset or browse metrics to get started.</div>';
+    if (wizardSelectedCount) wizardSelectedCount.textContent = '0 parameters selected';
+    if (wizardStep1NextBtn) { wizardStep1NextBtn.disabled = true; wizardStep1NextBtn.style.cursor = 'not-allowed'; }
+    if (wizardStep2NextBtn) { wizardStep2NextBtn.disabled = true; wizardStep2NextBtn.style.cursor = 'not-allowed'; }
+    if (wizardBudgetSlider) wizardBudgetSlider.value = 20;
+    if (wizardBudgetValue) wizardBudgetValue.textContent = '20';
+    if (wizardSummary) wizardSummary.innerHTML = '';
+}
+
+function _wizardPreviewInBasic() {
+    // Build a temporary study payload to preview
+    const params = Array.from(wizardState.selectedParams.values());
+    if (params.length === 0) {
+        _showNotice('Select at least one parameter first!', 'error', 3000);
+        return;
+    }
+    
+    const studyPayload = {
+        mode: 'random',
+        parameters: params.map(p => p.name),
+        samples: wizardState.budget,
+        objectives: wizardState.selectedMetrics.map(m => ({
+            metric: m.path,
+            name: m.label || m.path,
+            direction: m.direction,
+            reduce: m.reduce || 'sum'
+        }))
+    };
+    
+    // Sync to form
+    _syncWizardToLegacyForm(`preview_${Date.now()}`, studyPayload);
+    
+    // Switch to basic view
+    if (viewModeInput) viewModeInput.value = 'basic';
+    _setParamStudiesViewMode('basic');
+    
+    _showNotice('Preview shown in Basic view. You can edit fields or switch back to Wizard.', 'success', 4000);
 }
 
 // Global functions for onclick handlers
