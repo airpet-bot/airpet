@@ -4,6 +4,7 @@
 <head>
     <title>AIrPET</title>
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -309,6 +310,12 @@
             cursor: pointer;
         }
 
+        #menu_bar .dropdown_content .dropdown-separator {
+            border: none;
+            border-top: 1px solid #d8dde6;
+            margin: 4px 0;
+        }
+
         #menu_bar li:hover .dropdown_content {
             display: block;
         }
@@ -337,6 +344,46 @@
 
         #menu_bar .dropdown_content .snap-input-row:last-child {
             margin-bottom: 0;
+        }
+
+        /* Tools dropdown in hierarchy tab */
+        .tab_header .dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        .tab_header .dropdown .dropdown_content {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 100%;
+            background-color: #f9f9f9;
+            min-width: 180px;
+            box-shadow: 0px 8px 16px 0px rgba(0, 0, 0, 0.2);
+            z-index: 1000;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        .tab_header .dropdown .dropdown_content button {
+            color: black;
+            padding: 8px 12px;
+            text-decoration: none;
+            display: block;
+            text-align: left;
+            width: 100%;
+            border: none;
+            background-color: transparent;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .tab_header .dropdown .dropdown_content button:hover {
+            background-color: #ddd;
+        }
+
+        .tab_header .dropdown.show .dropdown_content {
+            display: block;
         }
 
         #menu_bar .dropdown_content .snap-input-row label {
@@ -611,6 +658,207 @@
             border-left: 3px solid #3b82f6;
         }
 
+        .chat-message.thinking-indicator {
+            background-color: #fff3cd;
+            border: 1px solid #ffc107;
+            color: #856404;
+            font-size: 13px;
+            animation: pulse 2s infinite;
+        }
+
+        .chat-message.thinking-indicator .turn-badge {
+            display: inline-block;
+            background-color: #ffc107;
+            color: #856404;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+
+        .chat-message.thinking-indicator .pause-badge {
+            display: inline-block;
+            background-color: #6c757d;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-right: 8px;
+        }
+
+        .chat-message.thinking-indicator .tools-list {
+            margin-top: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+          .chat-message.thinking-indicator .tool-entry {
+            background-color: rgba(255, 193, 7, 0.2);
+            border-radius: 4px;
+            font-size: 12px;
+            border-left: 2px solid #ffc107;
+        }
+
+        .chat-message.thinking-dropdown {
+            align-self: flex-start;
+            background-color: #fffbeb;
+            border: 1px solid #f59e0b;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-top: 4px;
+            max-width: 85%;
+        }
+
+        .thinking-toggle {
+            width: 100%;
+            background-color: #fffbeb;
+            border: none;
+            padding: 10px 14px;
+            font-size: 13px;
+            color: #92400e;
+            cursor: pointer;
+            text-align: left;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: background-color 0.2s;
+        }
+
+        .thinking-toggle:hover {
+            background-color: #fef3c7;
+        }
+
+        .thinking-content {
+            padding: 10px 14px 14px;
+            background-color: #fef3c7;
+            border-top: 1px solid #f59e0b;
+        }
+
+        .thinking-step {
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            background-color: #fff;
+            border-radius: 8px;
+            border-left: 3px solid #f59e0b;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .thinking-step:last-child {
+            margin-bottom: 0;
+        }
+
+        .thinking-tools {
+            margin-top: 8px;
+            padding: 6px 10px;
+            background-color: rgba(0, 0, 0, 0.05);
+            border-radius: 6px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .chat-message.markdown-content {
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .chat-message.markdown-content p {
+            margin: 0.5em 0;
+        }
+
+        .chat-message.markdown-content p:first-child {
+            margin-top: 0;
+        }
+
+        .chat-message.markdown-content p:last-child {
+            margin-bottom: 0;
+        }
+
+        .chat-message.markdown-content code {
+            background-color: rgba(0, 0, 0, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+
+        .chat-message.user.markdown-content code {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .chat-message.markdown-content pre {
+            background-color: #2d2d2d;
+            color: #f8f8f2;
+            padding: 12px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 8px 0;
+        }
+
+        .chat-message.markdown-content pre code {
+            background-color: transparent;
+            padding: 0;
+            color: inherit;
+        }
+
+        .chat-message.markdown-content ul,
+        .chat-message.markdown-content ol {
+            margin: 8px 0;
+            padding-left: 24px;
+        }
+
+        .chat-message.markdown-content li {
+            margin: 4px 0;
+        }
+
+        .chat-message.markdown-content blockquote {
+            border-left: 4px solid #ccc;
+            margin: 8px 0;
+            padding-left: 12px;
+            color: #666;
+        }
+
+        .chat-message.markdown-content h1,
+        .chat-message.markdown-content h2,
+        .chat-message.markdown-content h3 {
+            margin: 12px 0 8px 0;
+            font-weight: 600;
+        }
+
+        .chat-message.markdown-content h1 { font-size: 1.4em; }
+        .chat-message.markdown-content h2 { font-size: 1.2em; }
+        .chat-message.markdown-content h3 { font-size: 1.1em; }
+
+        .chat-message.markdown-content table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 8px 0;
+        }
+
+        .chat-message.markdown-content th,
+        .chat-message.markdown-content td {
+            border: 1px solid #ddd;
+            padding: 6px 10px;
+            text-align: left;
+        }
+
+        .chat-message.markdown-content th {
+            background-color: rgba(0, 0, 0, 0.05);
+            font-weight: 600;
+        }
+
+        .chat-message.user.markdown-content th {
+            background-color: rgba(255, 255, 255, 0.15);
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
         #ai_input_area {
             flex-shrink: 0;
             padding: 10px 15px;
@@ -659,12 +907,184 @@
             flex-wrap: wrap;
         }
 
+        .ai-status-right {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
         .ai-model-info {
             font-size: 11px;
             color: #6c757d;
             display: inline-flex;
             align-items: center;
             gap: 4px;
+        }
+
+        .ai-backend-status {
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 1px 6px;
+            background: #f8fafc;
+        }
+
+        .ai-backend-status.status-healthy {
+            color: #166534;
+            border-color: #bbf7d0;
+            background: #f0fdf4;
+        }
+
+        .ai-backend-status.status-timeout,
+        .ai-backend-status.status-unreachable,
+        .ai-backend-status.status-misconfigured {
+            color: #9a3412;
+            border-color: #fed7aa;
+            background: #fff7ed;
+        }
+
+        .ai-backend-status.status-unreachable {
+            color: #991b1b;
+            border-color: #fecaca;
+            background: #fef2f2;
+        }
+
+        .ai-backend-status.status-misconfigured {
+            color: #6b21a8;
+            border-color: #e9d5ff;
+            background: #faf5ff;
+        }
+
+        .ai-runtime-config-status {
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 1px 6px;
+            background: #f8fafc;
+            color: #475569;
+        }
+
+        .ai-runtime-config-status.status-ok {
+            color: #166534;
+            border-color: #bbf7d0;
+            background: #f0fdf4;
+        }
+
+        .ai-runtime-config-status.status-error {
+            color: #991b1b;
+            border-color: #fecaca;
+            background: #fef2f2;
+        }
+
+        .ai-runtime-config-btn {
+            border: 1px solid #cbd5e1;
+            background: #f8fafc;
+            color: #1e293b;
+            border-radius: 6px;
+            padding: 3px 8px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+
+        .ai-runtime-config-btn:hover {
+            background: #eef2ff;
+        }
+
+        .ai-runtime-modal-body {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .ai-runtime-help {
+            margin: 0;
+            color: #334155;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .ai-runtime-backend-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .ai-runtime-backend-card {
+            border: 1px solid #dbe3ef;
+            border-radius: 6px;
+            padding: 8px;
+            background: #f8fafc;
+            min-width: 0;
+        }
+
+        @media (max-width: 1100px) {
+            .ai-runtime-backend-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .ai-runtime-backend-card legend {
+            font-size: 12px;
+            font-weight: 600;
+            color: #1e293b;
+            padding: 0 4px;
+        }
+
+        .ai-runtime-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-bottom: 7px;
+        }
+
+        .ai-runtime-field label {
+            font-size: 11px;
+            color: #334155;
+        }
+
+        .ai-runtime-field input,
+        .ai-runtime-field textarea {
+            width: 100%;
+            font-size: 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            padding: 4px 6px;
+            box-sizing: border-box;
+            font-family: inherit;
+        }
+
+        .ai-runtime-field textarea {
+            min-height: 78px;
+            resize: vertical;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+
+        .ai-runtime-inline-check {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: #334155;
+            margin-right: 10px;
+        }
+
+        .ai-runtime-feedback {
+            display: none;
+            font-size: 12px;
+            border-radius: 4px;
+            padding: 6px 8px;
+        }
+
+        .ai-runtime-feedback.error {
+            color: #991b1b;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+        }
+
+        .ai-runtime-feedback.ok {
+            color: #166534;
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
         }
 
         #clear_chat_btn {
@@ -700,10 +1120,282 @@
 
         #runSimButton,
         #stopSimButton,
+        #preflightButton,
         #simOptionsButton,
         #reconModalButton {
             font-size: 12px;
             cursor: pointer;
+        }
+
+        #preflight_panel {
+            border: 1px solid #d9dee6;
+            background: #f8fafc;
+            border-radius: 4px;
+            padding: 8px;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+
+        #preflight_summary_line {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        #preflight_scope_line,
+        #preflight_delta_line,
+        #preflight_scope_hint_line,
+        #preflight_scope_buckets_line {
+            display: none;
+            font-size: 11px;
+            color: #334155;
+            margin-bottom: 4px;
+            line-height: 1.35;
+        }
+
+        #preflight_delta_line {
+            color: #475569;
+        }
+
+        #preflight_scope_hint_line {
+            color: #64748b;
+            font-style: italic;
+        }
+
+        #preflight_scope_buckets_line {
+            color: #334155;
+        }
+
+        #preflight_scope_bucket_filter_row,
+        #preflight_issue_code_chip_row,
+        #preflight_scope_context_row,
+        #preflight_issue_toggle_row {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            margin: 4px 0 2px;
+            flex-wrap: wrap;
+        }
+
+        .preflight_toggle_btn {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 999px;
+            border: 1px solid #cbd5e1;
+            background: #f8fafc;
+            color: #334155;
+            cursor: pointer;
+        }
+
+        .preflight_toggle_btn.active {
+            background: #dbeafe;
+            border-color: #60a5fa;
+            color: #1d4ed8;
+            font-weight: 600;
+        }
+
+        .preflight_issue_code_chip_label {
+            font-size: 10px;
+            color: #475569;
+            font-weight: 600;
+            margin-right: 2px;
+        }
+
+        .preflight_issue_code_chip {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        }
+
+        .preflight_issue_code_chip_clear {
+            margin-left: 2px;
+        }
+
+        #preflight_scope_context_status {
+            display: none;
+            font-size: 10px;
+            color: #64748b;
+        }
+
+        #preflight_issues_label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #334155;
+            margin: 6px 0 4px;
+        }
+
+        #preflight_issues_list {
+            max-height: 140px;
+            overflow-y: auto;
+            border-top: 1px solid #e2e8f0;
+            padding-top: 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .preflight_issue {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            line-height: 1.3;
+        }
+
+        .preflight_badge {
+            font-size: 10px;
+            border-radius: 10px;
+            padding: 2px 6px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .preflight_badge.error { background: #fee2e2; color: #b91c1c; }
+        .preflight_badge.warning { background: #fef3c7; color: #92400e; }
+        .preflight_badge.info { background: #dbeafe; color: #1e40af; }
+
+        /* STEP import report modal */
+        #stepImportReportSummary {
+            font-size: 12px;
+            color: #334155;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        #stepImportReportTableWrap {
+            max-height: 320px;
+            overflow: auto;
+            border: 1px solid #dbe2ea;
+            border-radius: 4px;
+            background: #fff;
+        }
+
+        #stepImportReportTable {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        #stepImportReportTable th,
+        #stepImportReportTable td {
+            border-bottom: 1px solid #eef2f7;
+            text-align: left;
+            padding: 6px 8px;
+            vertical-align: top;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        }
+
+        #stepImportReportTable th {
+            position: sticky;
+            top: 0;
+            background: #f8fafc;
+            z-index: 1;
+            font-family: inherit;
+            font-weight: 600;
+        }
+
+        .step-report-mode-pill {
+            border-radius: 999px;
+            padding: 2px 8px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            white-space: nowrap;
+            font-family: inherit;
+        }
+
+        .step-report-mode-pill.primitive { background: #dcfce7; color: #166534; }
+        .step-report-mode-pill.tessellated { background: #fef3c7; color: #92400e; }
+
+        /* Parameter registry modal */
+        #parameterRegistryTableWrap {
+            max-height: 220px;
+            overflow: auto;
+            border: 1px solid #dbe2ea;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            background: #fff;
+        }
+        #parameterRegistryTable {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        #parameterRegistryTable th, #parameterRegistryTable td {
+            text-align: left;
+            border-bottom: 1px solid #eef2f7;
+            padding: 6px 8px;
+        }
+        #parameterRegistryTable tr.active {
+            background: #eef6ff;
+        }
+        .pr-form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px 10px;
+        }
+        .pr-form-grid[hidden] {
+            display: none !important;
+        }
+        .pr-form-grid .property_item {
+            margin: 0;
+        }
+
+        /* Param studies modal */
+        #paramStudiesTableWrap {
+            max-height: 260px;
+            min-height: 140px;
+            overflow: auto;
+            border: 1px solid #dbe2ea;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            background: #fff;
+        }
+        #paramStudiesTable {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        #paramStudiesTable th, #paramStudiesTable td {
+            text-align: left;
+            border-bottom: 1px solid #eef2f7;
+            padding: 6px 8px;
+        }
+        #paramStudiesTable th {
+            position: sticky;
+            top: 0;
+            background: #f8fafc;
+            z-index: 1;
+        }
+        #paramStudiesTable tr.active {
+            background: #eef6ff;
+        }
+
+        #psRankingTableWrap {
+            max-height: 280px;
+            min-height: 160px;
+            overflow: auto;
+            border: 1px solid #dbe2ea;
+            border-radius: 4px;
+            margin-top: 8px;
+            background: #fff;
+        }
+        #psRankingTable {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+        #psRankingTable th, #psRankingTable td {
+            text-align: left;
+            border-bottom: 1px solid #eef2f7;
+            padding: 6px 8px;
+            font-family: ui-monospace, Menlo, monospace;
+        }
+        #psRankingTable th {
+            position: sticky;
+            top: 0;
+            background: #f8fafc;
+            z-index: 1;
+        }
+        #psRankingTable td:last-child {
+            white-space: normal;
+            word-break: break-word;
         }
 
         #stopSimButton:disabled {
@@ -1073,6 +1765,31 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+        }
+
+        #paramStudiesModal .modal-footer {
+            justify-content: flex-start;
+            align-items: stretch;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        #paramStudiesModal .modal-footer .ps-footer-btn {
+            min-height: 34px;
+            min-width: 190px;
+            white-space: nowrap;
+            display: inline-flex;
+            align-items: center;
+        }
+
+        /* View mode visibility */
+        #psWizardCard[hidden],
+        #psLegacyForm[hidden] {
+            display: none !important;
+        }
+            justify-content: center;
+            box-sizing: border-box;
+            padding: 0 10px;
         }
 
         .quick-add-options {
@@ -1576,13 +2293,19 @@
             <div id="tab_structure" class="tab_pane active">
                 <!-- Structure (Volumes) Hierarchy will be built here -->
                 <div class="tab_header">
-                    <span class="tab-title">World Structure</span>
-                    <div>
-                        <button class="add_button" data-add-type="particle_source"
-                            title="Add a General Particle Source">+ GPS</button>
-                        <button id="addPVButton" title="Place a volume inside the selected one" disabled>+ PV</button>
-                    </div>
-                </div>
+                     <span class="tab-title">World Structure</span>
+                     <div>
+                         <button class="add_button" data-add-type="particle_source"
+                             title="Add a General Particle Source">+ GPS</button>
+                         <button id="addPVButton" title="Place a volume inside the selected one" disabled>+ PV</button>
+                     <div class="dropdown">
+                          <button id="toolsDropdownButton">+ Tools</button>
+                          <div id="toolsDropdownContent" class="dropdown_content">
+                              <button id="createRingArrayButton">Create Ring Array</button>
+                          </div>
+                      </div>
+                     </div>
+                 </div>
                 <ul id="structure_tree_root"></ul>
             </div>
             <div id="tab_volumes" class="tab_pane">
@@ -1817,11 +2540,12 @@
                         <button id="showAllBtn">Show All (Shift+J)</button>
                     </div>
                 </li>
-                <!-- Object Menu -->
+                <!-- Optimize Menu -->
                 <li>
-                    <button>Object</button>
+                    <button>Optimize</button>
                     <div class="dropdown_content">
-                        <button id="createRingArrayButton">Create Ring Array</button>
+                        <button id="parameterRegistryButton">Parameter Registry...</button>
+                        <button id="paramStudiesButton">Param Studies...</button>
                     </div>
                 </li>
                 <!-- Mode Menu -->
@@ -1868,10 +2592,15 @@
                         <div class="ai-status-bar">
                             <div class="ai-status-left">
                                 <span class="ai-model-info">Model: <select id="ai_model_select"></select></span>
+                                <span class="ai-model-info ai-backend-status" id="ai_backend_status" title="Local backend readiness status">Backend: n/a</span>
                                 <span class="ai-model-info">Max turns: <input type="number" id="ai_turn_limit" value="10" min="1" max="50" style="width: 44px; font-size: 11px;"></span>
                                 <span class="ai-model-info" id="ai_context_stats">Context: n/a</span>
                             </div>
-                            <button id="clear_chat_btn">Clear History</button>
+                            <div class="ai-status-right">
+                                <button id="ai_runtime_config_btn" class="ai-runtime-config-btn" title="Edit session runtime profile for local backends">Local backends ⚙</button>
+                                <span class="ai-model-info ai-runtime-config-status" id="ai_runtime_config_status">Runtime profile: loading…</span>
+                                <button id="clear_chat_btn">Clear History</button>
+                            </div>
                         </div>
                         <div id="ai_input_row">
                             <textarea id="ai_prompt_input" placeholder="Type a message or geometry instruction..." rows="1"></textarea>
@@ -1890,6 +2619,7 @@
                         <input type="number" id="simEventsInput" value="10" min="1" step="1">
                         <button id="runSimButton">▶ Run</button>
                         <button id="stopSimButton" disabled>⏹ Stop</button>
+                        <button id="preflightButton">🧪 Preflight</button>
                         <button id="simOptionsButton">⚙️ Options</button>
                         <button id="reconModalButton" title="Open PET Reconstruction" disabled>PET Reco</button>
                         <div id="sim_status_display"
@@ -1900,6 +2630,33 @@
                             <input type="checkbox" id="drawTracksCheckbox" title="Draw saved tracks in 3D view">
                             <label for="drawTracksCheckbox" style="font-size: 12px;">Draw Tracks:</label>
                             <input type="text" id="drawTracksRange" value="0-9" style="width: 60px;">
+                        </div>
+                    </div>
+                    <div id="preflight_panel">
+                        <div id="preflight_summary_line">Preflight: not run yet.</div>
+                        <div id="preflight_scope_line"></div>
+                        <div id="preflight_delta_line"></div>
+                        <div id="preflight_scope_hint_line"></div>
+                        <div id="preflight_scope_buckets_line"></div>
+                        <div id="preflight_scope_bucket_filter_row">
+                            <button id="preflight_bucket_all_btn" class="preflight_toggle_btn active" type="button">All scoped</button>
+                            <button id="preflight_bucket_scope_only_btn" class="preflight_toggle_btn" type="button">Scope-only</button>
+                            <button id="preflight_bucket_outside_only_btn" class="preflight_toggle_btn" type="button">Outside-scope-only</button>
+                            <button id="preflight_bucket_shared_btn" class="preflight_toggle_btn" type="button">Shared</button>
+                        </div>
+                        <div id="preflight_issue_code_chip_row"></div>
+                        <div id="preflight_scope_context_row">
+                            <button id="preflight_copy_scope_context_btn" class="preflight_toggle_btn" type="button">Copy filter context</button>
+                            <button id="preflight_copy_scope_issue_excerpt_btn" class="preflight_toggle_btn" type="button">Copy issue excerpt</button>
+                            <span id="preflight_scope_context_status"></span>
+                        </div>
+                        <div id="preflight_issue_toggle_row">
+                            <button id="preflight_show_scope_issues_btn" class="preflight_toggle_btn" type="button">Scoped issues</button>
+                            <button id="preflight_show_global_issues_btn" class="preflight_toggle_btn" type="button">Full-geometry issues</button>
+                        </div>
+                        <div id="preflight_issues_label">Issues</div>
+                        <div id="preflight_issues_list">
+                            <div id="preflight_empty_line" style="color: #64748b;">Run preflight to see geometry checks and diagnostics.</div>
                         </div>
                     </div>
                     <div id="sim_console_wrapper">
@@ -1935,13 +2692,588 @@
     </div>
     <!-- History panel -->
     <div id="history_panel"
-        style="display:none; width: 450px; height: 100vh; background-color: #f0f2f5; border-left: 1px solid #ccc; flex-direction: column;">
+        style="display:none; width: 450px; min-width: 450px; flex-shrink: 0; height: 100vh; background-color: #f0f2f5; border-left: 1px solid #ccc; flex-direction: column;">
         <div class="tab_header" style="flex-shrink: 0;">
             <span class="tab-title">History</span>
             <button id="closeHistoryPanel" style="font-size: 18px; line-height: 1;">×</button>
         </div>
         <div id="history_list_container" style="flex-grow: 1; overflow-y: auto;">
             <!-- History items will be populated here -->
+        </div>
+    </div>
+    <div id="parameterRegistryModal" class="editor-modal">
+        <div class="modal-content" style="width: 820px; height: auto; max-height: 90vh;">
+            <div class="modal-header">
+                <h4>Parameter Registry</h4>
+            </div>
+            <div class="modal-body" style="flex-direction: column;">
+                <div id="parameterRegistryTableWrap">
+                    <table id="parameterRegistryTable">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Target</th>
+                                <th>Bounds</th>
+                                <th>Default</th>
+                                <th>Enabled</th>
+                            </tr>
+                        </thead>
+                        <tbody id="parameterRegistryTableBody"></tbody>
+                    </table>
+                </div>
+
+                <div class="pr-form-grid">
+                    <div class="property_item">
+                        <label for="pr_name">Name:</label>
+                        <input type="text" id="pr_name" placeholder="e.g. crystal_pitch">
+                    </div>
+                    <div class="property_item">
+                        <label for="pr_target_type">Target Type:</label>
+                        <select id="pr_target_type">
+                            <option value="define">define</option>
+                            <option value="solid">solid</option>
+                            <option value="source">source</option>
+                            <option value="sim_option">sim_option</option>
+                        </select>
+                    </div>
+                    <div class="property_item">
+                        <label for="pr_target_name">Target Name:</label>
+                        <input type="text" id="pr_target_name" placeholder="define/solid/source name">
+                    </div>
+                    <div class="property_item">
+                        <label for="pr_target_field">Target Field/Param/Key:</label>
+                        <input type="text" id="pr_target_field" placeholder="param / field / key">
+                    </div>
+                    <div class="property_item">
+                        <label for="pr_min">Bounds Min:</label>
+                        <input type="number" id="pr_min" step="any">
+                    </div>
+                    <div class="property_item">
+                        <label for="pr_max">Bounds Max:</label>
+                        <input type="number" id="pr_max" step="any">
+                    </div>
+                    <div class="property_item">
+                        <label for="pr_default">Default:</label>
+                        <input type="number" id="pr_default" step="any">
+                    </div>
+                    <div class="property_item">
+                        <label for="pr_units">Units:</label>
+                        <input type="text" id="pr_units" placeholder="mm, deg, ...">
+                    </div>
+                    <div class="property_item">
+                        <label for="pr_constraint_group">Constraint Group:</label>
+                        <input type="text" id="pr_constraint_group" placeholder="optional">
+                    </div>
+                    <div class="property_item" style="display:flex; align-items:end;">
+                        <label style="display:flex; align-items:center; gap:8px;">
+                            <input type="checkbox" id="pr_enabled" checked>
+                            Enabled
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="prRefreshBtn">Refresh</button>
+                <button id="prDeleteBtn">Delete</button>
+                <button id="prCancelBtn">Close</button>
+                <button id="prSaveBtn" class="confirm-button">Save</button>
+            </div>
+        </div>
+    </div>
+    <div id="paramStudiesModal" class="editor-modal">
+        <div class="modal-content" style="width: 980px; height: auto; max-height: 92vh;">
+            <div class="modal-header">
+                <h4>Param Studies</h4>
+            </div>
+            <div class="modal-body" style="flex-direction: column;">
+                <div id="psNotice" style="display:none; margin: 0 0 8px 0; padding: 8px 10px; border-radius: 4px; font-size: 12px;"></div>
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:4px;">
+                    <div style="font-size:12px; color:#334155;"><b>View mode:</b> Wizard for guided setup, Basic for manual control, Advanced for diagnostics.</div>
+                    <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+                        <label for="ps_view_mode" style="margin:0; font-size:12px; color:#334155;">Mode</label>
+                        <select id="ps_view_mode">
+                            <option value="wizard" selected>✨ Wizard</option>
+                            <option value="basic">Basic</option>
+                            <option value="advanced">Advanced</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="paramStudiesTableWrap">
+                    <table id="paramStudiesTable">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Mode</th>
+                                <th>Parameters</th>
+                            </tr>
+                        </thead>
+                        <tbody id="paramStudiesTableBody"></tbody>
+                    </table>
+                </div>
+
+                <!-- Optimization Wizard (Wizard Mode Only) -->
+                <div id="psWizardCard" data-ps-view="wizard" style="margin-top: 10px; border: 2px solid #3b82f6; border-radius: 8px; padding: 16px; background: #eff6ff;">
+                    <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px; color: #1e40af;">
+                        <span style="display: inline-block; width: 28px; height: 28px; background: #3b82f6; color: white; border-radius: 50%; text-align: center; line-height: 28px; margin-right: 8px;">✨</span>
+                        Optimization Wizard
+                    </div>
+                    
+                    <!-- Step 1: Select Parameters -->
+                    <div id="psWizardStep1">
+                        <div style="font-weight: 600; margin-bottom: 8px; color: #334155;">Step 1: What to optimize?</div>
+                        <div style="font-size: 12px; color: #64748b; margin-bottom: 8px;">Select parameters from your geometry to vary during optimization.</div>
+                        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                            <input type="text" id="psWizardParamSearch" placeholder="Search parameters..." style="flex: 1; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 4px;">
+                            <button id="psWizardAutoDetectBtn" type="button" style="padding: 6px 12px; background: #22c55e; color: white; border: none; border-radius: 4px; cursor: pointer;">Auto-Detect</button>
+                        </div>
+                        <div id="psWizardParamList" style="max-height: 180px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 4px; padding: 8px; background: white; margin-bottom: 8px;">
+                            <div style="color: #64748b; font-size: 12px;">Click "Auto-Detect" to discover optimizable parameters from your geometry.</div>
+                        </div>
+                        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                            <div id="psWizardSelectedCount" style="font-size: 12px; color: #64748b; align-self: center;">0 parameters selected</div>
+                            <button id="psWizardStep1NextBtn" type="button" disabled style="padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: not-allowed;">Next →</button>
+                        </div>
+                    </div>
+
+                    <!-- Step 2: Define Success -->
+                    <div id="psWizardStep2" style="display: none;">
+                        <div style="font-weight: 600; margin-bottom: 8px; color: #334155;">Step 2: What's success?</div>
+                        <div style="font-size: 12px; color: #64748b; margin-bottom: 8px;">Choose what to optimize for. Start with a preset or browse simulation data.</div>
+                        
+                        <!-- Preset Templates -->
+                        <div style="margin-bottom: 12px;">
+                            <div style="font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 6px;">Quick Presets:</div>
+                            <div id="psWizardPresetList" style="display: flex; gap: 6px; flex-wrap: wrap;">
+                                <button type="button" class="ps-wizard-preset-btn" data-preset="maximize_edep" style="padding: 6px 12px; background: #dbeafe; border: 1px solid #3b82f6; border-radius: 4px; cursor: pointer; font-size: 12px;">🎯 Maximize Energy Deposition</button>
+                                <button type="button" class="ps-wizard-preset-btn" data-preset="minimize_thickness" style="padding: 6px 12px; background: #dbeafe; border: 1px solid #3b82f6; border-radius: 4px; cursor: pointer; font-size: 12px;">📏 Minimize Thickness</button>
+                                <button type="button" class="ps-wizard-preset-btn" data-preset="maximize_hits" style="padding: 6px 12px; background: #dbeafe; border: 1px solid #3b82f6; border-radius: 4px; cursor: pointer; font-size: 12px;">🔴 Maximize Hit Count</button>
+                                <button type="button" class="ps-wizard-preset-btn" data-preset="browse_metrics" style="padding: 6px 12px; background: #f1f5f9; border: 1px solid #94a3b8; border-radius: 4px; cursor: pointer; font-size: 12px;">📊 Browse All Metrics</button>
+                            </div>
+                        </div>
+
+                        <!-- Selected Metrics -->
+                        <div style="border: 1px solid #e2e8f0; border-radius: 4px; padding: 8px; background: white; margin-bottom: 8px;">
+                            <div style="font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 6px;">Optimization Goals:</div>
+                            <div id="psWizardMetricsList" style="min-height: 60px;">
+                                <div style="color: #94a3b8; font-size: 12px;">Select a preset or browse metrics to get started.</div>
+                            </div>
+                        </div>
+
+                        <div style="display: flex; gap: 8px; justify-content: space-between;">
+                            <button id="psWizardStep2BackBtn" type="button" style="padding: 8px 16px; background: #e2e8f0; color: #334155; border: none; border-radius: 4px; cursor: pointer;">← Back</button>
+                            <button id="psWizardStep2NextBtn" type="button" disabled style="padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: not-allowed;">Next →</button>
+                        </div>
+                    </div>
+
+                    <!-- Step 3: Set Budget -->
+                    <div id="psWizardStep3" style="display: none;">
+                        <div style="font-weight: 600; margin-bottom: 8px; color: #334155;">Step 3: How thorough?</div>
+                        <div style="font-size: 12px; color: #64748b; margin-bottom: 12px;">More evaluations = better results but longer runtime.</div>
+                        
+                        <div style="margin-bottom: 16px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                                <label for="psWizardBudgetSlider" style="font-size: 12px; color: #475569;">Number of evaluations</label>
+                                <span id="psWizardBudgetValue" style="font-weight: 600; color: #3b82f6;">20</span>
+                            </div>
+                            <input type="range" id="psWizardBudgetSlider" min="10" max="100" value="20" step="5" style="width: 100%;">
+                            <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 11px; color: #64748b;">
+                                <span>Quick (10)</span>
+                                <span>Balanced (50)</span>
+                                <span>Thorough (100)</span>
+                            </div>
+                        </div>
+
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 8px; margin-bottom: 12px;">
+                            <div style="font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 4px;">Summary:</div>
+                            <div id="psWizardSummary" style="font-size: 12px; color: #334155;"></div>
+                        </div>
+
+                        <div style="display: flex; gap: 8px; justify-content: space-between; align-items: center;">
+                            <button id="psWizardStep3BackBtn" type="button" style="padding: 8px 16px; background: #e2e8f0; color: #334155; border: none; border-radius: 4px; cursor: pointer;">← Back</button>
+                            <div style="display: flex; gap: 8px;">
+                                <button id="psWizardPreviewBtn" type="button" style="padding: 8px 16px; background: #8b5cf6; color: white; border: none; border-radius: 4px; cursor: pointer;">👁️ Preview in Basic</button>
+                                <button id="psWizardCreateBtn" type="button" style="padding: 8px 16px; background: #22c55e; color: white; border: none; border-radius: 4px; cursor: pointer;">🚀 Create & Run</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Legacy Form (Basic and Advanced Mode) -->
+                <div class="pr-form-grid" id="psLegacyForm" data-ps-view="basic,advanced">
+                    <div class="property_item" style="grid-column: 1 / span 2; padding: 8px; background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px; font-size: 12px; color: #92400e;">
+                        <b>💡 Tip:</b> Use the <b>Wizard</b> view for guided optimization setup, or fill in these fields manually for more control.
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_name">Name:</label>
+                        <input type="text" id="ps_name" placeholder="e.g. sweep_v1">
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_mode">Mode:</label>
+                        <select id="ps_mode">
+                            <option value="grid">grid</option>
+                            <option value="random">random</option>
+                        </select>
+                    </div>
+                    <div class="property_item" style="grid-column: 1 / span 2;">
+                        <label for="ps_param_picker">Parameters:</label>
+                        <div style="display:flex; gap:8px; align-items:end; flex-wrap:wrap;">
+                            <div style="flex:1; min-width:220px;">
+                                <select id="ps_param_picker"></select>
+                            </div>
+                            <button id="psParamAddBtn" type="button">Add</button>
+                            <button id="psParamRemoveBtn" type="button">Remove Selected</button>
+                        </div>
+                        <select id="ps_parameters" multiple size="4" style="margin-top:6px;"></select>
+                        <div style="font-size:12px; color:#64748b; margin-top:4px;">Choose parameters from the registry. In Basic mode, free-text parameter entry is disabled.</div>
+                    </div>
+                    <div class="property_item" style="grid-column: 1 / span 2;" data-ps-view="advanced">
+                        <label style="display:flex; align-items:center; gap:8px;">
+                            <input type="checkbox" id="ps_show_legacy_objectives">
+                            <span>Show legacy objective text input (advanced)</span>
+                        </label>
+                        <div style="font-size:12px; color:#64748b; margin-top:4px;">Objective Builder is the default path. Legacy objective text input is optional for advanced/manual workflows.</div>
+                    </div>
+                    <div class="property_item" id="psLegacyObjectivesRow" style="grid-column: 1 / span 2; display:none;" data-ps-view="advanced">
+                        <label for="ps_objectives">Objectives (legacy quick input, metric[:name[:direction[:parameter]]], comma-separated):</label>
+                        <input type="text" id="ps_objectives" placeholder="success_flag:success:maximize, placements_count:placements:minimize">
+                    </div>
+
+                    <div id="psObjectiveBuilderCard" style="grid-column: 1 / span 2; margin-top: 6px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc;">
+                        <div style="font-weight: 600; margin-bottom: 8px;">Objective Builder</div>
+                        <div id="psObPolicyCaps" data-ps-view="advanced" style="font-size:12px; color:#334155; background:#fff; border:1px solid #e2e8f0; border-radius:4px; padding:6px 8px; margin-bottom:8px;">Loading run policy limits...</div>
+
+                        <div class="pr-form-grid" style="margin-top: 0;">
+                            <div class="property_item">
+                                <label for="ps_ob_template">Template:</label>
+                                <select id="ps_ob_template">
+                                    <option value="weighted_tradeoff">weighted_tradeoff</option>
+                                </select>
+                            </div>
+                            <div class="property_item" style="display:flex; align-items:end; gap:8px;">
+                                <button id="psObLoadExampleBtn" type="button">Load Example</button>
+                                <button id="psObValidateBtn" type="button">Validate</button>
+                            </div>
+                            <div class="property_item" style="grid-column: 1 / span 2;">
+                                <label for="ps_ob_dataset_path">Simulation metric dataset path:</label>
+                                <input type="text" id="ps_ob_dataset_path" value="default_ntuples/Hits/Edep" placeholder="default_ntuples/Hits/Edep">
+                                <div id="psObDatasetHint" style="font-size:12px; color:#64748b; margin-top:4px;">Use an HDF5 dataset path (e.g. default_ntuples/Hits/Edep) with reduce=sum for total deposited energy.</div>
+                            </div>
+                            <div class="property_item">
+                                <label for="ps_ob_cost_key">Context cost key (optional):</label>
+                                <input type="text" id="ps_ob_cost_key" value="" placeholder="optional (e.g. cost_norm)">
+                            </div>
+                            <div class="property_item">
+                                <label for="ps_ob_score_expr">Score expression:</label>
+                                <input type="text" id="ps_ob_score_expr" value="edep_sum" placeholder="edep_sum - 0.15*si_thickness - 0.02*abs(src_z)">
+                                <div style="font-size:12px; color:#64748b; margin-top:4px;">Start simple with <code>edep_sum</code>, then add penalties for thickness/cost if needed.</div>
+                                <div id="psObAllowedFunctions" data-ps-view="advanced" style="font-size:12px; color:#475569; margin-top:2px;">Allowed functions: loading...</div>
+                                <div id="psObFormulaVars" data-ps-view="advanced" style="font-size:12px; color:#475569; margin-top:4px;">Formula variables: loading...</div>
+                            </div>
+                            <div class="property_item" style="display:flex; align-items:end; gap:8px; flex-wrap:wrap;">
+                                <button id="psObBuildBtn" type="button" data-ps-view="advanced">Build</button>
+                                <button id="psObUpsertBtn" type="button" data-ps-view="advanced">Upsert Study</button>
+                                <button id="psObLaunchDryRunBtn" type="button" data-ps-view="advanced">Launch Dry Run</button>
+                                <button id="psObGuidedBtn" type="button">Guided Prep: Validate → Build → Dry Run</button>
+                            </div>
+                            <div class="property_item" style="grid-column: 1 / span 2; font-size:12px; color:#475569; margin-top:-2px;">
+                                <b>Note:</b> <b>Run Simulation-in-Loop</b> (in modal footer) executes real simulation jobs. <b>Guided Prep</b> and <b>Launch Dry Run</b> only prepare/validate payloads.
+                            </div>
+                            <div class="property_item" style="grid-column: 1 / span 2;" data-ps-view="advanced">
+                                <label style="display:flex; align-items:center; gap:8px;">
+                                    <input type="checkbox" id="ps_ob_keep_candidate_runs">
+                                    <span>Keep candidate run artifacts (HDF5/macros/logs)</span>
+                                </label>
+                                <div style="font-size:12px; color:#64748b; margin-top:4px;">When disabled, candidate files are extracted for objectives then cleaned up automatically.</div>
+                            </div>
+                            <div class="property_item" style="grid-column: 1 / span 2;" data-ps-view="advanced">
+                                <label for="ps_ob_candidate_runs_root">Candidate runs directory:</label>
+                                <input type="text" id="ps_ob_candidate_runs_root" placeholder="surrogate/simloop_runs">
+                                <div style="font-size:12px; color:#64748b; margin-top:4px;">Used only when <b>Keep candidate run artifacts</b> is enabled.</div>
+                                <div id="psObRunsDirStatus" style="font-size:12px; color:#334155; margin-top:4px;">Artifacts directory: not persisted (keep disabled).</div>
+                            </div>
+                            <div class="property_item" style="grid-column: 1 / span 2; border:1px solid #e2e8f0; border-radius:4px; padding:8px; background:#fff;">
+                                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px 12px; font-size:12px; color:#334155;">
+                                    <div><b>Status:</b> <span id="psObStatus">idle</span></div>
+                                    <div><b>Last Stage:</b> <span id="psObStage">-</span></div>
+                                </div>
+                                <div style="margin-top:6px; font-size:12px; color:#334155;"><b>Errors</b></div>
+                                <ul id="psObErrors" style="margin:4px 0 6px 18px; color:#b91c1c; font-size:12px;"><li style="color:#64748b;">none</li></ul>
+                                <div style="font-size:12px; color:#334155;"><b>Warnings</b></div>
+                                <ul id="psObWarnings" style="margin:4px 0 0 18px; color:#92400e; font-size:12px;"><li style="color:#64748b;">none</li></ul>
+                            </div>
+                            <div class="property_item" style="grid-column: 1 / span 2;" data-ps-view="advanced">
+                                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px;">
+                                    <label for="ps_ob_output" style="margin:0;">Objective Builder output:</label>
+                                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                        <button id="psObCopyOutputBtn" type="button">Copy Output JSON</button>
+                                        <button id="psObCopyBuildBtn" type="button" data-ps-view="advanced">Copy Build Payload</button>
+                                        <button id="psObCopyLaunchBtn" type="button" data-ps-view="advanced">Copy Launch Payload</button>
+                                    </div>
+                                </div>
+                                <textarea id="ps_ob_output" rows="6" readonly style="width:100%; font-family: ui-monospace, Menlo, monospace;"></textarea>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="property_item">
+                        <label for="ps_grid_steps">Grid Steps (default):</label>
+                        <input type="number" id="ps_grid_steps" value="3" min="2" step="1">
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_samples">Random Samples:</label>
+                        <input type="number" id="ps_samples" value="10" min="1" step="1">
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_seed">Random Seed:</label>
+                        <input type="number" id="ps_seed" value="42" step="1">
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_max_runs">Run Limit (optional):</label>
+                        <input type="number" id="ps_max_runs" min="1" step="1" placeholder="all">
+                    </div>
+                </div>
+
+                <div id="psOptimizerSummaryCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                    <div style="font-weight: 600; margin-bottom: 6px;">Optimizer Summary</div>
+                    <div id="psOptimizerSummaryGrid" style="display:grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; color: #334155;">
+                        <div><b>Status:</b> <span id="psSummaryStatus">No optimizer run yet</span></div>
+                        <div><b>Method:</b> <span id="psSummaryMethod">-</span></div>
+                        <div><b>Stop reason:</b> <span id="psSummaryStopReason">-</span></div>
+                        <div><b>Evaluations:</b> <span id="psSummaryEvals">-</span></div>
+                        <div><b>Objective:</b> <span id="psSummaryObjective">-</span></div>
+                        <div><b>Best score:</b> <span id="psSummaryBestScore">-</span></div>
+                    </div>
+                </div>
+
+                <div id="psRunTimelineCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                    <div style="font-weight: 600; margin-bottom: 6px;">Run Timeline &amp; Status</div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px 10px; color: #334155;">
+                        <div><b>Status:</b> <span id="psRunStatus">idle</span></div>
+                        <div><b>Action:</b> <span id="psRunAction">-</span></div>
+                        <div><b>Elapsed:</b> <span id="psRunElapsed">0.0s</span></div>
+                        <div><b>Budget used:</b> <span id="psRunBudgetUsed">-</span></div>
+                        <div><b>Success/Failure:</b> <span id="psRunSuccessFailure">-</span></div>
+                        <div><b>Last update:</b> <span id="psRunLastUpdate">-</span></div>
+                    </div>
+                    <div style="margin-top:8px; color:#334155; font-weight:600;">Timeline</div>
+                    <ul id="psRunTimelineList" style="margin:4px 0 0 18px; max-height:120px; overflow:auto; color:#334155;">
+                        <li style="color:#64748b;">No run activity yet.</li>
+                    </ul>
+                </div>
+
+                <div id="psRunReviewCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                    <div style="font-weight: 600; margin-bottom: 6px;">Run Review &amp; Apply</div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; color: #334155;">
+                        <div><b>Run ID:</b> <span id="psReviewRunId">-</span></div>
+                        <div><b>Verification:</b> <span id="psReviewGateStatus">not verified</span></div>
+                        <div><b>Token:</b> <span id="psReviewTokenStatus">none</span></div>
+                        <div><b>Apply readiness:</b> <span id="psReviewApplyReady">blocked</span></div>
+                    </div>
+                    <div class="pr-form-grid" style="margin-top: 8px;">
+                        <div class="property_item">
+                            <label for="ps_verify_repeats">Verify Repeats:</label>
+                            <input type="number" id="ps_verify_repeats" min="1" step="1" value="3">
+                        </div>
+                        <div class="property_item">
+                            <label for="ps_verify_min_success_rate">Min Success Rate (0-1):</label>
+                            <input type="number" id="ps_verify_min_success_rate" min="0" max="1" step="0.01" value="1.0">
+                        </div>
+                        <div class="property_item">
+                            <label for="ps_verify_max_std">Max Std (optional):</label>
+                            <input type="number" id="ps_verify_max_std" min="0" step="any" placeholder="unset">
+                        </div>
+                        <div class="property_item" style="display:flex; align-items:end; gap:8px; flex-wrap:wrap;">
+                            <button id="psReviewVerifyBtn" type="button">Verify Best (Issue Token)</button>
+                            <button id="psReviewApplyBtn" type="button" class="confirm-button" disabled>Apply Best (Token Required)</button>
+                            <button id="psReviewCopyTokenBtn" type="button">Copy Token</button>
+                        </div>
+                        <div class="property_item" style="grid-column: 1 / span 2;">
+                            <label for="psReviewToken">Verification Token:</label>
+                            <input type="text" id="psReviewToken" readonly placeholder="Run Verify Best to get a token">
+                            <div id="psReviewApplyConfirmText" style="margin-top:4px; color:#64748b; font-size:12px;">Apply confirmation not armed.</div>
+                        </div>
+                        <div class="property_item" style="grid-column: 1 / span 2;">
+                            <label for="psReviewGateReasons">Gate details:</label>
+                            <textarea id="psReviewGateReasons" rows="4" readonly style="width:100%; font-family: ui-monospace, Menlo, monospace;"></textarea>
+                        </div>
+                        <div class="property_item" style="grid-column: 1 / span 2; border-top:1px solid #e2e8f0; padding-top:8px; margin-top:2px;">
+                            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                                <label style="margin:0; font-weight:600;">Apply Audit</label>
+                                <div style="display:flex; gap:8px;">
+                                    <button id="psReviewAuditRefreshBtn" type="button">Refresh Audit</button>
+                                    <button id="psReviewRollbackBtn" type="button" class="danger-button">Rollback Selected</button>
+                                </div>
+                            </div>
+                            <div id="psReviewAuditSummary" style="margin-top:6px; color:#64748b;">No apply actions recorded yet.</div>
+                            <div id="psReviewAuditDiagnostics" style="margin-top:4px; color:#64748b; font-size:12px;">Audit diagnostics: not loaded.</div>
+                            <div style="margin-top:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                                <label for="psReviewAuditTarget" style="margin:0;">Rollback target:</label>
+                                <select id="psReviewAuditTarget" style="min-width:320px;"></select>
+                                <span id="psReviewAuditTargetHint" style="color:#64748b; font-size:12px;">Only latest unapplied entry can be rolled back safely.</span>
+                            </div>
+                            <div id="psReviewRollbackConfirmText" style="margin-top:4px; color:#64748b; font-size:12px;">Rollback confirmation not armed.</div>
+                            <div style="margin-top:6px; border:1px solid #e2e8f0; border-radius:4px; max-height:140px; overflow:auto; background:#fff;">
+                                <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                                    <thead>
+                                        <tr>
+                                            <th style="text-align:left; padding:4px; border-bottom:1px solid #e2e8f0;">Time</th>
+                                            <th style="text-align:left; padding:4px; border-bottom:1px solid #e2e8f0;">Run</th>
+                                            <th style="text-align:left; padding:4px; border-bottom:1px solid #e2e8f0;">Status</th>
+                                            <th style="text-align:left; padding:4px; border-bottom:1px solid #e2e8f0;">Audit ID</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="psReviewAuditTableBody">
+                                        <tr><td colspan="4" style="padding:6px; color:#64748b;">No apply actions recorded yet.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                            <textarea id="psReviewAuditDetails" rows="4" readonly style="margin-top:6px; width:100%; font-family: ui-monospace, Menlo, monospace;"></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="property_item" style="margin-top: 10px;" data-ps-view="advanced">
+                    <label for="ps_run_output">Last run output:</label>
+                    <textarea id="ps_run_output" rows="8" readonly style="width:100%; font-family: ui-monospace, Menlo, monospace;"></textarea>
+                </div>
+
+                <div class="pr-form-grid" style="margin-top: 10px;" data-ps-view="advanced">
+                    <div class="property_item">
+                        <label for="ps_rank_objective">Ranking Objective:</label>
+                        <select id="ps_rank_objective"></select>
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_rank_direction">Direction:</label>
+                        <select id="ps_rank_direction">
+                            <option value="maximize">maximize</option>
+                            <option value="minimize">minimize</option>
+                        </select>
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_opt_method">Optimizer Method:</label>
+                        <select id="ps_opt_method">
+                            <option value="surrogate_gp" selected>surrogate_gp</option>
+                            <option value="random_search">random_search</option>
+                            <option value="cmaes">cmaes</option>
+                        </select>
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_opt_budget">Optimizer Budget:</label>
+                        <input type="number" id="ps_opt_budget" min="1" step="1" value="20">
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_opt_seed">Optimizer Seed:</label>
+                        <input type="number" id="ps_opt_seed" step="1" value="42">
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_opt_popsize">CMA-ES Population:</label>
+                        <input type="number" id="ps_opt_popsize" min="2" step="1" placeholder="auto">
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_opt_sigma_rel">CMA-ES Sigma Rel:</label>
+                        <input type="number" id="ps_opt_sigma_rel" min="0" step="any" placeholder="0.3">
+                    </div>
+                    <div class="property_item">
+                        <label for="ps_opt_stag">CMA-ES Stagnation Gens:</label>
+                        <input type="number" id="ps_opt_stag" min="1" step="1" placeholder="12">
+                    </div>
+                </div>
+                <div id="psRankingTableWrap">
+                    <table id="psRankingTable">
+                        <thead>
+                            <tr>
+                                <th>Rank</th>
+                                <th>Run</th>
+                                <th>Objective Value</th>
+                                <th>Success</th>
+                                <th>Parameter Values</th>
+                            </tr>
+                        </thead>
+                        <tbody id="psRankingTableBody">
+                            <tr><td colspan="5" style="color:#64748b;">Run a study to populate ranking results.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div id="psDecompositionCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                    <div style="font-weight: 600; margin-bottom: 6px;">Candidate Decomposition (Top Ranked)</div>
+                    <table id="psDecompositionTable" style="width:100%; border-collapse: collapse; font-size:12px;">
+                        <thead>
+                            <tr>
+                                <th style="text-align:left; padding:4px; border-bottom:1px solid #e2e8f0;">Rank</th>
+                                <th style="text-align:left; padding:4px; border-bottom:1px solid #e2e8f0;">Run</th>
+                                <th style="text-align:left; padding:4px; border-bottom:1px solid #e2e8f0;">Score</th>
+                                <th style="text-align:left; padding:4px; border-bottom:1px solid #e2e8f0;">Objective Terms</th>
+                                <th style="text-align:left; padding:4px; border-bottom:1px solid #e2e8f0;">Selection Meta</th>
+                            </tr>
+                        </thead>
+                        <tbody id="psDecompositionTableBody">
+                            <tr><td colspan="5" style="color:#64748b; padding:6px;">Run optimizer to populate decomposition.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div id="psCandidateCompareCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px;">
+                        <div style="font-weight: 600;">Top Candidate Compare</div>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <label for="psCompareTopN" style="margin:0; font-size:12px; color:#334155;">Top N:</label>
+                            <select id="psCompareTopN">
+                                <option value="2">2</option>
+                                <option value="3" selected>3</option>
+                                <option value="4">4</option>
+                                <option value="5">5</option>
+                            </select>
+                            <button id="psCompareRefreshBtn" type="button">Refresh Compare</button>
+                        </div>
+                    </div>
+                    <div id="psCompareTableWrap" style="overflow:auto; border:1px solid #e2e8f0; border-radius:4px; background:#fff;">
+                        <div style="padding:6px; color:#64748b;">Run optimizer to compare candidates.</div>
+                    </div>
+                </div>
+
+                <div id="psWhySelectedCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                    <div style="font-weight: 600; margin-bottom: 6px;">Why Selected</div>
+                    <div id="psWhySelectedSummary" style="color:#334155; margin-bottom:6px;">No optimizer selection yet.</div>
+                    <textarea id="psWhySelectedDetails" rows="5" readonly style="width:100%; font-family: ui-monospace, Menlo, monospace;"></textarea>
+                </div>
+
+                <div id="psFailureDiagnosticsCard" data-ps-view="advanced" style="margin-top: 10px; border: 1px solid #dbe2ea; border-radius: 4px; padding: 8px; background: #f8fafc; font-size: 12px;">
+                    <div style="font-weight: 600; margin-bottom: 6px;">Failure Diagnostics</div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; color:#334155; margin-bottom:6px;">
+                        <div><b>Failed runs:</b> <span id="psFailureCount">0</span></div>
+                        <div><b>Unique failure groups:</b> <span id="psFailureGroupsCount">0</span></div>
+                    </div>
+                    <div id="psFailureGroups" style="border:1px solid #e2e8f0; border-radius:4px; background:#fff; padding:6px; max-height:140px; overflow:auto; color:#334155;">
+                        No failure groups yet.
+                    </div>
+                    <div style="margin-top:6px; font-weight:600; color:#334155;">What to try next</div>
+                    <ul id="psFailureHints" style="margin:4px 0 0 18px; color:#334155;">
+                        <li style="color:#64748b;">No hints yet.</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="psRefreshBtn" class="ps-footer-btn">Refresh</button>
+                <button id="psDeleteBtn" class="ps-footer-btn">Delete</button>
+                <button id="psRunBtn" class="ps-footer-btn" title="Runs geometry/parameter sweep only; does not launch simulation jobs.">Run Sweep (No Simulation)</button>
+                <button id="psObLaunchRunBtn" class="ps-footer-btn confirm-button">Run Simulation-in-Loop</button>
+                <button id="psApplySelectedBtn" class="ps-footer-btn" title="Apply selected ranked parameter set to current geometry/source defines.">Update Geometry from Selected Row</button>
+                <button id="psRunOptimizerBtn" class="ps-footer-btn" data-ps-view="advanced">Run Optimizer</button>
+                <button id="psStopRunBtn" class="ps-footer-btn danger-button" disabled>Stop Active Run</button>
+                <button id="psReplayBestBtn" class="ps-footer-btn" style="display:none;" aria-hidden="true">Replay Best (Legacy)</button>
+                <button id="psVerifyBestBtn" class="ps-footer-btn" style="display:none;" aria-hidden="true">Verify Best (Legacy)</button>
+                <button id="psDownloadResultsBtn" class="ps-footer-btn">Download Results</button>
+                <button id="psCancelBtn" class="ps-footer-btn">Close</button>
+                <button id="psSaveBtn" class="ps-footer-btn confirm-button">Save</button>
+                <span data-ps-view="advanced" style="flex-basis:100%; color: #64748b; font-size: 12px;">Use <b>Run Review &amp; Apply</b> above for verify/apply. Use <b>Run Simulation-in-Loop</b> in Objective Builder for physics-in-loop optimization.</span>
+                <div id="psQuickStatusWrap" style="flex-basis:100%; margin-top:2px;">
+                    <div id="psQuickStatus" style="font-size:12px; color:#475569; margin-bottom:4px;">Idle. Select a study and run when ready.</div>
+                    <div style="height:8px; background:#e2e8f0; border-radius:4px; overflow:hidden;">
+                        <div id="psQuickStatusBar" style="height:100%; width:0%; background:#0ea5e9; transition:width 180ms ease;"></div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     <!-- Editor for defines -->
@@ -2523,6 +3855,111 @@
             </div>
         </div>
     </div>
+    <div id="aiRuntimeConfigModal" class="editor-modal">
+        <div class="modal-content" style="width: 980px; height: auto; max-height: 90vh;">
+            <div class="modal-header">
+                <h4>Local Backend Runtime Profile</h4>
+            </div>
+            <div class="modal-body ai-runtime-modal-body" style="padding: 14px;">
+                <p class="ai-runtime-help">
+                    Session-scoped settings for <b>llama.cpp</b> and <b>LM Studio</b>. These defaults are merged with per-request overrides (request values win).
+                </p>
+                <div id="ai_runtime_config_error" class="ai-runtime-feedback"></div>
+
+                <div class="ai-runtime-backend-grid">
+                    <fieldset class="ai-runtime-backend-card">
+                        <legend>llama.cpp</legend>
+
+                        <label class="ai-runtime-inline-check" for="ai_runtime_llama_cpp_enabled">
+                            <input type="checkbox" id="ai_runtime_llama_cpp_enabled" checked>
+                            Enabled for selector routing
+                        </label>
+                        <label class="ai-runtime-inline-check" for="ai_runtime_llama_cpp_verify_tls">
+                            <input type="checkbox" id="ai_runtime_llama_cpp_verify_tls" checked>
+                            Verify TLS
+                        </label>
+
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_base_url">Base URL</label>
+                            <input type="text" id="ai_runtime_llama_cpp_base_url" placeholder="http://127.0.0.1:8080">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_endpoint_path">Endpoint path</label>
+                            <input type="text" id="ai_runtime_llama_cpp_endpoint_path" placeholder="/v1/chat/completions">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_model">Default model</label>
+                            <input type="text" id="ai_runtime_llama_cpp_model" placeholder="local-model">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_timeout_seconds">Timeout (seconds)</label>
+                            <input type="number" id="ai_runtime_llama_cpp_timeout_seconds" step="0.1" min="0.1">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_max_retries">Max retries</label>
+                            <input type="number" id="ai_runtime_llama_cpp_max_retries" step="1" min="0">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_retry_backoff_seconds">Retry backoff (seconds)</label>
+                            <input type="number" id="ai_runtime_llama_cpp_retry_backoff_seconds" step="0.05" min="0">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_headers_json">Headers (JSON object)</label>
+                            <textarea id="ai_runtime_llama_cpp_headers_json" placeholder='{"Authorization": "Bearer ..."}'></textarea>
+                        </div>
+                    </fieldset>
+
+                    <fieldset class="ai-runtime-backend-card">
+                        <legend>LM Studio</legend>
+
+                        <label class="ai-runtime-inline-check" for="ai_runtime_lm_studio_enabled">
+                            <input type="checkbox" id="ai_runtime_lm_studio_enabled" checked>
+                            Enabled for selector routing
+                        </label>
+                        <label class="ai-runtime-inline-check" for="ai_runtime_lm_studio_verify_tls">
+                            <input type="checkbox" id="ai_runtime_lm_studio_verify_tls" checked>
+                            Verify TLS
+                        </label>
+
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_base_url">Base URL</label>
+                            <input type="text" id="ai_runtime_lm_studio_base_url" placeholder="http://127.0.0.1:1234">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_endpoint_path">Endpoint path</label>
+                            <input type="text" id="ai_runtime_lm_studio_endpoint_path" placeholder="/v1/chat/completions">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_model">Default model</label>
+                            <input type="text" id="ai_runtime_lm_studio_model" placeholder="local-model">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_timeout_seconds">Timeout (seconds)</label>
+                            <input type="number" id="ai_runtime_lm_studio_timeout_seconds" step="0.1" min="0.1">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_max_retries">Max retries</label>
+                            <input type="number" id="ai_runtime_lm_studio_max_retries" step="1" min="0">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_retry_backoff_seconds">Retry backoff (seconds)</label>
+                            <input type="number" id="ai_runtime_lm_studio_retry_backoff_seconds" step="0.05" min="0">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_headers_json">Headers (JSON object)</label>
+                            <textarea id="ai_runtime_lm_studio_headers_json" placeholder='{"Authorization": "Bearer ..."}'></textarea>
+                        </div>
+                    </fieldset>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="ai_runtime_config_reload_btn">Reload</button>
+                <button id="ai_runtime_config_clear_btn">Clear Session Profile</button>
+                <button id="ai_runtime_config_cancel_btn">Close</button>
+                <button id="ai_runtime_config_save_btn" class="confirm-button">Save Profile</button>
+            </div>
+        </div>
+    </div>
     <div id="stepImportModal" class="editor-modal">
         <div class="modal-content" style="width: 500px; height: auto;">
             <div class="modal-header">
@@ -2558,10 +3995,48 @@
                         <!-- Expression inputs will be added here by JS -->
                     </div>
                 </div>
+
+                <div class="property_item">
+                    <label for="stepSmartImportCheckbox">Smart CAD Import:</label>
+                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                        <label style="display: flex; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="stepSmartImportCheckbox" checked>
+                            <span>Try mapping primitives (box/cylinder/sphere) before tessellation</span>
+                        </label>
+                        <small style="color: #666;">A report with primitive vs tessellated selections will be shown after import.</small>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button id="cancelStepImport">Cancel</button>
                 <button id="confirmStepImport" class="confirm-button">Import</button>
+            </div>
+        </div>
+    </div>
+    <div id="stepImportReportModal" class="editor-modal">
+        <div class="modal-content" style="width: 860px; height: auto; max-height: 88vh;">
+            <div class="modal-header">
+                <h4>STEP Smart Import Report</h4>
+            </div>
+            <div class="modal-body" style="flex-direction: column; padding: 16px;">
+                <div id="stepImportReportSummary">No report data available.</div>
+                <div id="stepImportReportTableWrap">
+                    <table id="stepImportReportTable">
+                        <thead>
+                            <tr>
+                                <th>Source ID</th>
+                                <th>Classified As</th>
+                                <th>Selected Mode</th>
+                                <th>Confidence</th>
+                                <th>Fallback Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="stepImportReportTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="closeStepImportReport" class="confirm-button">Close</button>
             </div>
         </div>
     </div>

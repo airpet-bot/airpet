@@ -2,6 +2,31 @@
 import * as THREE from 'three';
 import * as SceneManager from './sceneManager.js';
 import * as ExpressionInput from './expressionInput.js';
+import {
+    normalizeAiBackendDiagnostics,
+    getLocalBackendIdForModel,
+    getReadinessLabel,
+    buildLocalBackendTooltip,
+    formatLocalModelOptionLabel,
+    buildBackendStatusChip,
+    applyBackendStatusChip,
+} from './backendDiagnosticsUi.js';
+import {
+    getReplicaInspectorEditableFieldSpecs,
+    buildReplicaInspectorPropertyUpdateArgs,
+} from './replicaInspectorBindings.js';
+import {
+    getDivisionInspectorEditableFieldSpecs,
+    buildDivisionInspectorPropertyUpdateArgs,
+} from './divisionInspectorBindings.js';
+import {
+    buildScopedIssueFamilyBucketSummary,
+    buildScopedIssueCodeChips,
+    buildScopedIssueFilterContextCopyText,
+    buildScopedIssueExcerptCopyText,
+    filterScopedIssuesByBucket,
+    getScopedIssueBucketDisplayLabel,
+} from './preflightScopedDiagnosticsUi.js';
 
 // --- Module-level variables for DOM elements ---
 let newProjectButton, saveProjectButton, exportGdmlButton,
@@ -15,7 +40,7 @@ let newProjectButton, saveProjectButton, exportGdmlButton,
     cameraModeOriginButton, cameraModeSelectedButton,
     toggleSnapToGridButton, gridSnapSizeInput, angleSnapSizeInput,
     bottomPanel, toggleBottomPanelBtn,
-    aiPromptInput, aiGenerateButton, aiModelSelect,
+    aiPromptInput, aiGenerateButton, aiModelSelect, aiBackendStatusEl,
     setApiKeyButton, apiKeyModal, apiKeyInput, saveApiKeyButton, cancelApiKeyButton,
     currentModeDisplay;
 
@@ -44,15 +69,33 @@ let statusIndicator;
 // Keep track of last selected item
 let lastSelectedItem = null; // Stores the DOM element of the last clicked item
 
+// AI backend readiness diagnostics cache (keyed by backend id)
+let aiBackendDiagnosticsById = {};
+
 // Number of items per group for lists
 const ITEMS_PER_GROUP = 100;
 
 // Simulation control variables
-let simEventsInput, runSimButton, stopSimButton, simOptionsButton, simConsole,
+let simEventsInput, runSimButton, stopSimButton, preflightButton, simOptionsButton, simConsole,
     simStatusDisplay, simOptionsModal, saveSimOptionsButton, simThreadsInput, simSeed1Input, simSeed2Input,
     simSaveHitsCheckbox, simSaveParticlesCheckbox, simSaveTracksRangeInput, simPrintProgressInput,
     drawTracksCheckbox, drawTracksRangeInput,
-    simPhysicsListSelect, simOpticalPhysicsCheckbox;
+    simPhysicsListSelect, simOpticalPhysicsCheckbox,
+    preflightPanel, preflightSummaryLine, preflightScopeLine, preflightDeltaLine, preflightScopeHintLine,
+    preflightScopeBucketsLine, preflightScopeBucketFilterRow,
+    preflightBucketAllBtn, preflightBucketScopeOnlyBtn, preflightBucketOutsideOnlyBtn, preflightBucketSharedBtn,
+    preflightIssueCodeChipRow,
+    preflightScopeContextRow, preflightCopyScopeContextBtn, preflightCopyScopeIssueExcerptBtn, preflightScopeContextStatus,
+    preflightIssueToggleRow, preflightShowScopeIssuesBtn, preflightShowGlobalIssuesBtn,
+    preflightIssuesLabel, preflightIssuesList;
+
+// Sticky preflight panel view state for scoped/global issue toggling
+let preflightLastRenderState = null;
+let preflightIssueDisplayMode = 'auto'; // auto | scoped | global
+let preflightScopedBucketFilter = 'all'; // all | scope_only | outside_scope_only | shared
+let preflightScopedIssueCodeFocus = ''; // active scoped issue-code focus chip
+let preflightLastScopedContextCopyText = '';
+let preflightLastScopedIssueExcerptCopyText = '';
 
 // Analysis control variables
 let energyBinsInput, spatialBinsInput, refreshAnalysisButton, analysisStatusDisplay;
@@ -115,6 +158,12 @@ let callbacks = {
     onSetApiKeyClicked: () => { },
     onSaveApiKeyClicked: (apiKey) => { },
     onSourceActivationToggled: (sourceId) => { },
+    onRunSimulationClicked: (simSettings) => { },
+    onStopSimulationClicked: () => { },
+    onRunPreflightClicked: () => { },
+    onSimOptionsClicked: () => { },
+    onSaveSimOptions: () => { },
+    onDrawTracksToggle: () => { },
     onRefreshAnalysisClicked: (energyBins, spatialBins) => { },
     onDownloadSimDataClicked: () => { }
 };
@@ -208,6 +257,13 @@ export function initUI(cb) {
     aiPromptInput = document.getElementById('ai_prompt_input');
     aiGenerateButton = document.getElementById('ai_generate_button');
     aiModelSelect = document.getElementById('ai_model_select');
+    aiBackendStatusEl = document.getElementById('ai_backend_status');
+
+    if (aiModelSelect) {
+        aiModelSelect.addEventListener('change', () => {
+            updateAiBackendStatus();
+        });
+    }
 
     // API key modal elements
     apiKeyModal = document.getElementById('apiKeyModal');
@@ -229,12 +285,36 @@ export function initUI(cb) {
     simEventsInput = document.getElementById('simEventsInput');
     runSimButton = document.getElementById('runSimButton');
     stopSimButton = document.getElementById('stopSimButton');
+    preflightButton = document.getElementById('preflightButton');
     simOptionsButton = document.getElementById('simOptionsButton');
     simConsole = document.getElementById('sim_console');
     simStatusDisplay = document.getElementById('sim_status_display');
+    preflightPanel = document.getElementById('preflight_panel');
+    preflightSummaryLine = document.getElementById('preflight_summary_line');
+    preflightScopeLine = document.getElementById('preflight_scope_line');
+    preflightDeltaLine = document.getElementById('preflight_delta_line');
+    preflightScopeHintLine = document.getElementById('preflight_scope_hint_line');
+    preflightScopeBucketsLine = document.getElementById('preflight_scope_buckets_line');
+    preflightScopeBucketFilterRow = document.getElementById('preflight_scope_bucket_filter_row');
+    preflightBucketAllBtn = document.getElementById('preflight_bucket_all_btn');
+    preflightBucketScopeOnlyBtn = document.getElementById('preflight_bucket_scope_only_btn');
+    preflightBucketOutsideOnlyBtn = document.getElementById('preflight_bucket_outside_only_btn');
+    preflightBucketSharedBtn = document.getElementById('preflight_bucket_shared_btn');
+    preflightIssueCodeChipRow = document.getElementById('preflight_issue_code_chip_row');
+    preflightScopeContextRow = document.getElementById('preflight_scope_context_row');
+    preflightCopyScopeContextBtn = document.getElementById('preflight_copy_scope_context_btn');
+    preflightCopyScopeIssueExcerptBtn = document.getElementById('preflight_copy_scope_issue_excerpt_btn');
+    preflightScopeContextStatus = document.getElementById('preflight_scope_context_status');
+    preflightIssueToggleRow = document.getElementById('preflight_issue_toggle_row');
+    preflightShowScopeIssuesBtn = document.getElementById('preflight_show_scope_issues_btn');
+    preflightShowGlobalIssuesBtn = document.getElementById('preflight_show_global_issues_btn');
+    preflightIssuesLabel = document.getElementById('preflight_issues_label');
+    preflightIssuesList = document.getElementById('preflight_issues_list');
 
     simOptionsModal = document.getElementById('simOptionsModal');
     saveSimOptionsButton = document.getElementById('saveSimOptions');
+
+    clearPreflightReport();
     simSeed1Input = document.getElementById('simSeed1');
     simSeed2Input = document.getElementById('simSeed2');
     simSaveHitsCheckbox = document.getElementById('simSaveHits');
@@ -388,6 +468,25 @@ export function initUI(cb) {
     // Create ring array button
     createRingArrayButton.addEventListener('click', () => callbacks.onAddRingArrayClicked());
 
+    // Tools dropdown toggle
+    const toolsDropdownButton = document.getElementById('toolsDropdownButton');
+    const toolsDropdownContent = document.getElementById('toolsDropdownContent');
+    if (toolsDropdownButton && toolsDropdownContent) {
+        toolsDropdownButton.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const dropdown = toolsDropdownButton.parentElement;
+            dropdown.classList.toggle('show');
+        });
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!toolsDropdownButton.contains(e.target) && !toolsDropdownContent.contains(e.target)) {
+                const dropdown = toolsDropdownButton.parentElement;
+                dropdown.classList.remove('show');
+            }
+        });
+    }
+
     // Project history and undo/redo listeners
     historyButton.addEventListener('click', callbacks.onHistoryButtonClicked);
     closeHistoryPanel.addEventListener('click', hideHistoryPanel);
@@ -478,6 +577,72 @@ export function initUI(cb) {
         }
     });
     stopSimButton.addEventListener('click', callbacks.onStopSimulationClicked);
+    if (preflightButton) preflightButton.addEventListener('click', callbacks.onRunPreflightClicked);
+    if (preflightShowScopeIssuesBtn) {
+        preflightShowScopeIssuesBtn.addEventListener('click', () => {
+            preflightIssueDisplayMode = 'scoped';
+            if (preflightLastRenderState) {
+                renderPreflightReport(preflightLastRenderState.report, preflightLastRenderState.details);
+            }
+        });
+    }
+    if (preflightShowGlobalIssuesBtn) {
+        preflightShowGlobalIssuesBtn.addEventListener('click', () => {
+            preflightIssueDisplayMode = 'global';
+            if (preflightLastRenderState) {
+                renderPreflightReport(preflightLastRenderState.report, preflightLastRenderState.details);
+            }
+        });
+    }
+
+    const preflightBucketButtons = [
+        { button: preflightBucketAllBtn, value: 'all' },
+        { button: preflightBucketScopeOnlyBtn, value: 'scope_only' },
+        { button: preflightBucketOutsideOnlyBtn, value: 'outside_scope_only' },
+        { button: preflightBucketSharedBtn, value: 'shared' },
+    ];
+    preflightBucketButtons.forEach(({ button, value }) => {
+        if (!button) return;
+        button.addEventListener('click', () => {
+            preflightScopedBucketFilter = value;
+            if (preflightLastRenderState) {
+                renderPreflightReport(preflightLastRenderState.report, preflightLastRenderState.details);
+            }
+        });
+    });
+
+    if (preflightCopyScopeContextBtn) {
+        preflightCopyScopeContextBtn.addEventListener('click', async () => {
+            if (!preflightLastScopedContextCopyText) {
+                setPreflightScopeContextStatus('Nothing to copy yet.', 'warning');
+                return;
+            }
+
+            const copied = await copyTextToClipboard(preflightLastScopedContextCopyText);
+            if (copied) {
+                setPreflightScopeContextStatus('Copied filter context.', 'success');
+            } else {
+                setPreflightScopeContextStatus('Copy failed.', 'error');
+            }
+        });
+    }
+
+    if (preflightCopyScopeIssueExcerptBtn) {
+        preflightCopyScopeIssueExcerptBtn.addEventListener('click', async () => {
+            if (!preflightLastScopedIssueExcerptCopyText) {
+                setPreflightScopeContextStatus('Nothing to copy yet.', 'warning');
+                return;
+            }
+
+            const copied = await copyTextToClipboard(preflightLastScopedIssueExcerptCopyText);
+            if (copied) {
+                setPreflightScopeContextStatus('Copied issue excerpt.', 'success');
+            } else {
+                setPreflightScopeContextStatus('Copy failed.', 'error');
+            }
+        });
+    }
+
     simOptionsButton.addEventListener('click', callbacks.onSimOptionsClicked);
     saveSimOptionsButton.addEventListener('click', callbacks.onSaveSimOptions);
     drawTracksCheckbox.addEventListener('change', callbacks.onDrawTracksToggle);
@@ -578,6 +743,10 @@ export function initUI(cb) {
             bottomTabPanes.forEach(pane => {
                 pane.classList.toggle('active', pane.id === targetTabId);
             });
+            // Reload AI chat history when switching to AI panel
+            if (targetTabId === 'tab_ai_panel' && window.aiAssistant && window.aiAssistant.reloadHistory) {
+                window.aiAssistant.reloadHistory();
+            }
         });
     });
 
@@ -925,6 +1094,33 @@ function buildInspectorTransformEditor(parent, type, label, pvData, defines, pro
     parent.appendChild(group);
 }
 
+function toDomSafeToken(value) {
+    const raw = String(value ?? '').trim();
+    if (!raw) return 'item';
+    return raw.replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
+function createEditableExpressionProperty(parent, { inputId, labelText, initialValue, propertyPath, onChange }) {
+    const propDiv = document.createElement('div');
+    propDiv.className = 'property_item editable';
+    propDiv.dataset.propertyPath = propertyPath;
+
+    const component = ExpressionInput.create(
+        inputId,
+        labelText,
+        initialValue,
+        (newValue) => onChange(newValue)
+    );
+
+    const inputEl = component.querySelector('.expression-input');
+    if (inputEl) {
+        inputEl.dataset.propertyPath = propertyPath;
+    }
+
+    propDiv.appendChild(component);
+    parent.appendChild(propDiv);
+}
+
 // --- Inspector Panel Management ---
 export async function populateInspector(itemContext, projectState) {
     if (!inspectorContentDiv) return;
@@ -990,12 +1186,67 @@ export async function populateInspector(itemContext, projectState) {
             const replica = data.content;
             createReadOnlyProperty(inspectorContentDiv, "Solid (Envelope):", data.solid_ref);
             createReadOnlyProperty(inspectorContentDiv, "Replicated LV:", replica.volume_ref);
-            // TODO: Create editable expression inputs for these
-            createReadOnlyProperty(inspectorContentDiv, "Number:", replica.number);
-            createReadOnlyProperty(inspectorContentDiv, "Width:", replica.width);
-            createReadOnlyProperty(inspectorContentDiv, "Offset:", replica.offset);
+
+            const editableReplicaFields = getReplicaInspectorEditableFieldSpecs(replica);
+            const lvIdForUpdate = id || name;
+            const inputIdPrefix = `inspector_replica_${toDomSafeToken(lvIdForUpdate)}`;
+
+            editableReplicaFields.forEach((field) => {
+                createEditableExpressionProperty(inspectorContentDiv, {
+                    inputId: `${inputIdPrefix}_${field.key}`,
+                    labelText: field.label,
+                    initialValue: field.value,
+                    propertyPath: field.propertyPath,
+                    onChange: (newExpressionValue) => {
+                        const update = buildReplicaInspectorPropertyUpdateArgs(
+                            lvIdForUpdate,
+                            field.propertyPath,
+                            newExpressionValue
+                        );
+                        callbacks.onInspectorPropertyChanged(
+                            update.objectType,
+                            update.objectId,
+                            update.propertyPath,
+                            update.newValue
+                        );
+                    }
+                });
+            });
+
             const dir = replica.direction;
             createReadOnlyProperty(inspectorContentDiv, "Direction:", `(x: ${dir.x}, y: ${dir.y}, z: ${dir.z})`);
+        } else if (data.content_type === 'division') {
+            const division = data.content;
+            createReadOnlyProperty(inspectorContentDiv, "Solid (Envelope):", data.solid_ref);
+            createReadOnlyProperty(inspectorContentDiv, "Divided LV:", division.volume_ref);
+
+            const editableDivisionFields = getDivisionInspectorEditableFieldSpecs(division);
+            const lvIdForUpdate = id || name;
+            const inputIdPrefix = `inspector_division_${toDomSafeToken(lvIdForUpdate)}`;
+
+            editableDivisionFields.forEach((field) => {
+                createEditableExpressionProperty(inspectorContentDiv, {
+                    inputId: `${inputIdPrefix}_${field.key}`,
+                    labelText: field.label,
+                    initialValue: field.value,
+                    propertyPath: field.propertyPath,
+                    onChange: (newExpressionValue) => {
+                        const update = buildDivisionInspectorPropertyUpdateArgs(
+                            lvIdForUpdate,
+                            field.propertyPath,
+                            newExpressionValue
+                        );
+                        callbacks.onInspectorPropertyChanged(
+                            update.objectType,
+                            update.objectId,
+                            update.propertyPath,
+                            update.newValue
+                        );
+                    }
+                });
+            });
+
+            createReadOnlyProperty(inspectorContentDiv, "Axis:", division.axis);
         }
         else { // It's a standard LV (or another procedural type for later)
             createReadOnlyProperty(inspectorContentDiv, "Solid Ref:", data.solid_ref);
@@ -2019,18 +2270,59 @@ export function clearAiPrompt() {
     }
 }
 
+
+export function getAiBackendDiagnosticForModel(modelValue = null) {
+    const selectedModel = modelValue || getAiSelectedModel();
+    const backendId = getLocalBackendIdForModel(selectedModel);
+    if (!backendId) return null;
+    return aiBackendDiagnosticsById[backendId] || null;
+}
+
+export function upsertAiBackendDiagnostic(diagnostic) {
+    if (!diagnostic || typeof diagnostic !== 'object' || !diagnostic.backend_id) return;
+
+    const backendId = diagnostic.backend_id;
+    aiBackendDiagnosticsById[backendId] = diagnostic;
+
+    if (aiModelSelect) {
+        const options = aiModelSelect.querySelectorAll(`option[data-backend-id="${backendId}"]`);
+        options.forEach(option => {
+            const rawModelName = String(option.value || '').split('::').slice(1).join('::') || option.textContent;
+            option.textContent = formatLocalModelOptionLabel(rawModelName, diagnostic);
+            option.title = buildLocalBackendTooltip(backendId, diagnostic);
+            option.dataset.readinessStatus = getReadinessLabel(diagnostic.status);
+        });
+    }
+
+    updateAiBackendStatus();
+}
+
+export function updateAiBackendStatus(modelValue = null) {
+    if (!aiBackendStatusEl) return;
+
+    const selectedModel = modelValue || getAiSelectedModel();
+    const chip = buildBackendStatusChip(selectedModel, aiBackendDiagnosticsById);
+
+    applyBackendStatusChip(aiBackendStatusEl, chip);
+}
+
 /**
  * Populates the AI model selector dropdown with grouped options.
  * @param {object} models - An object like {ollama: [...], gemini: [...]}.
+ * @param {object|Array<object>|null} localBackendDiagnostics - Local backend readiness diagnostics.
  */
-export function populateAiModelSelector(models) {
+export function populateAiModelSelector(models, localBackendDiagnostics = null) {
     if (!aiModelSelect) return;
+
+    if (localBackendDiagnostics !== null) {
+        aiBackendDiagnosticsById = normalizeAiBackendDiagnostics(localBackendDiagnostics);
+    }
 
     // Remove all existing model groups before adding new ones.
     const existingGroups = aiModelSelect.querySelectorAll('.model-group, .no-models-option');
     existingGroups.forEach(group => group.remove());
 
-    const createGroup = (label, modelList) => {
+    const createGroup = (label, modelList, valuePrefix = null, backendId = null) => {
         if (modelList && modelList.length > 0) {
             const optgroup = document.createElement('optgroup');
             optgroup.label = label;
@@ -2038,9 +2330,20 @@ export function populateAiModelSelector(models) {
 
             modelList.forEach(modelName => {
                 const option = document.createElement('option');
-                option.value = modelName;
-                // Display a friendlier name for Gemini models
-                option.textContent = modelName.startsWith('models/') ? `${modelName.split('/')[1]}` : modelName;
+                option.value = valuePrefix ? `${valuePrefix}::${modelName}` : modelName;
+
+                const prettyName = modelName.startsWith('models/') ? `${modelName.split('/')[1]}` : modelName;
+
+                if (backendId) {
+                    const diagnostic = aiBackendDiagnosticsById[backendId] || null;
+                    option.textContent = formatLocalModelOptionLabel(prettyName, diagnostic);
+                    option.title = buildLocalBackendTooltip(backendId, diagnostic);
+                    option.dataset.backendId = backendId;
+                    option.dataset.readinessStatus = getReadinessLabel(diagnostic?.status);
+                } else {
+                    option.textContent = prettyName;
+                }
+
                 optgroup.appendChild(option);
             });
             aiModelSelect.appendChild(optgroup);
@@ -2049,12 +2352,16 @@ export function populateAiModelSelector(models) {
 
     createGroup("Gemini Models", models.gemini);
     createGroup("Ollama Models", models.ollama);
+    createGroup("llama.cpp Models", models.llama_cpp, "llama_cpp", "llama_cpp");
+    createGroup("LM Studio Models", models.lm_studio, "lm_studio", "lm_studio");
 
-    // If no models were added at all (check both lists)
+    // If no models were added at all
     const hasGemini = models.gemini && models.gemini.length > 0;
     const hasOllama = models.ollama && models.ollama.length > 0;
+    const hasLlamaCpp = models.llama_cpp && models.llama_cpp.length > 0;
+    const hasLMStudio = models.lm_studio && models.lm_studio.length > 0;
 
-    if (!hasGemini && !hasOllama) {
+    if (!hasGemini && !hasOllama && !hasLlamaCpp && !hasLMStudio) {
         const option = document.createElement('option');
         option.textContent = "No AI models found";
         option.disabled = true;
@@ -2078,6 +2385,8 @@ export function populateAiModelSelector(models) {
         // Notify listeners (e.g., AI context stats widget) that model list/selection changed.
         aiModelSelect.dispatchEvent(new Event('change'));
     }
+
+    updateAiBackendStatus();
 }
 
 /**
@@ -2109,8 +2418,501 @@ export function setSimulationState(state) {
     const isRunning = state === 'running';
     runSimButton.disabled = isRunning;
     stopSimButton.disabled = !isRunning;
+    if (preflightButton) preflightButton.disabled = isRunning;
     simEventsInput.disabled = isRunning;
     simOptionsButton.disabled = isRunning;
+}
+
+export function setPreflightState(state) {
+    if (!preflightButton) return;
+    const isRunning = state === 'running';
+    preflightButton.disabled = isRunning;
+    preflightButton.textContent = isRunning ? '🧪 Preflight...' : '🧪 Preflight';
+}
+
+function formatPreflightScopeLabel(scope) {
+    if (!scope || !scope.type || !scope.name) return '';
+    if (scope.type === 'logical_volume') return `LV "${scope.name}"`;
+    if (scope.type === 'assembly') return `Assembly "${scope.name}"`;
+    return `${scope.type} "${scope.name}"`;
+}
+
+function resolveScopedPreflightFallbackHint(details = {}) {
+    if (!details?.preferScopedSelection || details?.usedScopedPreflight) return '';
+
+    if (details?.scopedFallbackError) {
+        return 'Scoped preflight route failed; showing full-geometry diagnostics instead.';
+    }
+
+    const reason = details?.scopedSelectionReason;
+    if (reason === 'no_selection') {
+        return 'No geometry selection detected; showing full-geometry diagnostics.';
+    }
+    if (reason === 'selection_not_scopeable') {
+        return 'Current selection is not scopeable (choose an LV, assembly, or PV linked to one).';
+    }
+    if (reason === 'ambiguous_selection') {
+        const count = Number(details?.scopedSelectionCandidateCount || 0);
+        if (count > 1) {
+            return `Selection resolves to ${count} scope targets; showing full-geometry diagnostics.`;
+        }
+        return 'Selection resolves to multiple scope targets; showing full-geometry diagnostics.';
+    }
+
+    return 'Scoped preflight was not applied; showing full-geometry diagnostics.';
+}
+
+function updatePreflightIssueToggleState({ showToggle = false, activeMode = 'global' } = {}) {
+    if (preflightIssueToggleRow) {
+        preflightIssueToggleRow.style.display = showToggle ? 'flex' : 'none';
+    }
+    if (preflightShowScopeIssuesBtn) {
+        preflightShowScopeIssuesBtn.classList.toggle('active', showToggle && activeMode === 'scoped');
+        preflightShowScopeIssuesBtn.disabled = !showToggle;
+    }
+    if (preflightShowGlobalIssuesBtn) {
+        preflightShowGlobalIssuesBtn.classList.toggle('active', activeMode === 'global');
+    }
+}
+
+function updatePreflightBucketFilterState({ showRow = false, activeBucket = 'all' } = {}) {
+    if (preflightScopeBucketFilterRow) {
+        preflightScopeBucketFilterRow.style.display = showRow ? 'flex' : 'none';
+    }
+
+    const bucketButtons = [
+        { button: preflightBucketAllBtn, value: 'all' },
+        { button: preflightBucketScopeOnlyBtn, value: 'scope_only' },
+        { button: preflightBucketOutsideOnlyBtn, value: 'outside_scope_only' },
+        { button: preflightBucketSharedBtn, value: 'shared' },
+    ];
+
+    bucketButtons.forEach(({ button, value }) => {
+        if (!button) return;
+        button.classList.toggle('active', showRow && activeBucket === value);
+        button.disabled = !showRow;
+    });
+}
+
+function normalizePreflightIssueCode(value) {
+    return String(value || '').trim();
+}
+
+function renderPreflightIssueCodeChips({ showRow = false, chips = [], activeCode = '' } = {}) {
+    if (!preflightIssueCodeChipRow) return;
+
+    preflightIssueCodeChipRow.innerHTML = '';
+    preflightIssueCodeChipRow.style.display = showRow ? 'flex' : 'none';
+
+    if (!showRow || chips.length === 0) {
+        return;
+    }
+
+    const label = document.createElement('span');
+    label.className = 'preflight_issue_code_chip_label';
+    label.textContent = 'Issue codes:';
+    preflightIssueCodeChipRow.appendChild(label);
+
+    chips.forEach((chip) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'preflight_toggle_btn preflight_issue_code_chip';
+        button.classList.toggle('active', activeCode === chip.code);
+        button.textContent = `${chip.code} (${chip.count})`;
+
+        if (chip.bucketLabel) {
+            button.title = `${chip.bucketLabel} (${chip.count})`;
+        }
+
+        button.addEventListener('click', () => {
+            preflightScopedIssueCodeFocus = preflightScopedIssueCodeFocus === chip.code ? '' : chip.code;
+            if (preflightLastRenderState) {
+                renderPreflightReport(preflightLastRenderState.report, preflightLastRenderState.details);
+            }
+        });
+
+        preflightIssueCodeChipRow.appendChild(button);
+    });
+
+    if (activeCode) {
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.className = 'preflight_toggle_btn preflight_issue_code_chip_clear';
+        clearBtn.textContent = 'Clear focus';
+        clearBtn.addEventListener('click', () => {
+            preflightScopedIssueCodeFocus = '';
+            if (preflightLastRenderState) {
+                renderPreflightReport(preflightLastRenderState.report, preflightLastRenderState.details);
+            }
+        });
+        preflightIssueCodeChipRow.appendChild(clearBtn);
+    }
+}
+
+async function copyTextToClipboard(value) {
+    const text = String(value ?? '');
+    if (!text) return false;
+
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return !!copied;
+    } catch (_error) {
+        return false;
+    }
+}
+
+function setPreflightScopeContextStatus(message = '', type = 'info') {
+    if (!preflightScopeContextStatus) return;
+
+    const text = String(message || '').trim();
+    if (!text) {
+        preflightScopeContextStatus.textContent = '';
+        preflightScopeContextStatus.style.display = 'none';
+        return;
+    }
+
+    const colors = {
+        info: '#64748b',
+        success: '#166534',
+        warning: '#92400e',
+        error: '#b91c1c',
+    };
+
+    preflightScopeContextStatus.textContent = text;
+    preflightScopeContextStatus.style.display = 'inline';
+    preflightScopeContextStatus.style.color = colors[type] || colors.info;
+}
+
+function updatePreflightScopeContextCopyState({
+    showRow = false,
+    scopeLabel = '',
+    hasBucketMetadata = false,
+    bucketSelection = 'all',
+    issueCodeFocus = '',
+    visibleIssueCount = null,
+    totalScopedIssueCount = null,
+    visibleIssues = [],
+} = {}) {
+    const copyContextText = showRow
+        ? buildScopedIssueFilterContextCopyText({
+            scopeLabel,
+            hasBucketMetadata,
+            bucketSelection,
+            issueCodeFocus,
+            visibleIssueCount,
+            totalScopedIssueCount,
+        })
+        : '';
+
+    const copyExcerptText = showRow
+        ? buildScopedIssueExcerptCopyText({
+            scopeLabel,
+            hasBucketMetadata,
+            bucketSelection,
+            issueCodeFocus,
+            visibleIssueCount,
+            totalScopedIssueCount,
+            visibleIssues,
+        })
+        : '';
+
+    preflightLastScopedContextCopyText = copyContextText;
+    preflightLastScopedIssueExcerptCopyText = copyExcerptText;
+
+    const hasCopyActions = !!(copyContextText || copyExcerptText);
+    if (preflightScopeContextRow) {
+        preflightScopeContextRow.style.display = hasCopyActions ? 'flex' : 'none';
+    }
+    if (preflightCopyScopeContextBtn) {
+        preflightCopyScopeContextBtn.disabled = !copyContextText;
+        preflightCopyScopeContextBtn.title = copyContextText
+            ? 'Copy active scoped preflight filters for bug-report handoff.'
+            : 'Run scoped preflight and pick filters to enable copy.';
+    }
+    if (preflightCopyScopeIssueExcerptBtn) {
+        preflightCopyScopeIssueExcerptBtn.disabled = !copyExcerptText;
+        preflightCopyScopeIssueExcerptBtn.title = copyExcerptText
+            ? 'Copy active scoped filters plus currently visible issue lines.'
+            : 'Run scoped preflight and pick filters to enable copy.';
+    }
+
+    setPreflightScopeContextStatus('');
+}
+
+export function clearPreflightReport() {
+    preflightLastRenderState = null;
+    preflightIssueDisplayMode = 'auto';
+    preflightScopedBucketFilter = 'all';
+    preflightScopedIssueCodeFocus = '';
+    preflightLastScopedContextCopyText = '';
+    preflightLastScopedIssueExcerptCopyText = '';
+
+    if (preflightSummaryLine) {
+        preflightSummaryLine.textContent = 'Preflight: not run yet.';
+        preflightSummaryLine.style.color = '#334155';
+    }
+    if (preflightScopeLine) {
+        preflightScopeLine.textContent = '';
+        preflightScopeLine.style.display = 'none';
+    }
+    if (preflightDeltaLine) {
+        preflightDeltaLine.textContent = '';
+        preflightDeltaLine.style.display = 'none';
+    }
+    if (preflightScopeHintLine) {
+        preflightScopeHintLine.textContent = '';
+        preflightScopeHintLine.style.display = 'none';
+    }
+    if (preflightScopeBucketsLine) {
+        preflightScopeBucketsLine.textContent = '';
+        preflightScopeBucketsLine.style.display = 'none';
+    }
+    updatePreflightIssueToggleState({ showToggle: false, activeMode: 'global' });
+    updatePreflightBucketFilterState({ showRow: false, activeBucket: 'all' });
+    renderPreflightIssueCodeChips({ showRow: false });
+    updatePreflightScopeContextCopyState({ showRow: false });
+
+    if (preflightIssuesLabel) {
+        preflightIssuesLabel.textContent = 'Issues';
+    }
+    if (preflightIssuesList) {
+        preflightIssuesList.innerHTML = '';
+        const empty = document.createElement('div');
+        empty.id = 'preflight_empty_line';
+        empty.style.color = '#64748b';
+        empty.textContent = 'Run preflight to see geometry checks and diagnostics.';
+        preflightIssuesList.appendChild(empty);
+    }
+}
+
+export function renderPreflightReport(report, details = {}) {
+    if (!preflightSummaryLine || !preflightIssuesList) return;
+
+    preflightLastRenderState = { report, details };
+
+    const scope = details?.scope || null;
+    const scopedReport = details?.scopedReport || null;
+    const summaryDelta = details?.summaryDelta || null;
+    const issueFamilyCorrelations = details?.issueFamilyCorrelations || null;
+    const usedScopedPreflight = !!details?.usedScopedPreflight;
+
+    const summary = report?.summary || {};
+    const errors = summary.errors || 0;
+    const warnings = summary.warnings || 0;
+    const infos = summary.infos || 0;
+    const canRun = !!summary.can_run;
+
+    const summaryPrefix = usedScopedPreflight ? 'Preflight (full geometry)' : 'Preflight';
+    preflightSummaryLine.textContent = `${summaryPrefix}: ${errors} error(s), ${warnings} warning(s), ${infos} info. ` +
+        (canRun ? 'Simulation can run.' : 'Simulation blocked.');
+    preflightSummaryLine.style.color = canRun ? '#166534' : '#b91c1c';
+
+    const scopeLabel = formatPreflightScopeLabel(scope);
+
+    if (preflightScopeLine) {
+        if (usedScopedPreflight && scope && scopedReport?.summary) {
+            const scopedSummary = scopedReport.summary || {};
+            const scopeErrors = scopedSummary.errors || 0;
+            const scopeWarnings = scopedSummary.warnings || 0;
+            const scopeInfos = scopedSummary.infos || 0;
+            const scopeCanRun = !!scopedSummary.can_run;
+            preflightScopeLine.style.display = 'block';
+            preflightScopeLine.textContent = `Scope (${scopeLabel}): ${scopeErrors} error(s), ${scopeWarnings} warning(s), ${scopeInfos} info. ` +
+                (scopeCanRun ? 'Scoped checks pass.' : 'Scoped checks blocked.');
+        } else {
+            preflightScopeLine.textContent = '';
+            preflightScopeLine.style.display = 'none';
+        }
+    }
+
+    if (preflightDeltaLine) {
+        const outsideScope = summaryDelta?.outside_scope;
+        if (usedScopedPreflight && outsideScope) {
+            const outErrors = outsideScope.errors || 0;
+            const outWarnings = outsideScope.warnings || 0;
+            const outInfos = outsideScope.infos || 0;
+            const outIssueCount = outsideScope.issue_count || 0;
+            preflightDeltaLine.style.display = 'block';
+            preflightDeltaLine.textContent = `Outside selected scope: ${outErrors} error(s), ${outWarnings} warning(s), ${outInfos} info (${outIssueCount} issue(s)).`;
+        } else {
+            preflightDeltaLine.textContent = '';
+            preflightDeltaLine.style.display = 'none';
+        }
+    }
+
+    if (preflightScopeHintLine) {
+        const fallbackHint = resolveScopedPreflightFallbackHint(details);
+        if (usedScopedPreflight) {
+            preflightScopeHintLine.style.display = 'block';
+            preflightScopeHintLine.textContent = 'Run safety still uses full-geometry preflight before simulation start.';
+        } else if (fallbackHint) {
+            preflightScopeHintLine.style.display = 'block';
+            preflightScopeHintLine.textContent = fallbackHint;
+        } else {
+            preflightScopeHintLine.textContent = '';
+            preflightScopeHintLine.style.display = 'none';
+        }
+    }
+
+    if (preflightScopeBucketsLine) {
+        const bucketSummary = usedScopedPreflight
+            ? buildScopedIssueFamilyBucketSummary(issueFamilyCorrelations)
+            : '';
+        if (bucketSummary) {
+            preflightScopeBucketsLine.style.display = 'block';
+            preflightScopeBucketsLine.textContent = bucketSummary;
+        } else {
+            preflightScopeBucketsLine.textContent = '';
+            preflightScopeBucketsLine.style.display = 'none';
+        }
+    }
+
+    const hasScopedIssueSet = usedScopedPreflight && Array.isArray(scopedReport?.issues);
+    const activeIssueMode = hasScopedIssueSet
+        ? (preflightIssueDisplayMode === 'global' ? 'global' : 'scoped')
+        : 'global';
+    if (!hasScopedIssueSet && preflightIssueDisplayMode === 'scoped') {
+        preflightIssueDisplayMode = 'auto';
+    }
+
+    updatePreflightIssueToggleState({
+        showToggle: hasScopedIssueSet,
+        activeMode: activeIssueMode,
+    });
+
+    let scopedBucketView = null;
+    if (hasScopedIssueSet && activeIssueMode === 'scoped') {
+        scopedBucketView = filterScopedIssuesByBucket(
+            scopedReport.issues,
+            issueFamilyCorrelations,
+            preflightScopedBucketFilter,
+        );
+        preflightScopedBucketFilter = scopedBucketView.effectiveBucket;
+    } else if (!hasScopedIssueSet) {
+        preflightScopedBucketFilter = 'all';
+    }
+
+    const showBucketFilterRow = !!(scopedBucketView?.hasBucketMetadata);
+    updatePreflightBucketFilterState({
+        showRow: showBucketFilterRow,
+        activeBucket: preflightScopedBucketFilter,
+    });
+
+    const scopedIssueCodeView = (hasScopedIssueSet && activeIssueMode === 'scoped')
+        ? buildScopedIssueCodeChips(scopedReport.issues, issueFamilyCorrelations, preflightScopedBucketFilter)
+        : null;
+    const scopedIssueCodeSet = new Set((scopedIssueCodeView?.chips || []).map((chip) => chip.code));
+    if (preflightScopedIssueCodeFocus && !scopedIssueCodeSet.has(preflightScopedIssueCodeFocus)) {
+        preflightScopedIssueCodeFocus = '';
+    }
+
+    renderPreflightIssueCodeChips({
+        showRow: !!(scopedIssueCodeView?.hasBucketMetadata && scopedIssueCodeView?.chips?.length),
+        chips: scopedIssueCodeView?.chips || [],
+        activeCode: preflightScopedIssueCodeFocus,
+    });
+
+    const activeScopedIssueCodeFocus = normalizePreflightIssueCode(preflightScopedIssueCodeFocus);
+    const scopedBucketLabel = getScopedIssueBucketDisplayLabel(preflightScopedBucketFilter);
+
+    if (preflightIssuesLabel) {
+        if (hasScopedIssueSet && activeIssueMode === 'scoped') {
+            const scopedLabelParts = [];
+            if (scopeLabel) scopedLabelParts.push(scopeLabel);
+            if (showBucketFilterRow && preflightScopedBucketFilter !== 'all') scopedLabelParts.push(scopedBucketLabel);
+            if (activeScopedIssueCodeFocus) scopedLabelParts.push(`code: ${activeScopedIssueCodeFocus}`);
+
+            if (scopedLabelParts.length > 0) {
+                preflightIssuesLabel.textContent = `Scoped issues (${scopedLabelParts.join(' · ')})`;
+            } else {
+                preflightIssuesLabel.textContent = 'Scoped issues';
+            }
+        } else if (hasScopedIssueSet && activeIssueMode === 'global') {
+            preflightIssuesLabel.textContent = 'Full-geometry issues';
+        } else {
+            preflightIssuesLabel.textContent = 'Issues';
+        }
+    }
+
+    preflightIssuesList.innerHTML = '';
+    const baseIssues = (hasScopedIssueSet && activeIssueMode === 'scoped')
+        ? scopedReport.issues
+        : (report?.issues || []);
+    const issues = (scopedBucketView && scopedBucketView.hasBucketMetadata)
+        ? scopedBucketView.filteredIssues
+        : baseIssues;
+    const focusedIssues = activeScopedIssueCodeFocus
+        ? issues.filter((issue) => normalizePreflightIssueCode(issue?.code) === activeScopedIssueCodeFocus)
+        : issues;
+
+    updatePreflightScopeContextCopyState({
+        showRow: hasScopedIssueSet && activeIssueMode === 'scoped',
+        scopeLabel,
+        hasBucketMetadata: showBucketFilterRow,
+        bucketSelection: preflightScopedBucketFilter,
+        issueCodeFocus: activeScopedIssueCodeFocus,
+        visibleIssueCount: focusedIssues.length,
+        totalScopedIssueCount: Array.isArray(scopedReport?.issues) ? scopedReport.issues.length : null,
+        visibleIssues: focusedIssues,
+    });
+
+    if (focusedIssues.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.color = '#64748b';
+        if (activeScopedIssueCodeFocus) {
+            empty.textContent = `No scoped issues with code "${activeScopedIssueCodeFocus}" for the current bucket view.`;
+        } else if (scopedBucketView && scopedBucketView.hasBucketMetadata && scopedBucketView.emptyMessage) {
+            empty.textContent = scopedBucketView.emptyMessage;
+        } else if (hasScopedIssueSet && activeIssueMode === 'scoped') {
+            empty.textContent = 'No issues detected in the selected scope.';
+        } else if (hasScopedIssueSet && activeIssueMode === 'global') {
+            empty.textContent = 'No full-geometry issues detected.';
+        } else {
+            empty.textContent = 'No issues detected.';
+        }
+        preflightIssuesList.appendChild(empty);
+        return;
+    }
+
+    focusedIssues.forEach(issue => {
+        const row = document.createElement('div');
+        row.className = 'preflight_issue';
+
+        const badge = document.createElement('span');
+        const sev = (issue.severity || 'info').toLowerCase();
+        badge.className = `preflight_badge ${sev}`;
+        badge.textContent = sev;
+
+        const textWrap = document.createElement('div');
+        const message = document.createElement('div');
+        message.textContent = issue.message || issue.code || 'Unknown preflight issue';
+        textWrap.appendChild(message);
+
+        if (issue.hint) {
+            const hint = document.createElement('div');
+            hint.style.color = '#64748b';
+            hint.style.fontSize = '11px';
+            hint.textContent = `Hint: ${issue.hint}`;
+            textWrap.appendChild(hint);
+        }
+
+        row.appendChild(badge);
+        row.appendChild(textWrap);
+        preflightIssuesList.appendChild(row);
+    });
 }
 
 export function clearSimConsole() {

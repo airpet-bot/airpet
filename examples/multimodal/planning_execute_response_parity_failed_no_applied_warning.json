@@ -1,0 +1,121 @@
+{
+  "success": true,
+  "schema_version": "2026-03-15.multimodal-intake.checkpoint9",
+  "execution": {
+    "status": "failed",
+    "summary": {
+      "attempted_operation_count": 3,
+      "applied_operation_count": 0,
+      "failed_operation_count": 3
+    },
+    "preflight_crosscheck": {
+      "status": "mismatch_warning",
+      "mismatch_classes": [
+        "preflight_changed_without_applied_operations"
+      ],
+      "invariants": {
+        "issue_count_delta": 3,
+        "regressed_can_run": false
+      },
+      "diagnostics": [
+        {
+          "code": "preflight_changed_without_applied_operations",
+          "severity": "warning",
+          "message": "Execution failed without applied operations but preflight invariants changed."
+        }
+      ]
+    },
+    "parity_report": {
+      "status": "mismatch_warning",
+      "preflight_crosscheck_status": "mismatch_warning",
+      "geant4_compatibility_confidence": {
+        "label": "guarded",
+        "score": 55,
+        "reason_codes": [
+          "preflight_mismatch_warning",
+          "execution_status_failed",
+          "preflight_changed_without_applied_operations"
+        ]
+      },
+      "summary": {
+        "high_signal_mismatch_classes": [
+          "preflight_changed_without_applied_operations"
+        ],
+        "affected_operation_group_count": 2
+      },
+      "issue_code_delta": {
+        "added_issue_codes": [
+          "missing_material_reference",
+          "unknown_world_volume_reference"
+        ],
+        "increased_issue_codes": [
+          "invalid_replica_width"
+        ],
+        "resolved_issue_codes": [],
+        "reduced_issue_codes": []
+      },
+      "operation_groups": [
+        {
+          "group_id": "dimension_hints",
+          "operation_count": 2,
+          "applied_operation_count": 0,
+          "failed_operation_count": 2
+        },
+        {
+          "group_id": "material_updates",
+          "operation_count": 1,
+          "applied_operation_count": 0,
+          "failed_operation_count": 1
+        }
+      ],
+      "issue_code_family_correlations": {
+        "summary": {
+          "changed_issue_code_count": 3,
+          "with_observed_overlap_count": 2,
+          "without_observed_overlap_count": 1,
+          "confidence_counts": {
+            "high": 2,
+            "medium": 1,
+            "low": 0
+          }
+        },
+        "entries": [
+          {
+            "issue_code": "missing_material_reference",
+            "change_kind": "added",
+            "delta": 1,
+            "confidence": "high",
+            "likely_operation_family_ids": [
+              "material_updates"
+            ],
+            "observed_overlap_operation_family_ids": [
+              "material_updates"
+            ]
+          },
+          {
+            "issue_code": "unknown_world_volume_reference",
+            "change_kind": "added",
+            "delta": 1,
+            "confidence": "medium",
+            "likely_operation_family_ids": [
+              "other_mutations"
+            ],
+            "observed_overlap_operation_family_ids": []
+          },
+          {
+            "issue_code": "invalid_replica_width",
+            "change_kind": "increased",
+            "delta": 1,
+            "confidence": "high",
+            "likely_operation_family_ids": [
+              "dimension_hints"
+            ],
+            "observed_overlap_operation_family_ids": [
+              "dimension_hints"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

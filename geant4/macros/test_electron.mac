@@ -1,0 +1,17 @@
+# Test simulation: 10 keV electron on silicon plate
+# This macro runs a simple test to verify Geant4 is working correctly
+
+# Set physics list
+/process/physicsList QGSP_BIC
+
+# Set random seed
+/random/setSeeds 12345 67890
+
+# Enable threading (single thread for simplicity)
+/run/numberOfThreads 1
+
+# Set output file
+/analysis/setFileName output.hdf5
+
+# Run 100 events
+/run/beamOn 100

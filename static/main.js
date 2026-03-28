@@ -18,6 +18,8 @@ import * as SceneManager from './sceneManager.js';
 import * as SkinSurfaceEditor from './skinSurfaceEditor.js';
 import * as SolidEditor from './solidEditor.js';
 import * as StepImportEditor from './stepImportEditor.js';
+import * as ParameterRegistryEditor from './parameterRegistryEditor.js';
+import * as ParamStudyEditor from './paramStudyEditor.js';
 import * as UIManager from './uiManager.js';
 import * as AIAssistant from './aiAssistant.js';
 
@@ -60,6 +62,88 @@ const AppState = {
 let isProjectChanged = false;
 let autoSaveTimer = null;
 const AUTO_SAVE_INTERVAL = 15000; // 15 seconds
+
+let parameterRegistryEditorInitialized = false;
+let paramStudyEditorInitialized = false;
+
+function _bindMenuButtonAction(buttonId, handler) {
+    const btn = document.getElementById(buttonId);
+    if (!btn) return;
+    if (btn.dataset.ocMenuBound === '1') return;
+
+    let lastInvokeAtMs = 0;
+    const invoke = (event) => {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        const now = Date.now();
+        if (now - lastInvokeAtMs < 200) return;
+        lastInvokeAtMs = now;
+        Promise.resolve(handler()).catch((error) => {
+            console.error(`Menu action failed for #${buttonId}:`, error);
+        });
+    };
+
+    // Dropdown menus can collapse before click fires on some platforms/tooling.
+    btn.addEventListener('mousedown', invoke);
+    btn.addEventListener('click', invoke);
+    btn.dataset.ocMenuBound = '1';
+}
+
+function ensureParameterRegistryEditorInit() {
+    if (parameterRegistryEditorInitialized) return;
+    ParameterRegistryEditor.init({
+        onSave: handleParameterRegistrySave,
+        onDelete: handleParameterRegistryDelete,
+        onRefresh: handleParameterRegistryRefresh,
+    });
+    parameterRegistryEditorInitialized = true;
+}
+
+function ensureParamStudyEditorInit() {
+    if (paramStudyEditorInitialized) return;
+    ParamStudyEditor.init({
+        onSave: handleParamStudySave,
+        onDelete: handleParamStudyDelete,
+        onRun: handleParamStudyRun,
+        onRunOptimizer: handleParamStudyRunOptimizer,
+        onApplyCandidate: handleParamStudyApplyCandidate,
+        onGetParameterRegistry: handleParameterRegistryRefresh,
+        onGetActiveRunStatus: handleParamOptimizerGetActiveRunStatus,
+        onGetObjectiveBuilderLaunchStatus: handleObjectiveBuilderLaunchStatus,
+        onStopActiveRun: handleParamOptimizerStopActiveRun,
+        onReplayBest: handleParamOptimizerReplayBest,
+        onVerifyBest: handleParamOptimizerVerifyBest,
+        onGetApplyAuditHistory: handleParamOptimizerGetApplyAuditHistory,
+        onGetApplyAuditDiagnostics: handleParamOptimizerGetApplyAuditDiagnostics,
+        onRollbackLastApply: handleParamOptimizerRollbackLastApply,
+        onRefresh: handleParamStudyRefresh,
+        onObjectiveBuilderSchema: handleObjectiveBuilderSchema,
+        onObjectiveBuilderExample: handleObjectiveBuilderExample,
+        onObjectiveBuilderValidate: handleObjectiveBuilderValidate,
+        onObjectiveBuilderBuild: handleObjectiveBuilderBuild,
+        onObjectiveBuilderUpsert: handleObjectiveBuilderUpsert,
+        onObjectiveBuilderLaunch: handleObjectiveBuilderLaunch,
+        onGetGeometryState: handleWizardGetGeometryState,
+        onGetSimulationMetrics: handleWizardGetSimulationMetrics,
+        onUpsertParameter: handleParameterRegistrySave,
+        onUpsertParamStudy: handleParamStudySave,
+    });
+    paramStudyEditorInitialized = true;
+}
+
+function bindObjectMenuLaunchers() {
+    _bindMenuButtonAction('parameterRegistryButton', async () => {
+        ensureParameterRegistryEditorInit();
+        await handleOpenParameterRegistry();
+    });
+
+    _bindMenuButtonAction('paramStudiesButton', async () => {
+        ensureParamStudyEditorInit();
+        await handleOpenParamStudies();
+    });
+}
 
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', initializeApp);
@@ -176,6 +260,7 @@ async function initializeApp() {
         // Simulation
         onRunSimulationClicked: handleRunSimulation,
         onStopSimulationClicked: handleStopSimulation,
+        onRunPreflightClicked: handleRunPreflight,
         onSimOptionsClicked: handleOpenSimOptions,
         onSaveSimOptions: handleSaveSimOptions,
         onDrawTracksToggle: handleDrawTracksToggle,
@@ -194,6 +279,10 @@ async function initializeApp() {
         onRefreshAnalysisClicked: handleRefreshAnalysis,
         onDownloadSimDataClicked: handleDownloadSimData
     });
+
+    // Bind object-menu launchers early so menu actions remain available
+    // even if a later initializer throws.
+    bindObjectMenuLaunchers();
 
     // Initialize the 3D scene and its controls
     SceneManager.initScene({
@@ -288,6 +377,9 @@ async function initializeApp() {
         onConfirm: handleConfirmStepImport
     });
 
+    ensureParameterRegistryEditorInit();
+    ensureParamStudyEditorInit();
+
     // Add menu listeners
     // --- Check AI service status on startup ---
     checkAndSetAiStatus();
@@ -305,6 +397,9 @@ async function initializeApp() {
             if (id === 'showAllBtn') btn.addEventListener('click', handleShowAll);
         }
     });
+
+    // Re-bind safely (idempotent) after full init.
+    bindObjectMenuLaunchers();
 
     // Restore session from backend on page load
     console.log("Fetching initial project state from backend...");
@@ -1985,7 +2080,23 @@ async function checkAndSetAiStatus() {
     try {
         const status = await APIService.checkAiServiceStatus();
         if (status.success) {
-            UIManager.populateAiModelSelector(status.models);
+            let localBackendDiagnostics = status.local_backend_diagnostics || {};
+
+            try {
+                const diagnosticsResponse = await APIService.getAiBackendDiagnostics(['llama_cpp', 'lm_studio']);
+                if (diagnosticsResponse?.success && Array.isArray(diagnosticsResponse.diagnostics)) {
+                    localBackendDiagnostics = diagnosticsResponse.diagnostics.reduce((acc, item) => {
+                        if (item && typeof item === 'object' && item.backend_id) {
+                            acc[item.backend_id] = item;
+                        }
+                        return acc;
+                    }, {});
+                }
+            } catch (diagError) {
+                console.warn("Failed to refresh local backend diagnostics, using ai_health_check payload:", diagError.message || diagError);
+            }
+
+            UIManager.populateAiModelSelector(status.models, localBackendDiagnostics);
             UIManager.setAiPanelState('idle', "Generate with AI");
             console.log("AI service is online.");
         } else {
@@ -2004,6 +2115,11 @@ async function handleAiGenerate(promptText) {
     const selectedModel = UIManager.getAiSelectedModel();
     if (!selectedModel || selectedModel === "No models found") {
         UIManager.showError("No AI model is selected or available.");
+        return;
+    }
+
+    if (selectedModel.startsWith('llama_cpp::') || selectedModel.startsWith('lm_studio::')) {
+        UIManager.showError("This action currently supports Gemini/Ollama models only. For llama.cpp/LM Studio, use the AI Assistant chat panel.");
         return;
     }
 
@@ -2409,6 +2525,51 @@ function handleCameraModeChange(mode) {
     }
 }
 
+function formatStepImportReportMessage(report, smartImportRequested = false) {
+    if (!report) {
+        return smartImportRequested ? "STEP file imported. Smart CAD report unavailable." : "STEP file imported successfully.";
+    }
+
+    if (!report.enabled) {
+        return "STEP file imported successfully (smart import disabled).";
+    }
+
+    const summary = report.summary || {};
+    const total = summary.total || 0;
+    const modeCounts = summary.selected_mode_counts || {};
+    const primitiveSelected = modeCounts.primitive || 0;
+    const tessSelected = modeCounts.tessellated || 0;
+
+    const ratioPct = total > 0
+        ? ((summary.selected_primitive_ratio || 0) * 100).toFixed(1)
+        : "0.0";
+
+    const fallbackReasonCounts = {};
+    (report.candidates || []).forEach(c => {
+        if (c?.selected_mode === 'tessellated' && c?.fallback_reason) {
+            fallbackReasonCounts[c.fallback_reason] = (fallbackReasonCounts[c.fallback_reason] || 0) + 1;
+        }
+    });
+
+    const topReasons = Object.entries(fallbackReasonCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([reason, count]) => `${reason}: ${count}`);
+
+    const lines = [
+        "STEP import complete (Smart CAD).",
+        `Total solids: ${total}`,
+        `Selected primitives: ${primitiveSelected} (${ratioPct}%)`,
+        `Selected tessellated fallback: ${tessSelected}`,
+    ];
+
+    if (topReasons.length > 0) {
+        lines.push(`Top fallback reasons: ${topReasons.join(', ')}`);
+    }
+
+    return lines.join("\n");
+}
+
 async function handleConfirmStepImport(options) {
     if (!options || !options.file) return;
 
@@ -2422,18 +2583,338 @@ async function handleConfirmStepImport(options) {
         // as it's already been appended.
         const optionsForJson = { ...options };
         delete optionsForJson.file;
-        formData.append('options', JSON.stringify(options));
+        formData.append('options', JSON.stringify(optionsForJson));
 
-        const result = await APIService.importStepWithOptions(formData); // This API call is still needed
+        const result = await APIService.importStepWithOptions(formData);
         syncUIWithState(result);
         UIManager.hideLoading();
-        //UIManager.showNotification("STEP file imported successfully.");
+
+        const reportMessage = formatStepImportReportMessage(result.step_import_report, optionsForJson.smartImport);
+        if (reportMessage) {
+            UIManager.showNotification(reportMessage);
+        }
+
+        if (result.step_import_report && result.step_import_report.enabled) {
+            StepImportEditor.showImportReport(result.step_import_report, options.file?.name || '');
+        }
     } catch (error) {
         UIManager.hideLoading();
         UIManager.showError("Failed to import STEP file: " + error.message);
     } finally {
         document.getElementById('stepFile').value = null;
     }
+}
+
+async function handleParameterRegistryRefresh() {
+    const result = await APIService.getParameterRegistry();
+    return result.parameter_registry || {};
+}
+
+async function handleParameterRegistrySave(payload) {
+    UIManager.showLoading("Saving parameter...");
+    try {
+        const result = await APIService.upsertParameterRegistry(payload);
+        syncUIWithState(result);
+        UIManager.showNotification(`Parameter '${payload.name}' saved.`);
+    } catch (error) {
+        UIManager.showError("Failed to save parameter: " + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleParameterRegistryDelete(name) {
+    UIManager.showLoading("Deleting parameter...");
+    try {
+        const result = await APIService.deleteParameterRegistry(name);
+        syncUIWithState(result);
+        UIManager.showNotification(`Parameter '${name}' deleted.`);
+    } catch (error) {
+        UIManager.showError("Failed to delete parameter: " + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleOpenParameterRegistry() {
+    ensureParameterRegistryEditorInit();
+    try {
+        const result = await APIService.getParameterRegistry();
+        await ParameterRegistryEditor.show(result.parameter_registry || {});
+    } catch (error) {
+        UIManager.showError("Failed to open parameter registry: " + error.message);
+    }
+}
+
+async function handleParamStudyRefresh() {
+    const result = await APIService.getParamStudies();
+    return result.param_studies || {};
+}
+
+async function handleParamStudySave(payload) {
+    UIManager.showLoading("Saving param study...");
+    try {
+        const result = await APIService.upsertParamStudy(payload);
+        syncUIWithState(result);
+        UIManager.showNotification(`Param study '${payload.name}' saved.`);
+    } catch (error) {
+        UIManager.showError("Failed to save param study: " + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleParamStudyDelete(name) {
+    UIManager.showLoading("Deleting param study...");
+    try {
+        const result = await APIService.deleteParamStudy(name);
+        syncUIWithState(result);
+        UIManager.showNotification(`Param study '${name}' deleted.`);
+    } catch (error) {
+        UIManager.showError("Failed to delete param study: " + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleParamStudyRun(name, maxRuns = null) {
+    UIManager.showLoading(`Running parameter sweep (no simulation) for '${name}'...`);
+    try {
+        const result = await APIService.runParamStudy(name, maxRuns);
+        UIManager.showNotification(`Parameter sweep completed for '${name}' (no simulation).`);
+        return result.study_result || result;
+    } catch (error) {
+        UIManager.showError("Failed to run parameter sweep: " + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleParamStudyRunOptimizer(payload) {
+    UIManager.showLoading(`Running optimizer for '${payload.study_name}'...`);
+    try {
+        const result = await APIService.runParamOptimizer(payload);
+        UIManager.showNotification(`Optimizer run complete for '${payload.study_name}'.`);
+        return result.optimizer_result || result;
+    } catch (error) {
+        UIManager.showError("Failed to run optimizer: " + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleParamStudyApplyCandidate(studyName, values) {
+    UIManager.showLoading('Applying candidate to geometry...');
+    try {
+        const result = await APIService.applyParamStudyCandidate(studyName, values);
+        syncUIWithState(result);
+        UIManager.showNotification('Geometry updated from selected parameter set.');
+        return result;
+    } catch (error) {
+        UIManager.showError('Failed to apply selected candidate: ' + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+// --- Wizard Handlers ---
+
+function handleWizardGetGeometryState() {
+    return AppState.currentProjectState || {};
+}
+
+async function handleWizardGetSimulationMetrics() {
+    try {
+        const result = await APIService.getSimulationMetrics();
+        return result.metrics || [];
+    } catch (error) {
+        UIManager.showError('Failed to load simulation metrics: ' + error.message);
+        return [];
+    }
+}
+
+async function handleParamOptimizerGetActiveRunStatus() {
+    try {
+        return await APIService.getActiveParamOptimizerRunStatus();
+    } catch (error) {
+        throw error;
+    }
+}
+
+async function handleParamOptimizerStopActiveRun(reason = 'user_requested_stop') {
+    try {
+        const result = await APIService.stopActiveParamOptimizerRun(reason);
+        if (result?.active && result?.stop_requested) {
+            UIManager.showNotification('Stop requested for active run. Current candidate will finish before termination.');
+        } else {
+            UIManager.showNotification('No active run to stop.');
+        }
+        return result;
+    } catch (error) {
+        UIManager.showError("Failed to request stop: " + error.message);
+        throw error;
+    }
+}
+
+async function handleParamOptimizerReplayBest(runId, options = {}) {
+    const opts = (options && typeof options === 'object') ? options : { applyToProject: !!options };
+    UIManager.showLoading(`Replaying best candidate (${runId})...`);
+    try {
+        const result = await APIService.replayParamOptimizerBest(runId, opts);
+        if (opts.applyToProject !== false) {
+            syncUIWithState(result);
+        }
+        UIManager.showNotification('Best candidate replay completed.');
+        return result;
+    } catch (error) {
+        UIManager.showError("Failed to replay best candidate: " + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleParamOptimizerVerifyBest(runId, options = {}) {
+    const opts = (options && typeof options === 'object') ? options : { repeats: options };
+    UIManager.showLoading(`Verifying best candidate (${runId})...`);
+    try {
+        const result = await APIService.verifyParamOptimizerBest(runId, opts);
+        UIManager.showNotification('Best candidate verification completed.');
+        return result;
+    } catch (error) {
+        UIManager.showError("Failed to verify best candidate: " + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleParamOptimizerGetApplyAuditHistory(limit = 20) {
+    try {
+        const result = await APIService.getParamOptimizerApplyAuditHistory(limit);
+        return result;
+    } catch (error) {
+        UIManager.showError("Failed to load apply audit history: " + error.message);
+        throw error;
+    }
+}
+
+async function handleParamOptimizerRollbackLastApply(auditId = null) {
+    UIManager.showLoading('Rolling back apply action...');
+    try {
+        const result = await APIService.rollbackLastParamOptimizerApply(auditId);
+        syncUIWithState(result);
+        UIManager.showNotification('Rollback completed.');
+        return result;
+    } catch (error) {
+        UIManager.showError("Failed to rollback apply action: " + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleParamOptimizerGetApplyAuditDiagnostics() {
+    try {
+        const result = await APIService.getParamOptimizerApplyAuditDiagnostics();
+        return result;
+    } catch (error) {
+        UIManager.showError("Failed to load apply audit diagnostics: " + error.message);
+        throw error;
+    }
+}
+
+async function handleOpenParamStudies() {
+    ensureParamStudyEditorInit();
+    try {
+        const result = await APIService.getParamStudies();
+        await ParamStudyEditor.show(result.param_studies || {});
+    } catch (error) {
+        UIManager.showError("Failed to open param studies: " + error.message);
+    }
+}
+
+async function handleObjectiveBuilderSchema() {
+    const result = await APIService.getObjectiveBuilderSchema();
+    return result.schema || {};
+}
+
+async function handleObjectiveBuilderExample(template = 'weighted_tradeoff') {
+    const result = await APIService.getObjectiveBuilderExample(template);
+    return result.payload || {};
+}
+
+async function handleObjectiveBuilderValidate(payload) {
+    UIManager.showLoading('Validating objective builder payload...');
+    try {
+        const result = await APIService.validateObjectiveBuilder(payload);
+        return result;
+    } catch (error) {
+        UIManager.showError('Objective builder validation failed: ' + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleObjectiveBuilderBuild(payload) {
+    UIManager.showLoading('Building objective payload...');
+    try {
+        const result = await APIService.buildObjectiveBuilder(payload);
+        return result;
+    } catch (error) {
+        UIManager.showError('Objective builder build failed: ' + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleObjectiveBuilderUpsert(payload) {
+    UIManager.showLoading('Upserting objective builder study...');
+    try {
+        const result = await APIService.upsertObjectiveBuilderStudy(payload);
+        if (!result?.dry_run) {
+            UIManager.showNotification(`Objective builder study '${result?.study_name || payload?.study_name || ''}' ${result?.action || 'saved'}.`);
+        }
+        return result;
+    } catch (error) {
+        UIManager.showError('Objective builder upsert failed: ' + error.message);
+        throw error;
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleObjectiveBuilderLaunch(payload) {
+    const isDryRun = !!payload?.dry_run;
+    if (isDryRun) {
+        UIManager.showLoading('Preparing objective builder launch (dry run)...');
+    }
+    try {
+        const result = await APIService.launchObjectiveBuilder(payload);
+        if (!result?.dry_run && result?.optimizer_result) {
+            UIManager.showNotification('Simulation-in-loop optimization completed.');
+        }
+        return result;
+    } catch (error) {
+        UIManager.showError('Objective builder launch failed: ' + error.message);
+        throw error;
+    } finally {
+        if (isDryRun) UIManager.hideLoading();
+    }
+}
+
+async function handleObjectiveBuilderLaunchStatus(runControlId) {
+    const result = await APIService.getObjectiveBuilderLaunchStatus(runControlId);
+    return result || {};
 }
 
 function getAvailableVolumes() {
@@ -2519,6 +3000,248 @@ async function handleGpsEditorConfirm(data) {
 }
 
 // --- Simulation functions ---
+function formatPreflightIssues(issues, limit = 5) {
+    if (!issues || issues.length === 0) return "";
+    return issues.slice(0, limit).map(issue => {
+        const hint = issue.hint ? ` (hint: ${issue.hint})` : '';
+        return `- [${issue.severity}] ${issue.message}${hint}`;
+    }).join('\n');
+}
+
+function formatPreflightScopeLabel(scope) {
+    if (!scope || !scope.type || !scope.name) return '';
+    const typeLabel = scope.type === 'logical_volume'
+        ? 'LV'
+        : (scope.type === 'assembly' ? 'Assembly' : scope.type);
+    return `${typeLabel} \"${scope.name}\"`;
+}
+
+function resolveScopedPreflightCandidateFromVolumeRef(volumeRef) {
+    const volumeRefNorm = String(volumeRef || '').trim();
+    if (!volumeRefNorm) return null;
+
+    const state = AppState.currentProjectState || {};
+    const assemblies = state.assemblies || {};
+    if (Object.prototype.hasOwnProperty.call(assemblies, volumeRefNorm)) {
+        return { type: 'assembly', name: volumeRefNorm };
+    }
+
+    const logicalVolumes = state.logical_volumes || {};
+    if (Object.prototype.hasOwnProperty.call(logicalVolumes, volumeRefNorm)) {
+        return { type: 'logical_volume', name: volumeRefNorm };
+    }
+
+    return null;
+}
+
+function resolveScopedPreflightCandidateFromSelectionItem(item) {
+    if (!item || !item.type) return null;
+
+    if (item.type === 'logical_volume' || item.type === 'assembly') {
+        const nameNorm = String(item.name || '').trim();
+        if (!nameNorm) return null;
+        return { type: item.type, name: nameNorm };
+    }
+
+    if (item.type === 'physical_volume') {
+        const volumeRef = item?.selData?.volume_ref ?? item?.data?.volume_ref;
+        return resolveScopedPreflightCandidateFromVolumeRef(volumeRef);
+    }
+
+    return null;
+}
+
+function buildScopedPreflightRequestFromSelection() {
+    const selection = getSelectionContext();
+    if (!Array.isArray(selection) || selection.length === 0) {
+        return { candidate: null, reason: 'no_selection', candidateCount: 0 };
+    }
+
+    const candidates = [];
+    const seen = new Set();
+
+    selection.forEach(item => {
+        const candidate = resolveScopedPreflightCandidateFromSelectionItem(item);
+        if (!candidate) return;
+        const key = `${candidate.type}:${candidate.name}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            candidates.push(candidate);
+        }
+    });
+
+    if (candidates.length === 0) {
+        return { candidate: null, reason: 'selection_not_scopeable', candidateCount: 0 };
+    }
+    if (candidates.length > 1) {
+        return { candidate: null, reason: 'ambiguous_selection', candidateCount: candidates.length };
+    }
+
+    return { candidate: candidates[0], reason: 'resolved', candidateCount: 1 };
+}
+
+async function runAndRenderPreflight({
+    enforceRunBlocking = false,
+    confirmWarnings = false,
+    showNotification = false,
+    preferScopedSelection = false,
+} = {}) {
+    UIManager.setPreflightState('running');
+
+    let report = null;
+    let scopedReport = null;
+    let scope = null;
+    let summaryDelta = null;
+    let issueFamilyCorrelations = null;
+    let usedScopedPreflight = false;
+    let scopedSelectionReason = null;
+    let scopedSelectionCandidateCount = 0;
+    let scopedFallbackError = null;
+
+    try {
+        const scopedSelectionResult = preferScopedSelection
+            ? buildScopedPreflightRequestFromSelection()
+            : { candidate: null, reason: null, candidateCount: 0 };
+        const scopedSelection = scopedSelectionResult?.candidate || null;
+        scopedSelectionReason = scopedSelectionResult?.reason || null;
+        scopedSelectionCandidateCount = scopedSelectionResult?.candidateCount || 0;
+
+        if (scopedSelection) {
+            try {
+                const scopedPayload = await APIService.runScopedPreflightChecks(scopedSelection.type, scopedSelection.name);
+                report = scopedPayload?.preflight_report || {};
+                scopedReport = scopedPayload?.scoped_preflight_report || {};
+                scope = scopedPayload?.scope || scopedSelection;
+                summaryDelta = scopedPayload?.summary_delta || null;
+                issueFamilyCorrelations = scopedPayload?.issue_family_correlations || null;
+                usedScopedPreflight = true;
+            } catch (scopeError) {
+                scopedFallbackError = String(scopeError?.message || scopeError || 'unknown_error');
+                console.warn('Scoped preflight failed; falling back to global preflight:', scopeError);
+            }
+        }
+
+        if (!report) {
+            const preflight = await APIService.runPreflightChecks();
+            report = preflight.preflight_report || {};
+        }
+
+        const summary = report.summary || {};
+        UIManager.renderPreflightReport(report, {
+            scope,
+            scopedReport,
+            summaryDelta,
+            issueFamilyCorrelations,
+            usedScopedPreflight,
+            preferScopedSelection,
+            scopedSelectionReason,
+            scopedSelectionCandidateCount,
+            scopedFallbackError,
+        });
+
+        const errors = summary.errors || 0;
+        const warnings = summary.warnings || 0;
+        const infos = summary.infos || 0;
+
+        if (showNotification) {
+            if (usedScopedPreflight && scopedReport?.summary) {
+                const scopedSummary = scopedReport.summary || {};
+                const scopeErrors = scopedSummary.errors || 0;
+                const scopeWarnings = scopedSummary.warnings || 0;
+                const scopeInfos = scopedSummary.infos || 0;
+                UIManager.showNotification(
+                    `Scoped preflight (${formatPreflightScopeLabel(scope)}): ` +
+                    `${scopeErrors} error(s), ${scopeWarnings} warning(s), ${scopeInfos} info. ` +
+                    `Full geometry: ${errors}/${warnings}/${infos}.`
+                );
+            } else {
+                UIManager.showNotification(`Preflight complete: ${errors} error(s), ${warnings} warning(s), ${infos} info.`);
+            }
+        }
+
+        if (enforceRunBlocking && !summary.can_run) {
+            const errorIssues = (report.issues || []).filter(i => i.severity === 'error');
+            UIManager.showError(
+                "Preflight checks failed.\n" +
+                formatPreflightIssues(errorIssues, 8)
+            );
+            return {
+                ok: false,
+                report,
+                scope,
+                scopedReport,
+                summaryDelta,
+                issueFamilyCorrelations,
+                usedScopedPreflight,
+                scopedSelectionReason,
+                scopedSelectionCandidateCount,
+                scopedFallbackError,
+            };
+        }
+
+        if (enforceRunBlocking && warnings > 0 && confirmWarnings) {
+            const warningIssues = (report.issues || []).filter(i => i.severity === 'warning');
+            const proceed = UIManager.confirmAction(
+                "Preflight warnings detected:\n\n" +
+                formatPreflightIssues(warningIssues, 8) +
+                "\n\nContinue anyway?"
+            );
+            if (!proceed) {
+                return {
+                    ok: false,
+                    report,
+                    scope,
+                    scopedReport,
+                    summaryDelta,
+                    issueFamilyCorrelations,
+                    usedScopedPreflight,
+                    scopedSelectionReason,
+                    scopedSelectionCandidateCount,
+                    scopedFallbackError,
+                };
+            }
+        }
+
+        return {
+            ok: true,
+            report,
+            scope,
+            scopedReport,
+            summaryDelta,
+            issueFamilyCorrelations,
+            usedScopedPreflight,
+            scopedSelectionReason,
+            scopedSelectionCandidateCount,
+            scopedFallbackError,
+        };
+    } catch (error) {
+        UIManager.showError("Failed to run preflight checks: " + error.message);
+        return {
+            ok: false,
+            report: null,
+            scope: null,
+            scopedReport: null,
+            summaryDelta: null,
+            issueFamilyCorrelations: null,
+            usedScopedPreflight: false,
+            scopedSelectionReason: null,
+            scopedSelectionCandidateCount: 0,
+            scopedFallbackError: String(error?.message || error || 'unknown_error'),
+        };
+    } finally {
+        UIManager.setPreflightState('idle');
+    }
+}
+
+async function handleRunPreflight() {
+    await runAndRenderPreflight({
+        enforceRunBlocking: false,
+        confirmWarnings: false,
+        showNotification: true,
+        preferScopedSelection: true,
+    });
+}
+
 async function handleRunSimulation(simSettings) {
     console.log("Checking active sources before run...");
     console.log("AppState.activeSourceIds:", AppState.activeSourceIds);
@@ -2543,6 +3266,16 @@ async function handleRunSimulation(simSettings) {
     const numEvents = parseInt(document.getElementById('simEventsInput').value, 10);
     if (numEvents <= 0) {
         UIManager.showError("Please enter a valid number of events.");
+        return;
+    }
+
+    // Preflight checks before simulation start.
+    const preflightResult = await runAndRenderPreflight({
+        enforceRunBlocking: true,
+        confirmWarnings: true,
+        showNotification: false,
+    });
+    if (!preflightResult.ok) {
         return;
     }
 

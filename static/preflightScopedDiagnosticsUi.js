@@ -1,0 +1,316 @@
+const SCOPED_BUCKET_FILTERS = new Set(['all', 'scope_only', 'outside_scope_only', 'shared']);
+
+const SCOPED_BUCKET_LABELS = {
+    all: 'All scoped issues',
+    scope_only: 'Scope-only issues',
+    outside_scope_only: 'Outside-scope-only issues',
+    shared: 'Shared issues',
+};
+
+const SCOPED_BUCKET_ORDER = ['scope_only', 'outside_scope_only', 'shared'];
+
+const SCOPED_BUCKET_EMPTY_MESSAGES = {
+    all: 'No issues detected in the selected scope.',
+    scope_only: 'No scope-only issues detected in the selected scope.',
+    outside_scope_only: 'No outside-scope-only issues detected in the selected scope.',
+    shared: 'No shared issues detected in the selected scope.',
+};
+
+function normalizeIssueCodeList(rawCodes) {
+    if (!Array.isArray(rawCodes)) return [];
+
+    const seen = new Set();
+    const normalized = [];
+    rawCodes.forEach((code) => {
+        const codeNorm = String(code || '').trim();
+        if (!codeNorm) return;
+        if (seen.has(codeNorm)) return;
+        seen.add(codeNorm);
+        normalized.push(codeNorm);
+    });
+
+    normalized.sort();
+    return normalized;
+}
+
+function normalizeIssueCode(value) {
+    return String(value || '').trim();
+}
+
+export function normalizeScopedIssueFamilyCorrelations(correlations) {
+    if (!correlations || typeof correlations !== 'object') {
+        return null;
+    }
+
+    const scopeOnlyIssueCodes = normalizeIssueCodeList(correlations.scope_only_issue_codes);
+    const outsideScopeOnlyIssueCodes = normalizeIssueCodeList(correlations.outside_scope_only_issue_codes);
+    const sharedIssueCodes = normalizeIssueCodeList(correlations.shared_issue_codes);
+
+    return {
+        scopeOnlyIssueCodes,
+        outsideScopeOnlyIssueCodes,
+        sharedIssueCodes,
+    };
+}
+
+function formatIssueCodeExcerpt(codes, maxCodesPerBucket = 3) {
+    if (!Array.isArray(codes) || codes.length === 0) {
+        return 'none';
+    }
+
+    const maxCodes = Math.max(1, Number(maxCodesPerBucket) || 3);
+    if (codes.length <= maxCodes) {
+        return codes.join(', ');
+    }
+
+    const shown = codes.slice(0, maxCodes).join(', ');
+    const hiddenCount = codes.length - maxCodes;
+    return `${shown} (+${hiddenCount} more)`;
+}
+
+export function buildScopedIssueFamilyBucketSummary(correlations, options = {}) {
+    const normalized = normalizeScopedIssueFamilyCorrelations(correlations);
+    if (!normalized) return '';
+
+    const maxCodesPerBucket = options.maxCodesPerBucket;
+
+    return [
+        `Issue-family buckets — scope-only: ${normalized.scopeOnlyIssueCodes.length} (${formatIssueCodeExcerpt(normalized.scopeOnlyIssueCodes, maxCodesPerBucket)})`,
+        `outside-scope-only: ${normalized.outsideScopeOnlyIssueCodes.length} (${formatIssueCodeExcerpt(normalized.outsideScopeOnlyIssueCodes, maxCodesPerBucket)})`,
+        `shared: ${normalized.sharedIssueCodes.length} (${formatIssueCodeExcerpt(normalized.sharedIssueCodes, maxCodesPerBucket)})`,
+    ].join(' · ');
+}
+
+export function normalizeScopedBucketFilterSelection(selection) {
+    const normalized = String(selection || '').trim().toLowerCase();
+    return SCOPED_BUCKET_FILTERS.has(normalized) ? normalized : 'all';
+}
+
+export function getScopedIssueBucketDisplayLabel(selection) {
+    const normalized = normalizeScopedBucketFilterSelection(selection);
+    return SCOPED_BUCKET_LABELS[normalized] || SCOPED_BUCKET_LABELS.all;
+}
+
+export function filterScopedIssuesByBucket(issues, correlations, selection = 'all') {
+    const requestedBucket = normalizeScopedBucketFilterSelection(selection);
+    const normalizedIssues = Array.isArray(issues) ? issues : [];
+    const normalizedCorrelations = normalizeScopedIssueFamilyCorrelations(correlations);
+
+    if (!normalizedCorrelations) {
+        return {
+            requestedBucket,
+            effectiveBucket: 'all',
+            hasBucketMetadata: false,
+            filteredIssues: normalizedIssues,
+            emptyMessage: normalizedIssues.length === 0 ? SCOPED_BUCKET_EMPTY_MESSAGES.all : '',
+        };
+    }
+
+    const bucketCodesBySelection = {
+        scope_only: normalizedCorrelations.scopeOnlyIssueCodes,
+        outside_scope_only: normalizedCorrelations.outsideScopeOnlyIssueCodes,
+        shared: normalizedCorrelations.sharedIssueCodes,
+    };
+
+    const hasBucketMetadata = Object.values(bucketCodesBySelection).some((codes) => codes.length > 0);
+    if (!hasBucketMetadata) {
+        return {
+            requestedBucket,
+            effectiveBucket: 'all',
+            hasBucketMetadata: false,
+            filteredIssues: normalizedIssues,
+            emptyMessage: normalizedIssues.length === 0 ? SCOPED_BUCKET_EMPTY_MESSAGES.all : '',
+        };
+    }
+
+    const effectiveBucket = requestedBucket;
+    if (effectiveBucket === 'all') {
+        return {
+            requestedBucket,
+            effectiveBucket,
+            hasBucketMetadata: true,
+            filteredIssues: normalizedIssues,
+            emptyMessage: normalizedIssues.length === 0 ? SCOPED_BUCKET_EMPTY_MESSAGES.all : '',
+        };
+    }
+
+    const allowedCodes = new Set(bucketCodesBySelection[effectiveBucket] || []);
+    const filteredIssues = normalizedIssues.filter((issue) => {
+        const issueCode = normalizeIssueCode(issue?.code);
+        if (!issueCode) return false;
+        return allowedCodes.has(issueCode);
+    });
+
+    return {
+        requestedBucket,
+        effectiveBucket,
+        hasBucketMetadata: true,
+        filteredIssues,
+        emptyMessage: filteredIssues.length === 0 ? SCOPED_BUCKET_EMPTY_MESSAGES[effectiveBucket] : '',
+    };
+}
+
+export function buildScopedIssueCodeChips(issues, correlations, selection = 'all') {
+    const bucketView = filterScopedIssuesByBucket(issues, correlations, selection);
+    const issueList = Array.isArray(bucketView.filteredIssues) ? bucketView.filteredIssues : [];
+
+    const codeCounts = new Map();
+    issueList.forEach((issue) => {
+        const issueCode = normalizeIssueCode(issue?.code);
+        if (!issueCode) return;
+        codeCounts.set(issueCode, (codeCounts.get(issueCode) || 0) + 1);
+    });
+
+    if (codeCounts.size === 0) {
+        return {
+            ...bucketView,
+            chips: [],
+        };
+    }
+
+    const normalizedCorrelations = normalizeScopedIssueFamilyCorrelations(correlations);
+    const codeBucketLookup = new Map();
+
+    if (normalizedCorrelations) {
+        const bucketCodesBySelection = {
+            scope_only: normalizedCorrelations.scopeOnlyIssueCodes,
+            outside_scope_only: normalizedCorrelations.outsideScopeOnlyIssueCodes,
+            shared: normalizedCorrelations.sharedIssueCodes,
+        };
+
+        SCOPED_BUCKET_ORDER.forEach((bucket) => {
+            (bucketCodesBySelection[bucket] || []).forEach((code) => {
+                if (!codeBucketLookup.has(code)) {
+                    codeBucketLookup.set(code, bucket);
+                }
+            });
+        });
+    }
+
+    const chips = Array.from(codeCounts.entries())
+        .map(([code, count]) => {
+            const bucket = codeBucketLookup.get(code) || null;
+            return {
+                code,
+                count,
+                bucket,
+                bucketLabel: bucket ? getScopedIssueBucketDisplayLabel(bucket) : '',
+            };
+        })
+        .sort((left, right) => {
+            const leftRankRaw = left.bucket ? SCOPED_BUCKET_ORDER.indexOf(left.bucket) : -1;
+            const rightRankRaw = right.bucket ? SCOPED_BUCKET_ORDER.indexOf(right.bucket) : -1;
+            const leftRank = leftRankRaw >= 0 ? leftRankRaw : Number.MAX_SAFE_INTEGER;
+            const rightRank = rightRankRaw >= 0 ? rightRankRaw : Number.MAX_SAFE_INTEGER;
+            if (leftRank !== rightRank) {
+                return leftRank - rightRank;
+            }
+            return left.code.localeCompare(right.code);
+        });
+
+    return {
+        ...bucketView,
+        chips,
+    };
+}
+
+function normalizeNonNegativeInt(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(0, Math.trunc(parsed));
+}
+
+export function buildScopedIssueFilterContextCopyText(options = {}) {
+    const scopeLabel = String(options.scopeLabel || '').trim();
+    if (!scopeLabel) return '';
+
+    const hasBucketMetadata = !!options.hasBucketMetadata;
+    const bucketSelection = hasBucketMetadata
+        ? normalizeScopedBucketFilterSelection(options.bucketSelection)
+        : 'all';
+    const bucketDescriptor = hasBucketMetadata
+        ? `${bucketSelection} (${getScopedIssueBucketDisplayLabel(bucketSelection)})`
+        : 'metadata_unavailable';
+
+    const issueCodeFocus = normalizeIssueCode(options.issueCodeFocus);
+    const visibleIssueCount = normalizeNonNegativeInt(options.visibleIssueCount);
+    const totalScopedIssueCount = normalizeNonNegativeInt(options.totalScopedIssueCount);
+
+    const parts = [
+        'Scoped preflight filter context',
+        `scope=${scopeLabel}`,
+        `bucket=${bucketDescriptor}`,
+        `issue_code=${issueCodeFocus || 'all'}`,
+    ];
+
+    if (visibleIssueCount !== null) {
+        parts.push(`visible_issues=${visibleIssueCount}`);
+    }
+    if (totalScopedIssueCount !== null) {
+        parts.push(`total_scoped_issues=${totalScopedIssueCount}`);
+    }
+
+    return parts.join('; ');
+}
+
+function normalizeIssueSeverity(value) {
+    const sev = String(value || '').trim().toLowerCase();
+    if (!sev) return 'info';
+    return sev;
+}
+
+function normalizeIssueTextFragment(value, fallback = '') {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text) return fallback;
+    return text.replace(/;/g, ',');
+}
+
+function normalizeIssueExcerptLimit(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return 12;
+    return Math.min(100, Math.max(1, Math.trunc(parsed)));
+}
+
+export function buildScopedIssueExcerptCopyText(options = {}) {
+    const contextText = buildScopedIssueFilterContextCopyText(options);
+    if (!contextText) return '';
+
+    const visibleIssues = Array.isArray(options.visibleIssues) ? options.visibleIssues : [];
+    const maxIssueLines = normalizeIssueExcerptLimit(options.maxIssueLines);
+    const excerptIssues = visibleIssues.slice(0, maxIssueLines);
+
+    const lines = [
+        'Scoped preflight issue excerpt',
+        contextText,
+    ];
+
+    if (excerptIssues.length === 0) {
+        lines.push('visible_issue_lines=none');
+        return lines.join('\n');
+    }
+
+    lines.push('visible_issue_lines:');
+
+    excerptIssues.forEach((issue, idx) => {
+        const severity = normalizeIssueSeverity(issue?.severity);
+        const code = normalizeIssueCode(issue?.code) || 'none';
+        const message = normalizeIssueTextFragment(issue?.message, 'Unknown preflight issue');
+        const hint = normalizeIssueTextFragment(issue?.hint, '');
+        const parts = [
+            `${idx + 1}.`,
+            `severity=${severity}`,
+            `code=${code}`,
+            `message=${message}`,
+        ];
+        if (hint) {
+            parts.push(`hint=${hint}`);
+        }
+        lines.push(parts.join('; '));
+    });
+
+    if (visibleIssues.length > excerptIssues.length) {
+        lines.push(`truncated_issue_lines=${visibleIssues.length - excerptIssues.length}`);
+    }
+
+    return lines.join('\n');
+}

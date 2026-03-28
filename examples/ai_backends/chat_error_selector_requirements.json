@@ -1,0 +1,101 @@
+{
+  "success": false,
+  "error": "AI backend selection failed: backend requirements could not be satisfied",
+  "backend_selection": {
+    "contract_version": "2026-03-16.local-tools",
+    "preferred_backend_id": "lm_studio",
+    "allow_fallback": false,
+    "requirements": {
+      "require_tools": true,
+      "require_json_mode": true,
+      "require_vision": true,
+      "require_streaming": true,
+      "min_context_tokens": null
+    },
+    "selection_error": "{'backend_id': 'lm_studio', 'missing_capabilities': ['tools', 'vision']}"
+  },
+  "backend_diagnostics": {
+    "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
+    "failure_stage": "selector_requirements",
+    "error_class": "selector_requirement_mismatch",
+    "error_code": "backend_selection_failed",
+    "backend_id": "lm_studio",
+    "message": "Backend selector requirements could not be satisfied by the preferred backend configuration.",
+    "effective_capability_overrides": {
+      "supports_tools": false,
+      "supports_json_mode": true,
+      "supports_vision": false,
+      "supports_streaming": true
+    },
+    "selector_requirements": {
+      "require_tools": true,
+      "require_json_mode": true,
+      "require_vision": true,
+      "require_streaming": true,
+      "min_context_tokens": null
+    },
+    "readiness": {
+      "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
+      "backend_id": "lm_studio",
+      "status": "healthy",
+      "readiness_code": "ok",
+      "ready": true,
+      "effective_capability_overrides": {
+        "supports_tools": false,
+        "supports_json_mode": true,
+        "supports_vision": false,
+        "supports_streaming": true
+      }
+    },
+    "contradictions": [
+      {
+        "code": "selector_requirement_capability_mismatch",
+        "contradiction_class": "selector_contract_mismatch",
+        "summary": "Selector-required capabilities are disabled in effective backend capability overrides.",
+        "details": {
+          "required_capability_flags": [
+            "supports_tools",
+            "supports_json_mode",
+            "supports_vision",
+            "supports_streaming"
+          ],
+          "unsatisfied_capability_flags": [
+            "supports_tools",
+            "supports_vision"
+          ],
+          "effective_capability_overrides": {
+            "supports_tools": false,
+            "supports_json_mode": true,
+            "supports_vision": false,
+            "supports_streaming": true
+          }
+        }
+      }
+    ],
+    "remediation": {
+      "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
+      "failure_stage": "selector_requirements",
+      "error_code": "backend_selection_failed",
+      "backend_id": "lm_studio",
+      "readiness_status": "healthy",
+      "summary": "Selector requirements conflict with effective backend capability overrides.",
+      "action_codes": [
+        "align_selector_requirements_with_effective_capabilities",
+        "update_runtime_capability_overrides_for_selected_backend",
+        "allow_fallback_or_choose_capability_compatible_backend"
+      ],
+      "actions": [
+        "Align selector requirements (tools/json/vision/streaming) with the backend's effective capability flags.",
+        "Update runtime capability overrides if the backend actually supports the blocked capability.",
+        "Allow fallback or switch to a backend that satisfies the requested capabilities."
+      ],
+      "primary_contradiction_class": "selector_contract_mismatch",
+      "contradiction_classes": [
+        "selector_contract_mismatch"
+      ],
+      "contradiction_codes": [
+        "selector_requirement_capability_mismatch"
+      ]
+    }
+  }
+}

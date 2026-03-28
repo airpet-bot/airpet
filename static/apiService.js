@@ -19,6 +19,8 @@ async function handleResponse(response) {
         // --- Custom error object ---
         const error = new Error(errorData.error || `Request failed with status ${response.status}`);
         error.type = errorData.error_type || 'generic'; // Add the error type if it exists
+        error.status = response.status;
+        error.data = errorData;
         throw error;
     }
     return response.json(); // Assumes all successful responses are JSON
@@ -245,6 +247,230 @@ export async function updateDefine(id, rawExpression, unit, category) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, value: rawExpression, unit, category }) // Backend expects 'value' key
+    });
+    return handleResponse(response);
+}
+
+// --- Parameter Registry API (M3) ---
+export async function getParameterRegistry() {
+    const response = await fetch(`${API_BASE_URL}/api/parameter_registry/list`);
+    return handleResponse(response);
+}
+
+export async function upsertParameterRegistry(payload) {
+    const response = await fetch(`${API_BASE_URL}/api/parameter_registry/upsert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    return handleResponse(response);
+}
+
+export async function deleteParameterRegistry(name) {
+    const response = await fetch(`${API_BASE_URL}/api/parameter_registry/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+    });
+    return handleResponse(response);
+}
+
+// --- Param Study API (M3 step 3) ---
+export async function getParamStudies() {
+    const response = await fetch(`${API_BASE_URL}/api/param_study/list`);
+    return handleResponse(response);
+}
+
+export async function upsertParamStudy(payload) {
+    const response = await fetch(`${API_BASE_URL}/api/param_study/upsert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    return handleResponse(response);
+}
+
+export async function deleteParamStudy(name) {
+    const response = await fetch(`${API_BASE_URL}/api/param_study/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+    });
+    return handleResponse(response);
+}
+
+export async function runParamStudy(name, maxRuns = null) {
+    const response = await fetch(`${API_BASE_URL}/api/param_study/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, max_runs: maxRuns }),
+    });
+    return handleResponse(response);
+}
+
+export async function getSimulationMetrics() {
+    const response = await fetch(`${API_BASE_URL}/api/param_study/simulation_metrics`);
+    return handleResponse(response);
+}
+
+export async function listParamOptimizerRuns(studyName = null, limit = 50) {
+    const params = new URLSearchParams();
+    if (studyName) params.set('study_name', studyName);
+    if (limit != null) params.set('limit', String(limit));
+    const qs = params.toString();
+    const response = await fetch(`${API_BASE_URL}/api/param_optimizer/list${qs ? `?${qs}` : ''}`);
+    return handleResponse(response);
+}
+
+export async function runParamOptimizer(payload) {
+    const response = await fetch(`${API_BASE_URL}/api/param_optimizer/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    return handleResponse(response);
+}
+
+export async function getActiveParamOptimizerRunStatus() {
+    const response = await fetch(`${API_BASE_URL}/api/param_optimizer/active_run_status`);
+    return handleResponse(response);
+}
+
+export async function stopActiveParamOptimizerRun(reason = 'user_requested_stop') {
+    const response = await fetch(`${API_BASE_URL}/api/param_optimizer/stop_active_run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+    });
+    return handleResponse(response);
+}
+
+export async function replayParamOptimizerBest(runId, options = {}) {
+    const opts = (options && typeof options === 'object') ? options : { applyToProject: !!options };
+    const response = await fetch(`${API_BASE_URL}/api/param_optimizer/replay_best`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            run_id: runId,
+            apply_to_project: opts.applyToProject !== false,
+            allow_apply: !!opts.allowApply,
+            dry_run: !!opts.dryRun,
+            verification_token: opts.verificationToken,
+        }),
+    });
+    return handleResponse(response);
+}
+
+export async function verifyParamOptimizerBest(runId, options = {}) {
+    const opts = (options && typeof options === 'object') ? options : { repeats: options };
+    const repeats = Number.isFinite(Number(opts.repeats)) ? Number(opts.repeats) : 3;
+    const payload = {
+        run_id: runId,
+        repeats,
+    };
+    if (opts.minRepeats != null) payload.min_repeats = Number(opts.minRepeats);
+    if (opts.minSuccessRate != null) payload.min_success_rate = Number(opts.minSuccessRate);
+    if (opts.maxStd != null && opts.maxStd !== '') payload.max_std = Number(opts.maxStd);
+
+    const response = await fetch(`${API_BASE_URL}/api/param_optimizer/verify_best`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    return handleResponse(response);
+}
+
+export async function getParamOptimizerApplyAuditHistory(limit = 20) {
+    const qs = new URLSearchParams();
+    qs.set('limit', String(limit));
+    const response = await fetch(`${API_BASE_URL}/api/param_optimizer/apply_audit_history?${qs.toString()}`);
+    return handleResponse(response);
+}
+
+export async function rollbackLastParamOptimizerApply(auditId = null) {
+    const payload = {};
+    if (auditId) payload.audit_id = auditId;
+    const response = await fetch(`${API_BASE_URL}/api/param_optimizer/rollback_last_apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    return handleResponse(response);
+}
+
+export async function getParamOptimizerApplyAuditDiagnostics() {
+    const response = await fetch(`${API_BASE_URL}/api/param_optimizer/apply_audit_diagnostics`);
+    return handleResponse(response);
+}
+
+export async function extractObjectives(versionId, jobId, objectives) {
+    const response = await fetch(`${API_BASE_URL}/api/objectives/extract/${versionId}/${jobId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ objectives }),
+    });
+    return handleResponse(response);
+}
+
+// --- Objective Builder API (M6) ---
+export async function getObjectiveBuilderSchema() {
+    const response = await fetch(`${API_BASE_URL}/api/objective_builder/schema`);
+    return handleResponse(response);
+}
+
+export async function getObjectiveBuilderExample(template = 'weighted_tradeoff') {
+    const qs = new URLSearchParams();
+    if (template) qs.set('template', template);
+    const response = await fetch(`${API_BASE_URL}/api/objective_builder/example${qs.toString() ? `?${qs.toString()}` : ''}`);
+    return handleResponse(response);
+}
+
+export async function validateObjectiveBuilder(payload) {
+    const response = await fetch(`${API_BASE_URL}/api/objective_builder/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+    });
+    return handleResponse(response);
+}
+
+export async function buildObjectiveBuilder(payload) {
+    const response = await fetch(`${API_BASE_URL}/api/objective_builder/build`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+    });
+    return handleResponse(response);
+}
+
+export async function upsertObjectiveBuilderStudy(payload) {
+    const response = await fetch(`${API_BASE_URL}/api/objective_builder/upsert_study`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+    });
+    return handleResponse(response);
+}
+
+export async function launchObjectiveBuilder(payload) {
+    const response = await fetch(`${API_BASE_URL}/api/objective_builder/launch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+    });
+    return handleResponse(response);
+}
+
+export async function getObjectiveBuilderLaunchStatus(runControlId) {
+    const response = await fetch(`${API_BASE_URL}/api/objective_builder/launch_status/${encodeURIComponent(runControlId)}`);
+    return handleResponse(response);
+}
+
+export async function applyParamStudyCandidate(studyName, values) {
+    const response = await fetch(`${API_BASE_URL}/api/param_study/apply_candidate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ study_name: studyName, values: values || {} }),
     });
     return handleResponse(response);
 }
@@ -515,6 +741,59 @@ export async function checkAiServiceStatus() {
 }
 
 /**
+ * Fetches local backend readiness diagnostics for llama.cpp and LM Studio.
+ * @param {Array<string>|null} backends Optional backend ids to scope diagnostics.
+ * @returns {Promise<Object>}
+ */
+export async function getAiBackendDiagnostics(backends = null) {
+    let response;
+    if (Array.isArray(backends) && backends.length > 0) {
+        response = await fetch(`${API_BASE_URL}/api/ai/backends/diagnostics`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ backends }),
+        });
+    } else {
+        response = await fetch(`${API_BASE_URL}/api/ai/backends/diagnostics`);
+    }
+    return handleResponse(response);
+}
+
+/**
+ * Loads the session-scoped local backend runtime profile.
+ * @returns {Promise<Object>}
+ */
+export async function getAiBackendRuntimeConfig() {
+    const response = await fetch(`${API_BASE_URL}/api/ai/backends/runtime_config`);
+    return handleResponse(response);
+}
+
+/**
+ * Persists the session-scoped local backend runtime profile.
+ * @param {Object} runtimeConfig
+ * @returns {Promise<Object>}
+ */
+export async function saveAiBackendRuntimeConfig(runtimeConfig) {
+    const response = await fetch(`${API_BASE_URL}/api/ai/backends/runtime_config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runtime_config: runtimeConfig }),
+    });
+    return handleResponse(response);
+}
+
+/**
+ * Clears the session-scoped local backend runtime profile.
+ * @returns {Promise<Object>}
+ */
+export async function clearAiBackendRuntimeConfig() {
+    const response = await fetch(`${API_BASE_URL}/api/ai/backends/runtime_config`, {
+        method: 'DELETE',
+    });
+    return handleResponse(response);
+}
+
+/**
  * Sends a message to the stateful AI chat assistant.
  * @param {string} message - The user's text message.
  * @param {string} model - The model ID to use.
@@ -522,12 +801,218 @@ export async function checkAiServiceStatus() {
  * @returns {Promise<Object>}
  */
 export async function sendAiChatMessage(message, model, turnLimit = 10) {
+    const payload = { message, model, turn_limit: turnLimit };
+
+    const localPrefixes = {
+        'llama_cpp::': 'llama_cpp',
+        'lm_studio::': 'lm_studio'
+    };
+
+    for (const [prefix, backendId] of Object.entries(localPrefixes)) {
+        if (typeof model === 'string' && model.startsWith(prefix)) {
+            const localModelName = model.slice(prefix.length).trim();
+            if (!localModelName) break;
+
+            payload.backend_selector = {
+                preferred_backend_id: backendId,
+                allow_fallback: false,
+                runtime_config: {
+                    backends: {
+                        [backendId]: {
+                            enabled: true,
+                            model: localModelName
+                        }
+                    }
+                },
+                requirements: {
+                    // Local adapters are currently text-first (no tool calling yet).
+                    require_tools: false,
+                    require_json_mode: true,
+                    require_streaming: false
+                }
+            };
+            break;
+        }
+    }
+
     const response = await fetch(`${API_BASE_URL}/api/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, model, turn_limit: turnLimit })
+        body: JSON.stringify(payload)
     });
     return handleResponse(response);
+}
+
+/**
+ * Streams AI chat progress via Server-Sent Events.
+ * @param {string} message The user's message.
+ * @param {string} model The model to use.
+ * @param {number} turnLimit Maximum turns.
+ * @param {function} onProgress Callback for progress events.
+ * @returns {Promise<Object>} Final result.
+ */
+export async function streamAiChatMessage(message, model, turnLimit = 10, onProgress) {
+    const payload = { message, model, turn_limit: turnLimit };
+
+    const localPrefixes = {
+        'llama_cpp::': 'llama_cpp',
+        'lm_studio::': 'lm_studio'
+    };
+
+    for (const [prefix, backendId] of Object.entries(localPrefixes)) {
+        if (typeof model === 'string' && model.startsWith(prefix)) {
+            const localModelName = model.slice(prefix.length).trim();
+            if (!localModelName) break;
+
+            payload.backend_selector = {
+                preferred_backend_id: backendId,
+                allow_fallback: false,
+                runtime_config: {
+                    backends: {
+                        [backendId]: {
+                            enabled: true,
+                            model: localModelName
+                        }
+                    }
+                },
+                requirements: {
+                    require_tools: false,
+                    require_json_mode: true,
+                    require_streaming: false
+                }
+            };
+            break;
+        }
+    }
+
+    let abortController = null;
+    let recentTools = [];
+
+    const cleanup = () => {
+        if (abortController) {
+            abortController.abort();
+        }
+    };
+
+    const handleVisibilityChange = () => {
+        if (document.hidden && abortController) {
+            console.log('Stream paused: tab hidden');
+            onProgress?.({ type: 'paused', reason: 'tab_hidden' });
+        } else if (!document.hidden) {
+            console.log('Stream resumed: tab visible');
+            onProgress?.({ type: 'resumed', recentTools: recentTools });
+        }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    try {
+        abortController = new AbortController();
+        
+        const response = await fetch(`${API_BASE_URL}/api/ai/chat/stream`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: abortController.signal
+        });
+
+        if (!response.ok) {
+            await handleResponse(response);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalResult = null;
+        let lastToolUpdate = 0;
+
+        while (true) {
+            if (document.hidden) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                continue;
+            }
+
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            let newlineIndex;
+            while ((newlineIndex = buffer.indexOf('\n\n')) >= 0) {
+                const line = buffer.slice(0, newlineIndex);
+                buffer = buffer.slice(newlineIndex + 2);
+
+                if (!line.startsWith('data: ')) {
+                    continue;
+                }
+
+                let data;
+                try {
+                    data = JSON.parse(line.slice(6));
+                } catch (parseErr) {
+                    console.warn('Failed to parse SSE data:', line, parseErr);
+                    continue;
+                }
+
+                if (data.type === 'turn_start') {
+                    onProgress?.({ type: 'turn_start', turn: data.turn, turnLimit: data.turn_limit });
+                } else if (data.type === 'tool_calls') {
+                    if (data.tools && data.tools.length > 0) {
+                        recentTools = [...recentTools, ...data.tools].slice(-3);
+                    }
+                    onProgress?.({
+                        type: 'tool_calls',
+                        turn: data.turn,
+                        tools: data.tools,
+                        recentTools: recentTools
+                    });
+                    lastToolUpdate = Date.now();
+                } else if (data.type === 'complete') {
+                    finalResult = {
+                        success: true,
+                        message: data.message,
+                        extra_payload: data.extra_payload,
+                        job_id: data.job_id,
+                        version_id: data.version_id,
+                        project_state: data.project_state,
+                        scene_update: data.scene_update,
+                        response_type: data.response_type,
+                        project_name: data.project_name,
+                        history_status: data.history_status
+                    };
+                    onProgress?.({ type: 'complete' });
+                } else if (data.type === 'error') {
+                    const streamError = new Error(
+                        data.message || data.error || 'AI stream request failed.'
+                    );
+                    streamError.type = data.error_type || 'stream_backend_error';
+                    streamError.status = Number.isFinite(data.status) ? data.status : 500;
+                    streamError.data = {
+                        success: false,
+                        error: data.error || data.message || 'AI stream request failed.',
+                        error_type: streamError.type,
+                        backend_diagnostics: data.backend_diagnostics,
+                        backend_selection: data.backend_selection,
+                    };
+                    throw streamError;
+                }
+            }
+        }
+
+        if (!finalResult) {
+            const toolInfo = recentTools.length > 0 ? ` (Last tools: ${recentTools.join(', ')})` : '';
+            throw new Error(`Stream ended without completion${toolInfo}`);
+        }
+
+        return finalResult;
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            throw new Error('Stream was cancelled');
+        }
+        throw err;
+    } finally {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+        cleanup();
+    }
 }
 
 /**
@@ -883,6 +1368,39 @@ export async function setActiveSource(sourceId) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source_id: sourceId })
+    });
+    return handleResponse(response);
+}
+
+/**
+ * Runs backend geometry preflight checks before simulation.
+ * @returns {Promise<Object>} A promise resolving to {success, preflight_report}.
+ */
+export async function runPreflightChecks() {
+    const response = await fetch(`${API_BASE_URL}/api/preflight/check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+    });
+    return handleResponse(response);
+}
+
+/**
+ * Runs backend scoped preflight checks for a selected LV/assembly.
+ * @param {string} scopeType - Canonical scope type ('logical_volume'|'assembly').
+ * @param {string} scopeName - Scope target name.
+ * @returns {Promise<Object>} A promise resolving to full+scoped preflight reports and summary deltas.
+ */
+export async function runScopedPreflightChecks(scopeType, scopeName) {
+    const response = await fetch(`${API_BASE_URL}/api/preflight/check_scope`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            scope: {
+                type: scopeType,
+                name: scopeName,
+            },
+        }),
     });
     return handleResponse(response);
 }

@@ -4,6 +4,29 @@ import uuid # For unique IDs
 import math
 import numpy as np
 
+# --- Periodic Table Lookup (element name -> Z) ---
+PERIODIC_TABLE = {
+    "hydrogen": 1, "helium": 2, "lithium": 3, "beryllium": 4, "boron": 5,
+    "carbon": 6, "nitrogen": 7, "oxygen": 8, "fluorine": 9, "neon": 10,
+    "sodium": 11, "magnesium": 12, "aluminum": 13, "silicon": 14, "phosphorus": 15,
+    "sulfur": 16, "chlorine": 17, "argon": 18, "potassium": 19, "calcium": 20,
+    "scandium": 21, "titanium": 22, "vanadium": 23, "chromium": 24, "manganese": 25,
+    "iron": 26, "cobalt": 27, "nickel": 28, "copper": 29, "zinc": 30,
+    "gallium": 31, "germanium": 32, "arsenic": 33, "selenium": 34, "bromine": 35,
+    "krypton": 36, "rubidium": 37, "strontium": 38, "yttrium": 39, "zirconium": 40,
+    "niobium": 41, "molybdenum": 42, "technetium": 43, "ruthenium": 44, "rhodium": 45,
+    "palladium": 46, "silver": 47, "cadmium": 48, "indium": 49, "tin": 50,
+    "antimony": 51, "tellurium": 52, "iodine": 53, "xenon": 54, "cesium": 55,
+    "barium": 56, "lanthanum": 57, "cerium": 58, "praseodymium": 59, "neodymium": 60,
+    "promethium": 61, "samarium": 62, "europium": 63, "gadolinium": 64, "terbium": 65,
+    "dysprosium": 66, "holmium": 67, "erbium": 68, "thulium": 69, "ytterbium": 70,
+    "lutetium": 71, "hafnium": 72, "tantalum": 73, "tungsten": 74, "rhenium": 75,
+    "osmium": 76, "iridium": 77, "platinum": 78, "gold": 79, "mercury": 80,
+    "thallium": 81, "lead": 82, "bismuth": 83, "polonium": 84, "astatine": 85,
+    "radon": 86, "francium": 87, "radium": 88, "actinium": 89, "thorium": 90,
+    "protactinium": 91, "uranium": 92, "neptunium": 93, "plutonium": 94,
+}
+
 # --- Helper for Units (can be expanded) ---
 # Geant4 internal units are mm for length, rad for angle
 UNIT_FACTORS = {
@@ -733,6 +756,7 @@ class ParticleSource:
             "type": self.type,
             "gps_commands": self.gps_commands,
             "position": self.position,
+            "rotation": self.rotation,
             "activity": self.activity,
             "confine_to_pv": self.confine_to_pv,
             "volume_link_id": self.volume_link_id,
@@ -782,6 +806,47 @@ class GeometryState:
         self.sources = {}
         # Changed from single ID to list of IDs for multiple active sources
         self.active_source_ids = [] 
+
+        # Parameter registry for M3 studies/optimization.
+        # Format:
+        # {
+        #   'param_name': {
+        #       'name': 'param_name',
+        #       'target_type': 'define|solid|source|sim_option',
+        #       'target_ref': {...},
+        #       'bounds': {'min': x, 'max': y},
+        #       'default': x,
+        #       'units': 'mm',
+        #       'enabled': True,
+        #       'constraint_group': None,
+        #   }
+        # }
+        self.parameter_registry = {}
+
+        # Parametric study definitions (M3).
+        # {
+        #   'study_name': {
+        #       'name': 'study_name',
+        #       'mode': 'grid|random',
+        #       'parameters': ['p1', 'p2'],
+        #       'grid': {'steps': 3, 'per_parameter_steps': {'p1': 5}},
+        #       'random': {'samples': 20, 'seed': 42},
+        #   }
+        # }
+        self.param_studies = {}
+
+        # Optimizer run history/provenance (M3 classical optimizer).
+        # {
+        #   '<run_id>': {
+        #       'run_id': ..., 'study_name': ..., 'method': ..., 'seed': ...,
+        #       'budget': ..., 'objective': ..., 'best_run': {...}, 'candidates': [...]
+        #   }
+        # }
+        self.optimizer_runs = {}
+
+        # Stable project scope identifier used by policy/audit systems to
+        # associate records with this project instance across save/load cycles.
+        self.project_scope_id = str(uuid.uuid4())
 
         # --- Dictionary to hold UI grouping information ---
         # Format: { 'solids': [{'name': 'MyCrystals', 'members': ['solid1_name', 'solid2_name']}], ... }
@@ -835,6 +900,10 @@ class GeometryState:
             "border_surfaces": {k: v.to_dict() for k, v in self.border_surfaces.items()},
             "sources": {k: v.to_dict() for k, v in self.sources.items()},
             "active_source_ids": self.active_source_ids,
+            "parameter_registry": self.parameter_registry,
+            "param_studies": self.param_studies,
+            "optimizer_runs": self.optimizer_runs,
+            "project_scope_id": self.project_scope_id,
             "ui_groups": self.ui_groups
         }
 
@@ -872,6 +941,30 @@ class GeometryState:
             instance.active_source_ids = [legacy_id]
         else:
             instance.active_source_ids = []
+
+        registry = data.get('parameter_registry', {})
+        if isinstance(registry, dict):
+            instance.parameter_registry = registry
+        else:
+            instance.parameter_registry = {}
+
+        param_studies = data.get('param_studies', {})
+        if isinstance(param_studies, dict):
+            instance.param_studies = param_studies
+        else:
+            instance.param_studies = {}
+
+        optimizer_runs = data.get('optimizer_runs', {})
+        if isinstance(optimizer_runs, dict):
+            instance.optimizer_runs = optimizer_runs
+        else:
+            instance.optimizer_runs = {}
+
+        project_scope_id = data.get('project_scope_id')
+        if isinstance(project_scope_id, str) and project_scope_id.strip():
+            instance.project_scope_id = project_scope_id.strip()
+        else:
+            instance.project_scope_id = str(uuid.uuid4())
 
         instance.ui_groups = data.get('ui_groups', instance.ui_groups)
 

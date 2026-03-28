@@ -1,0 +1,97 @@
+{
+  "schema_version": "2026-03-23.scoped-selector-validation-errors.v1",
+  "route": "POST /api/preflight/check_scope",
+  "ai_wrapper": "run_preflight_scope",
+  "contract": {
+    "status_code": 400,
+    "response_fields": [
+      "success",
+      "error"
+    ],
+    "notes": [
+      "Route and AI wrapper responses are payload-identical for scoped selector validation failures.",
+      "Failure envelopes are metadata-clean: scoped success-only fields are excluded."
+    ],
+    "excluded_success_only_fields": [
+      "scope",
+      "preflight_report",
+      "scoped_preflight_report",
+      "summary_delta",
+      "issue_family_correlations",
+      "preflight_summary"
+    ]
+  },
+  "cases": [
+    {
+      "name": "canonical_null_type_does_not_fall_back_to_scope_type_alias",
+      "route_payload": {
+        "scope": {
+          "type": null,
+          "scope_type": "logical_volume",
+          "name": "box_LV"
+        }
+      },
+      "ai_args": {
+        "scope": {
+          "type": null,
+          "scope_type": "logical_volume",
+          "name": "box_LV"
+        }
+      },
+      "route_response": {
+        "success": false,
+        "error": "Scope type and name are required for scoped preflight."
+      },
+      "ai_response": {
+        "success": false,
+        "error": "Scope type and name are required for scoped preflight."
+      }
+    },
+    {
+      "name": "top_level_scope_type_alias_precedence_blocks_scopeType_fallback_when_malformed",
+      "route_payload": {
+        "scope_type": "volume_group",
+        "scopeType": "logical_volume",
+        "scope_name": "box_LV"
+      },
+      "ai_args": {
+        "scope_type": "volume_group",
+        "scopeType": "logical_volume",
+        "scope_name": "box_LV"
+      },
+      "route_response": {
+        "success": false,
+        "error": "Unsupported scope type 'volume_group'."
+      },
+      "ai_response": {
+        "success": false,
+        "error": "Unsupported scope type 'volume_group'."
+      }
+    },
+    {
+      "name": "malformed_scope_name_alias_prevents_later_scopeName_fallback",
+      "route_payload": {
+        "scope": {
+          "type": "logical_volume",
+          "scope_name": "   ",
+          "scopeName": "box_LV"
+        }
+      },
+      "ai_args": {
+        "scope": {
+          "type": "logical_volume",
+          "scope_name": "   ",
+          "scopeName": "box_LV"
+        }
+      },
+      "route_response": {
+        "success": false,
+        "error": "Scope type and name are required for scoped preflight."
+      },
+      "ai_response": {
+        "success": false,
+        "error": "Scope type and name are required for scoped preflight."
+      }
+    }
+  ]
+}

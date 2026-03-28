@@ -58,25 +58,25 @@ PRIMITIVE_SOLID_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
         }
     },
     "tube": {
-        "required": ["rmin", "rmax", "z", "startphi", "deltaphi"],
+        "required": ["rmin", "rmax", "z"],
         "properties": {
             "rmin": _expr_param("Inner radius (mm)"),
             "rmax": _expr_param("Outer radius (mm)"),
             "z": _expr_param("Half-length in Z (mm)"),
-            "startphi": _expr_param("Start angle (e.g., 0*deg)"),
-            "deltaphi": _expr_param("Span angle (e.g., 360*deg)")
+            "startphi": _expr_param("Start angle (e.g., 0*deg, default: 0)"),
+            "deltaphi": _expr_param("Span angle (e.g., 360*deg, default: 360)")
         }
     },
     "cone": {
-        "required": ["rmin1", "rmax1", "rmin2", "rmax2", "z", "startphi", "deltaphi"],
+        "required": ["rmin1", "rmax1", "rmin2", "rmax2", "z"],
         "properties": {
             "rmin1": _expr_param("Inner radius at -Z side (mm)"),
             "rmax1": _expr_param("Outer radius at -Z side (mm)"),
             "rmin2": _expr_param("Inner radius at +Z side (mm)"),
             "rmax2": _expr_param("Outer radius at +Z side (mm)"),
             "z": _expr_param("Half-length in Z (mm)"),
-            "startphi": _expr_param("Start angle (e.g., 0*deg)"),
-            "deltaphi": _expr_param("Span angle (e.g., 360*deg)")
+            "startphi": _expr_param("Start angle (e.g., 0*deg, default: 0)"),
+            "deltaphi": _expr_param("Span angle (e.g., 360*deg, default: 360)")
         }
     },
     "sphere": {
@@ -118,19 +118,19 @@ PRIMITIVE_SOLID_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
         }
     },
     "trap": {
-        "required": ["z", "theta", "phi", "y1", "x1", "x2", "alpha1", "y2", "x3", "x4", "alpha2"],
+        "required": ["z", "y1", "x1", "x2", "y2", "x3", "x4"],
         "properties": {
             "z": _expr_param("Full Z length (mm)"),
-            "theta": _expr_param("Theta angle"),
-            "phi": _expr_param("Phi angle"),
+            "theta": _expr_param("Theta angle (default: 0*deg)"),
+            "phi": _expr_param("Phi angle (default: 0*deg)"),
             "y1": _expr_param("Y length at -Z side (mm)"),
             "x1": _expr_param("X1 at -Z side (mm)"),
             "x2": _expr_param("X2 at -Z side (mm)"),
-            "alpha1": _expr_param("Alpha1 angle"),
+            "alpha1": _expr_param("Alpha1 angle (default: 0*deg)"),
             "y2": _expr_param("Y length at +Z side (mm)"),
             "x3": _expr_param("X3 at +Z side (mm)"),
             "x4": _expr_param("X4 at +Z side (mm)"),
-            "alpha2": _expr_param("Alpha2 angle")
+            "alpha2": _expr_param("Alpha2 angle (default: 0*deg)")
         }
     },
     "hype": {
@@ -356,7 +356,7 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "manage_material",
-        "description": "Create or update a material or element.",
+        "description": "Create or update a material or element. For compound materials, use components array with element names as ref values (e.g., 'nickel', 'oxygen'). Elements will be auto-created if they don't exist.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -364,14 +364,16 @@ AI_GEOMETRY_TOOLS = [
                 "density": {"type": "string", "description": "Density expression in g/cm3"},
                 "Z": {"type": "string", "description": "Atomic number expression"},
                 "A": {"type": "string", "description": "Atomic mass expression"},
+                "state": {"type": "string", "description": "Material state: 'solid' (default), 'liquid', or 'gas'."},
                 "components": {
                     "type": "array",
+                    "description": "Array of component elements for compound materials. Each component has 'ref' (element name like 'nickel' or 'oxygen'), 'fraction' (weight fraction as string), and optionally 'natoms'.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "ref": {"type": "string"},
-                            "fraction": {"type": "string"},
-                            "natoms": {"type": "string"}
+                            "ref": {"type": "string", "description": "Element name (lowercase, e.g., 'nickel', 'oxygen', 'carbon')"},
+                            "fraction": {"type": "string", "description": "Weight fraction as string (e.g., '0.787' for 78.7%)"},
+                            "natoms": {"type": "string", "description": "Number of atoms (optional)"}
                         }
                     }
                 }
@@ -447,7 +449,8 @@ AI_GEOMETRY_TOOLS = [
                 "name": {"type": "string", "description": "Optional name for the placement."},
                 "position": {"type": "object"},
                 "rotation": {"type": "object"},
-                "scale": {"type": "object"}
+                "scale": {"type": "object"},
+                "copy_number_expr": {"type": "string", "description": "Expression or define name for copy number (e.g., '10' or 'num_copies')."}
             },
             "required": ["parent_lv_name", "placed_lv_ref"]
         }
@@ -509,6 +512,111 @@ AI_GEOMETRY_TOOLS = [
         }
     },
     {
+        "name": "create_parameter_registry",
+        "description": "Register a project parameter for optimization by linking it to a component property (e.g., define, solid parameter, source field).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "param_name": {"type": "string", "description": "Unique name for this parameter in the registry."},
+                "target_type": {"type": "string", "enum": ["define", "solid", "source", "sim_option"], "description": "Type of component to modify."},
+                "target_ref": {"type": "object", "description": "Reference to the target component and property."},
+                "bounds": {"type": "object", "description": "Min/max bounds for optimization."},
+                "default": {"type": "number", "description": "Default value for the parameter."}
+            },
+            "required": ["param_name", "target_type", "target_ref", "bounds"]
+        }
+    },
+    {
+        "name": "setup_param_study",
+        "description": "Create a parameter study configuration for optimization. Define which parameters to vary and what objectives to optimize.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "study_name": {"type": "string", "description": "Unique name for this parameter study."},
+                "mode": {"type": "string", "enum": ["grid", "random"], "description": "Study mode: 'grid' for systematic sweeps, 'random' for random sampling."},
+                "parameters": {"type": "array", "items": {"type": "string"}, "description": "List of parameter names from the registry to include."},
+                "objectives": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Objective name (e.g., 'efficiency', 'timing_resolution')."},
+                            "direction": {"type": "string", "enum": ["maximize", "minimize"]},
+                            "metric": {"type": "string", "description": "Metric to compute (for grid/random mode studies)."},
+                            "weight": {"type": "number", "description": "Weight for multi-objective optimization."}
+                        }
+                    },
+                    "description": "Objectives to optimize. At least one required for optimizer runs."
+                },
+                "grid": {"type": "object", "description": "Grid-specific settings (steps, per_parameter_steps)."},
+                "random": {"type": "object", "description": "Random-specific settings (samples, seed)."}
+            },
+            "required": ["study_name", "mode", "parameters", "objectives"]
+        }
+    },
+    {
+        "name": "run_optimization",
+        "description": "Run an optimizer on an existing parameter study. Supports regular optimization and optional simulation-in-loop optimization.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "study_name": {"type": "string", "description": "Name of the parameter study to optimize."},
+                "method": {"type": "string", "enum": ["random_search", "cmaes", "surrogate_gp"], "description": "Optimization algorithm to use."},
+                "budget": {"type": "integer", "description": "Maximum number of candidate evaluations (policy-capped)."},
+                "seed": {"type": "integer", "description": "Random seed for reproducibility."},
+                "objective_name": {"type": "string", "description": "Which objective to optimize (if study has multiple)."},
+                "direction": {"type": "string", "enum": ["maximize", "minimize"], "description": "Optimization direction."},
+                "cmaes_config": {"type": "object", "description": "CMA-ES specific configuration (population_size, sigma, etc.)."},
+                "surrogate_config": {"type": "object", "description": "Surrogate model config (warmup_runs, candidate_pool_size, exploration_beta, gp_noise)."},
+                "simulation_in_loop": {"type": "boolean", "description": "If true, run simulation-in-loop optimization."},
+                "sim_objectives": {"type": "array", "items": {"type": "object"}, "description": "Required when simulation_in_loop=true. Objective extraction specs for simulation output."},
+                "sim_params": {"type": "object", "description": "Simulation runtime params (events, threads)."},
+                "sim_events": {"type": "integer", "description": "Legacy alias for sim_params.events."},
+                "sim_threads": {"type": "integer", "description": "Legacy alias for sim_params.threads."},
+                "max_wall_time_seconds": {"type": "integer", "description": "Optional run wall-time budget."},
+                "context": {"type": "object", "description": "Optional static context exposed to simulation objective extraction formulas."},
+                "keep_candidate_runs": {"type": "boolean", "description": "If true, persist per-candidate simulation output folders."},
+                "candidate_runs_root": {"type": "string", "description": "Directory where per-candidate run artifacts are stored when keep_candidate_runs=true."}
+            },
+            "required": ["study_name", "method", "budget"]
+        }
+    },
+    {
+        "name": "apply_best_result",
+        "description": "Apply the best parameters from an optimization run to the current geometry.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "ID of the optimization run."},
+                "apply_to_project": {"type": "boolean", "description": "If true, permanently apply to project. If false, just preview."}
+            },
+            "required": ["run_id"]
+        }
+    },
+    {
+        "name": "list_optimizer_runs",
+        "description": "List past optimization runs, optionally filtered by study name.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "study_name": {"type": "string", "description": "Filter runs by study name."},
+                "limit": {"type": "integer", "description": "Maximum number of runs to return."}
+            }
+        }
+    },
+    {
+        "name": "verify_best_candidate",
+        "description": "Verify an optimization result by re-running the best candidate multiple times to check consistency.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "ID of the optimization run."},
+                "repeats": {"type": "integer", "description": "Number of verification runs (max 100)."}
+            },
+            "required": ["run_id"]
+        }
+    },
+    {
         "name": "set_volume_appearance",
         "description": "Set the visual color and opacity of a logical volume.",
         "parameters": {
@@ -533,6 +641,340 @@ AI_GEOMETRY_TOOLS = [
         }
     },
     {
+        "name": "run_preflight_checks",
+        "description": "Run deterministic geometry preflight validation and return issue diagnostics plus summary metadata.",
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "run_preflight_scope",
+        "description": "Run deterministic preflight checks, then return both full-geometry and scoped-subtree diagnostics plus summary deltas.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "object",
+                    "description": "Scope selector object.",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "description": "Scope type (logical_volume or assembly; aliases like lv/asm accepted)."
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Logical volume or assembly name to scope preflight to."
+                        }
+                    }
+                }
+            },
+            "required": ["scope"]
+        }
+    },
+    {
+        "name": "compare_preflight_summaries",
+        "description": "Compare two preflight summaries and highlight added/resolved issue codes with deterministic deltas.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "baseline_summary": {
+                    "type": "object",
+                    "description": "Reference preflight summary (usually from an earlier version/run)."
+                },
+                "candidate_summary": {
+                    "type": "object",
+                    "description": "New preflight summary to compare against baseline."
+                }
+            },
+            "required": ["baseline_summary", "candidate_summary"]
+        }
+    },
+    {
+        "name": "compare_preflight_versions",
+        "description": "Run deterministic preflight checks on two saved project versions and compare their summaries.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "baseline_version_id": {
+                    "type": "string",
+                    "description": "Reference version id to use as baseline."
+                },
+                "candidate_version_id": {
+                    "type": "string",
+                    "description": "Version id to evaluate as candidate."
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            },
+            "required": ["baseline_version_id", "candidate_version_id"]
+        }
+    },
+    {
+        "name": "compare_latest_preflight_versions",
+        "description": "Compare deterministic preflight summaries for the latest two saved project versions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            }
+        }
+    },
+    {
+        "name": "compare_autosave_preflight_vs_latest_saved",
+        "description": "Compare deterministic preflight summaries for the latest autosave version against the latest manually saved version.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            }
+        }
+    },
+    {
+        "name": "compare_autosave_preflight_vs_previous_manual_saved",
+        "description": "Compare deterministic preflight summaries for the latest autosave version against the latest manually saved non-snapshot version (excluding autosave snapshots automatically).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            }
+        }
+    },
+    {
+        "name": "compare_autosave_preflight_vs_manual_saved_index",
+        "description": "Compare deterministic preflight summaries for the latest autosave version against an N-back manually saved non-snapshot version (0 = latest manual save, 1 = previous, etc.).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "manual_saved_index": {
+                    "type": "integer",
+                    "description": "Non-negative N-back index into manually saved non-snapshot versions sorted newest-first (default: 0)."
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            }
+        }
+    },
+    {
+        "name": "compare_autosave_preflight_vs_manual_saved_for_simulation_run",
+        "description": "Compare deterministic preflight summaries for the latest autosave version against the latest manually saved non-snapshot version that contains a specific simulation run id.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "simulation_run_id": {
+                    "type": "string",
+                    "description": "Simulation run id (job id) that must exist under the baseline version's sim_runs directory."
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            },
+            "required": ["simulation_run_id"]
+        }
+    },
+    {
+        "name": "compare_autosave_preflight_vs_manual_saved_for_simulation_run_index",
+        "description": "Compare deterministic preflight summaries for the latest autosave version against an N-back manually saved non-snapshot version matching a specific simulation run id (0 = latest matching manual save).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "simulation_run_id": {
+                    "type": "string",
+                    "description": "Simulation run id (job id) that must exist under the baseline version's sim_runs directory."
+                },
+                "manual_saved_index": {
+                    "type": "integer",
+                    "description": "Non-negative N-back index into matching manually saved non-snapshot versions sorted newest-first (default: 0)."
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            },
+            "required": ["simulation_run_id"]
+        }
+    },
+    {
+        "name": "list_manual_saved_versions_for_simulation_run",
+        "description": "List manually saved non-snapshot versions that contain a specific simulation run id, sorted newest-first with deterministic manual_saved_index metadata.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "simulation_run_id": {
+                    "type": "string",
+                    "description": "Simulation run id (job id) used to filter matching manually saved non-snapshot versions."
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional maximum number of matching versions to return."
+                }
+            },
+            "required": ["simulation_run_id"]
+        }
+    },
+    {
+        "name": "compare_manual_preflight_versions_for_simulation_run_indices",
+        "description": "Compare deterministic preflight summaries between two manually saved non-snapshot versions selected by N-back indices within one simulation run id (defaults: baseline=1 previous, candidate=0 latest).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "simulation_run_id": {
+                    "type": "string",
+                    "description": "Simulation run id (job id) that must exist under both selected manual version sim_runs directories."
+                },
+                "baseline_manual_saved_index": {
+                    "type": "integer",
+                    "description": "Non-negative N-back index for the baseline manual version among matching non-snapshot versions sorted newest-first (default: 1)."
+                },
+                "candidate_manual_saved_index": {
+                    "type": "integer",
+                    "description": "Non-negative N-back index for the candidate manual version among matching non-snapshot versions sorted newest-first (default: 0)."
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            },
+            "required": ["simulation_run_id"]
+        }
+    },
+    {
+        "name": "compare_autosave_preflight_vs_saved_version",
+        "description": "Compare deterministic preflight summaries for the latest autosave version against a specific manually saved version.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "saved_version_id": {
+                    "type": "string",
+                    "description": "Saved version id to use as baseline for autosave comparison."
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            },
+            "required": ["saved_version_id"]
+        }
+    },
+    {
+        "name": "compare_autosave_preflight_vs_snapshot_version",
+        "description": "Compare deterministic preflight summaries for the latest autosave version against a selected saved autosave snapshot version.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "autosave_snapshot_version_id": {
+                    "type": "string",
+                    "description": "Saved autosave snapshot version id to use as baseline for comparison. Use list_preflight_versions metadata to discover valid snapshot ids."
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            },
+            "required": ["autosave_snapshot_version_id"]
+        }
+    },
+    {
+        "name": "compare_autosave_preflight_vs_latest_snapshot",
+        "description": "Compare deterministic preflight summaries for the latest autosave version against the most recent saved autosave snapshot version.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            }
+        }
+    },
+    {
+        "name": "compare_autosave_preflight_vs_previous_snapshot",
+        "description": "Compare deterministic preflight summaries for the latest autosave version against the previous saved autosave snapshot version.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            }
+        }
+    },
+    {
+        "name": "compare_autosave_snapshot_preflight_versions", 
+        "description": "Compare deterministic preflight summaries between two selected saved autosave snapshot versions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "baseline_snapshot_version_id": {
+                    "type": "string",
+                    "description": "Reference autosave snapshot version id to use as baseline."
+                },
+                "candidate_snapshot_version_id": {
+                    "type": "string",
+                    "description": "Autosave snapshot version id to evaluate as candidate."
+                },
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            },
+            "required": ["baseline_snapshot_version_id", "candidate_snapshot_version_id"]
+        }
+    },
+    {
+        "name": "compare_latest_autosave_snapshot_preflight_versions",
+        "description": "Compare deterministic preflight summaries between the latest two saved autosave snapshot versions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                }
+            }
+        }
+    },
+    {
+        "name": "list_preflight_versions",
+        "description": "List available autosave/manual version ids and metadata to support deterministic preflight comparisons.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Optional project name. Defaults to the currently active project."
+                },
+                "include_autosave": {
+                    "type": "boolean",
+                    "description": "Whether to include the latest autosave entry when present (default: true)."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional maximum number of version entries to return."
+                }
+            }
+        }
+    },
+    {
         "name": "run_simulation",
         "description": "Start a Geant4 simulation run to test the current geometry.",
         "parameters": {
@@ -549,7 +991,24 @@ AI_GEOMETRY_TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "job_id": {"type": "string", "description": "The unique ID of the simulation job."}
+                "job_id": {"type": "string", "description": "The unique ID of the simulation job."},
+                "include_logs": {"type": "boolean", "description": "Whether to include log output from the solver (default: true)."},
+                "include_log_summary": {"type": "boolean", "description": "Whether to include compact log diagnostics (line counts + latest lines, default: true)."},
+                "include_log_entries": {"type": "boolean", "description": "Whether to include structured log entries with source and cursor fields for reliable incremental parsing (default: false)."},
+                "tail_lines": {"type": "integer", "description": "How many lines from the end of the requested log stream to return when 'since' is not provided."},
+                "max_lines": {"type": "integer", "description": "Maximum number of log lines to return. With 'since', this enables chunked pagination; response.next_since advances by the returned count."},
+                "since": {"type": "integer", "description": "Return log lines starting from this line index (0-based)."},
+                "log_contains": {"type": "string", "description": "Optional case-insensitive substring filter applied before pagination. Useful for pulling only warnings/errors or keyword-matched lines."},
+                "log_contains_any": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional case-insensitive OR filter. Keep lines containing at least one provided substring (e.g. ['warn', 'error']). Combines with log_contains when both are present."
+                },
+                "log_source": {
+                    "type": "string",
+                    "enum": ["stdout", "stderr", "both"],
+                    "description": "Whether to return stdout, stderr, or both streams (default: both)."
+                }
             },
             "required": ["job_id"]
         }
@@ -643,11 +1102,14 @@ AI_GEOMETRY_TOOLS = [
                     "items": {
                         "type": "object",
                         "properties": {
+                            "name": {"type": "string", "description": "Optional placement name. If omitted, AIRPET auto-generates a deterministic name."},
+                            "placement_name": {"type": "string", "description": "Alias for placement name."},
                             "volume_ref": {"type": "string"},
                             "position": {"type": "object"},
                             "rotation": {"type": "object"},
                             "copy_number": {"type": "integer"}
-                        }
+                        },
+                        "required": ["volume_ref"]
                     }
                 }
             },
@@ -681,14 +1143,14 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "manage_particle_source",
-        "description": "Create or update a particle source (GPS commands, transform, activity, confinement).",
+        "description": "Create or update a particle source (GPS commands, transform, activity, confinement). All gps_commands values must be strings with units. Energy format: use '100*keV' or '1*GeV' (with * operator). Defaults: particle='gamma', ang/type='Direction' (not 'Isotropic').",
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["create", "update", "update_transform"]},
                 "source_id": {"type": "string", "description": "Required for update/update_transform."},
                 "name": {"type": "string"},
-                "gps_commands": {"type": "object"},
+                "gps_commands": {"type": "object", "description": "GPS commands as key-value pairs. ALL values must be strings. Use energy format '100*keV' or '1*GeV'. Examples: {'particle': 'gamma', 'energy': '511*keV', 'pos/type': 'Point', 'ang/type': 'Direction', 'ang/dir1': '0 0 1'}. Common particles: gamma, electron, positron, proton. Direction modes: 'Direction' (specify ang/dir1 vector) or 'Isotropic'."},
                 "position": {"type": "object"},
                 "rotation": {"type": "object"},
                 "activity": {"type": "number"},

@@ -1,5 +1,6 @@
 # src/project_manager.py
 import json
+import hashlib
 import math
 import tempfile
 import os
@@ -8,6 +9,10 @@ import numpy as np
 from datetime import datetime
 from scipy.spatial.transform import Rotation as R
 import shutil
+import itertools
+import random
+import time
+import threading
 
 from .geometry_types import GeometryState, Solid, Define, Material, Element, Isotope, \
                             LogicalVolume, PhysicalVolumePlacement, Assembly, ReplicaVolume, \
@@ -16,6 +21,7 @@ from .geometry_types import GeometryState, Solid, Define, Material, Element, Iso
 from .gdml_parser import GDMLParser
 from .gdml_writer import GDMLWriter
 from .step_parser import parse_step_file
+from .objective_formula import evaluate_objective_formula
 
 AUTOSAVE_VERSION_ID = "autosave"
 
@@ -31,6 +37,8 @@ class ProjectManager:
         self.history = []
         self.history_index = -1
         self.MAX_HISTORY_SIZE = 50 # Cap the undo stack
+        self.MAX_PARAM_STUDY_RUNS = 2000
+        self.MAX_OPTIMIZER_BUDGET = 1000
         self._is_transaction_open = False
         self._pre_transaction_state = None
         self.chat_history = [] # For AI conversation continuity
@@ -45,8 +53,186 @@ class ProjectManager:
         # --- Track changed objects (for now only tracking certain solids) ---
         self.changed_object_ids = {'solids': set(), 'sources': set() } #, 'lvs': set(), 'defines': set()}
 
+        # --- Active optimization/study run control (M6 safety) ---
+        self._run_control_lock = threading.Lock()
+        self._active_run_control = None
+        self._last_run_control = None
+
     def _clear_change_tracker(self):
         self.changed_object_ids = {key: set() for key in self.changed_object_ids}
+
+    def start_managed_run(self, kind='optimizer', max_wall_time_seconds=None, metadata=None):
+        with self._run_control_lock:
+            if self._active_run_control and self._active_run_control.get('status') == 'running':
+                return None, "Another run is already active for this project."
+
+            wall = None
+            if max_wall_time_seconds is not None:
+                try:
+                    wall = max(1, int(max_wall_time_seconds))
+                except Exception:
+                    wall = None
+
+            started_at = time.time()
+            run_control = {
+                'run_control_id': f"runctl_{datetime.utcnow().strftime('%Y%m%dT%H%M%S_%f')}",
+                'kind': str(kind or 'optimizer'),
+                'status': 'running',
+                'started_at': started_at,
+                'max_wall_time_seconds': wall,
+                'deadline_at': (started_at + wall) if wall is not None else None,
+                'stop_requested': False,
+                'stop_reason': None,
+                'metadata': dict(metadata or {}),
+            }
+            self._active_run_control = run_control
+            self._last_run_control = dict(run_control)
+            return dict(run_control), None
+
+    def request_stop_managed_run(self, reason='user_requested_stop'):
+        with self._run_control_lock:
+            rc = self._active_run_control
+            if not rc or rc.get('status') != 'running':
+                return {
+                    'active': False,
+                    'stop_requested': False,
+                    'reason': 'No active run.',
+                }
+
+            if not rc.get('stop_requested'):
+                rc['stop_requested'] = True
+                rc['stop_reason'] = str(reason or 'user_requested_stop')
+                rc['stop_requested_at'] = time.time()
+
+            return {
+                'active': True,
+                'stop_requested': True,
+                'run_control': dict(rc),
+            }
+
+    def get_managed_run_status(self):
+        with self._run_control_lock:
+            active = dict(self._active_run_control) if self._active_run_control else None
+            last = dict(self._last_run_control) if self._last_run_control else None
+
+        now = time.time()
+
+        def _decorate(rec):
+            if not rec:
+                return None
+            started_at = rec.get('started_at')
+            rec['elapsed_seconds'] = (now - started_at) if isinstance(started_at, (int, float)) else None
+            deadline_at = rec.get('deadline_at')
+            rec['remaining_seconds'] = (deadline_at - now) if isinstance(deadline_at, (int, float)) else None
+            return rec
+
+        return {
+            'active': _decorate(active),
+            'last': _decorate(last),
+        }
+
+    def update_managed_run_progress(
+        self,
+        *,
+        total_evaluations=None,
+        evaluations_completed=None,
+        success_count=None,
+        failure_count=None,
+        current_run_index=None,
+        current_values=None,
+        phase=None,
+        message=None,
+    ):
+        with self._run_control_lock:
+            rc = self._active_run_control
+            if not rc or rc.get('status') != 'running':
+                return None
+
+            progress = dict(rc.get('progress') or {})
+
+            if total_evaluations is not None:
+                try:
+                    progress['total_evaluations'] = max(0, int(total_evaluations))
+                except Exception:
+                    pass
+
+            if evaluations_completed is not None:
+                try:
+                    progress['evaluations_completed'] = max(0, int(evaluations_completed))
+                except Exception:
+                    pass
+
+            if success_count is not None:
+                try:
+                    progress['success_count'] = max(0, int(success_count))
+                except Exception:
+                    pass
+
+            if failure_count is not None:
+                try:
+                    progress['failure_count'] = max(0, int(failure_count))
+                except Exception:
+                    pass
+
+            if current_run_index is not None:
+                try:
+                    progress['current_run_index'] = max(0, int(current_run_index))
+                except Exception:
+                    pass
+
+            if current_values is not None:
+                if isinstance(current_values, dict):
+                    progress['current_values'] = dict(current_values)
+                else:
+                    progress['current_values'] = {}
+
+            if phase is not None:
+                progress['phase'] = str(phase)
+
+            if message is not None:
+                progress['message'] = str(message)
+
+            progress['updated_at'] = time.time()
+            rc['progress'] = progress
+            self._last_run_control = dict(rc)
+            return dict(progress)
+
+    def _should_abort_managed_run(self):
+        with self._run_control_lock:
+            rc = self._active_run_control
+            if not rc or rc.get('status') != 'running':
+                return None
+
+            if rc.get('stop_requested'):
+                return rc.get('stop_reason') or 'stopped'
+
+            deadline_at = rc.get('deadline_at')
+            if isinstance(deadline_at, (int, float)) and time.time() >= deadline_at:
+                rc['stop_requested'] = True
+                rc['stop_reason'] = 'wall_time_exceeded'
+                rc['stop_requested_at'] = time.time()
+                return 'wall_time_exceeded'
+
+        return None
+
+    def finish_managed_run(self, status='completed', details=None):
+        with self._run_control_lock:
+            rc = self._active_run_control
+            if not rc:
+                return None
+
+            final_status = str(status or 'completed')
+            if final_status == 'completed' and rc.get('stop_requested'):
+                final_status = 'stopped'
+
+            rc['status'] = final_status
+            rc['ended_at'] = time.time()
+            if isinstance(details, dict):
+                rc['details'] = dict(details)
+
+            self._last_run_control = dict(rc)
+            self._active_run_control = None
+            return dict(self._last_run_control)
 
     def _get_project_path(self):
         return os.path.join(self.projects_dir, self.project_name)
@@ -833,6 +1019,1753 @@ class ProjectManager:
         
         return state_dict
 
+    def _validate_parameter_entry(self, name, entry, is_update=False):
+        if not self.current_geometry_state:
+            return False, "No active project state."
+
+        if not name or not isinstance(name, str):
+            return False, "Parameter name is required."
+
+        if not isinstance(entry, dict):
+            return False, "Parameter payload must be an object."
+
+        target_type = entry.get('target_type')
+        if target_type not in {'define', 'solid', 'source', 'sim_option'}:
+            return False, "target_type must be one of: define, solid, source, sim_option."
+
+        target_ref = entry.get('target_ref')
+        if not isinstance(target_ref, dict):
+            return False, "target_ref must be an object."
+
+        bounds = entry.get('bounds')
+        if not isinstance(bounds, dict):
+            return False, "bounds must be an object with min/max."
+
+        try:
+            min_v = float(bounds.get('min'))
+            max_v = float(bounds.get('max'))
+        except (TypeError, ValueError):
+            return False, "bounds.min and bounds.max must be numeric."
+
+        if min_v >= max_v:
+            return False, "bounds.min must be smaller than bounds.max."
+
+        try:
+            default_v = float(entry.get('default'))
+        except (TypeError, ValueError):
+            return False, "default must be numeric."
+
+        if default_v < min_v or default_v > max_v:
+            return False, "default must be inside [bounds.min, bounds.max]."
+
+        # Target validation
+        if target_type == 'define':
+            define_name = target_ref.get('name')
+            if not define_name or define_name not in self.current_geometry_state.defines:
+                return False, f"Define target '{define_name}' not found."
+        elif target_type == 'solid':
+            solid_name = target_ref.get('name')
+            param_name = target_ref.get('param')
+            if not solid_name or solid_name not in self.current_geometry_state.solids:
+                return False, f"Solid target '{solid_name}' not found."
+            if not param_name:
+                return False, "Solid parameter target_ref.param is required."
+        elif target_type == 'source':
+            source_name = target_ref.get('name')
+            field_name = target_ref.get('field')
+            if not source_name or source_name not in self.current_geometry_state.sources:
+                return False, f"Source target '{source_name}' not found."
+            if not field_name:
+                return False, "Source target_ref.field is required."
+        elif target_type == 'sim_option':
+            option_key = target_ref.get('key')
+            if not option_key:
+                return False, "sim_option target_ref.key is required."
+
+        return True, None
+
+    def list_parameter_registry(self):
+        if not self.current_geometry_state:
+            return {}
+        return dict(self.current_geometry_state.parameter_registry or {})
+
+    def upsert_parameter_registry_entry(self, name, entry):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        ok, err = self._validate_parameter_entry(name, entry)
+        if not ok:
+            return None, err
+
+        registry = self.current_geometry_state.parameter_registry
+        if name in registry and entry.get('name') and entry.get('name') != name:
+            return None, "Payload name must match parameter key for updates."
+
+        normalized = {
+            'name': name,
+            'target_type': entry.get('target_type'),
+            'target_ref': entry.get('target_ref'),
+            'bounds': {
+                'min': float(entry['bounds']['min']),
+                'max': float(entry['bounds']['max']),
+            },
+            'default': float(entry.get('default')),
+            'units': entry.get('units', ''),
+            'enabled': bool(entry.get('enabled', True)),
+            'constraint_group': entry.get('constraint_group'),
+        }
+
+        registry[name] = normalized
+        self._capture_history_state(f"Updated parameter registry entry '{name}'")
+        return normalized, None
+
+    def delete_parameter_registry_entry(self, name):
+        if not self.current_geometry_state:
+            return False, "No active project state."
+
+        registry = self.current_geometry_state.parameter_registry
+        if name not in registry:
+            return False, f"Parameter '{name}' not found."
+
+        del registry[name]
+        self._capture_history_state(f"Deleted parameter registry entry '{name}'")
+        return True, None
+
+    def _validate_param_study(self, name, config):
+        if not self.current_geometry_state:
+            return False, "No active project state."
+        if not name or not isinstance(name, str):
+            return False, "Study name is required."
+        if not isinstance(config, dict):
+            return False, "Study config must be an object."
+
+        mode = config.get('mode', 'grid')
+        if mode not in {'grid', 'random'}:
+            return False, "Study mode must be 'grid' or 'random'."
+
+        params = config.get('parameters', [])
+        if not isinstance(params, list) or not params:
+            return False, "Study must include a non-empty parameter list."
+
+        registry = self.current_geometry_state.parameter_registry or {}
+        for p in params:
+            if p not in registry:
+                return False, f"Parameter '{p}' not found in registry."
+
+        if mode == 'grid':
+            grid_cfg = config.get('grid', {}) or {}
+            steps = int(grid_cfg.get('steps', 3))
+            if steps < 2:
+                return False, "Grid studies require at least 2 steps."
+            if steps > self.MAX_PARAM_STUDY_RUNS:
+                return False, f"Grid steps too large. Max allowed is {self.MAX_PARAM_STUDY_RUNS}."
+        else:
+            rnd_cfg = config.get('random', {}) or {}
+            samples = int(rnd_cfg.get('samples', 10))
+            if samples < 1:
+                return False, "Random studies require at least 1 sample."
+            if samples > self.MAX_PARAM_STUDY_RUNS:
+                return False, f"Random samples too large. Max allowed is {self.MAX_PARAM_STUDY_RUNS}."
+
+        objectives = config.get('objectives', []) or []
+        if not isinstance(objectives, list):
+            return False, "objectives must be a list."
+        allowed_metrics = {
+            'success_flag',
+            'solids_count',
+            'logical_volumes_count',
+            'placements_count',
+            'sources_count',
+            'parameter_value',
+            'sim_metric',
+            'formula',
+            'silicon_slab_edep_fraction',
+            'silicon_slab_cost_norm',
+            'silicon_slab_tradeoff',
+        }
+        for idx, obj in enumerate(objectives):
+            if not isinstance(obj, dict):
+                return False, f"Objective at index {idx} must be an object."
+            metric = obj.get('metric')
+            if metric not in allowed_metrics:
+                return False, f"Objective metric '{metric}' is not supported."
+            direction = obj.get('direction', 'maximize')
+            if direction not in {'maximize', 'minimize'}:
+                return False, f"Objective direction '{direction}' is invalid."
+            if metric == 'parameter_value' and not obj.get('parameter'):
+                return False, "Objective metric 'parameter_value' requires field 'parameter'."
+
+            if metric == 'sim_metric' and not obj.get('key'):
+                return False, "Objective metric 'sim_metric' requires field 'key'."
+
+            if metric == 'formula' and not (obj.get('expression') or obj.get('expr')):
+                return False, "Objective metric 'formula' requires field 'expression'."
+
+            if metric in {'silicon_slab_edep_fraction', 'silicon_slab_cost_norm', 'silicon_slab_tradeoff'}:
+                thickness_param = obj.get('thickness_parameter')
+                if not thickness_param:
+                    return False, f"Objective metric '{metric}' requires field 'thickness_parameter'."
+                if thickness_param not in params:
+                    return False, f"Objective metric '{metric}' thickness_parameter '{thickness_param}' must be in study parameters."
+
+        return True, None
+
+    def list_param_studies(self):
+        if not self.current_geometry_state:
+            return {}
+        return dict(self.current_geometry_state.param_studies or {})
+
+    def upsert_param_study(self, name, config):
+        ok, err = self._validate_param_study(name, config)
+        if not ok:
+            return None, err
+
+        mode = config.get('mode', 'grid')
+        normalized = {
+            'name': name,
+            'mode': mode,
+            'parameters': list(config.get('parameters', [])),
+            'grid': config.get('grid', {}) or {},
+            'random': config.get('random', {}) or {},
+            'objectives': config.get('objectives', []) or [],
+        }
+
+        if mode == 'grid':
+            normalized['grid'].setdefault('steps', 3)
+            normalized['grid'].setdefault('per_parameter_steps', {})
+        else:
+            normalized['random'].setdefault('samples', 10)
+            normalized['random'].setdefault('seed', 42)
+
+        self.current_geometry_state.param_studies[name] = normalized
+        self._capture_history_state(f"Updated param study '{name}'")
+        return normalized, None
+
+    def delete_param_study(self, name):
+        if not self.current_geometry_state:
+            return False, "No active project state."
+        studies = self.current_geometry_state.param_studies
+        if name not in studies:
+            return False, f"Study '{name}' not found."
+        del studies[name]
+        self._capture_history_state(f"Deleted param study '{name}'")
+        return True, None
+
+    def _apply_param_value(self, param_entry, value, sim_options):
+        target_type = param_entry.get('target_type')
+        target_ref = param_entry.get('target_ref', {})
+        value_str = str(value)
+
+        if target_type == 'define':
+            dname = target_ref.get('name')
+            define = self.current_geometry_state.defines.get(dname)
+            if define is None:
+                return False, f"Define target '{dname}' not found."
+            define.raw_expression = value_str
+            return True, None
+
+        if target_type == 'solid':
+            sname = target_ref.get('name')
+            pname = target_ref.get('param')
+            solid = self.current_geometry_state.solids.get(sname)
+            if solid is None:
+                return False, f"Solid target '{sname}' not found."
+            if not pname:
+                return False, "Solid target param is missing."
+            solid.raw_parameters[pname] = value_str
+            return True, None
+
+        if target_type == 'source':
+            src_name = target_ref.get('name')
+            field = target_ref.get('field')
+            source = self.current_geometry_state.sources.get(src_name)
+            if source is None:
+                return False, f"Source target '{src_name}' not found."
+            if not field:
+                return False, "Source field target is missing."
+
+            if field.startswith('position.'):
+                axis = field.split('.', 1)[1]
+                source.position[axis] = value_str
+            elif field.startswith('rotation.'):
+                axis = field.split('.', 1)[1]
+                source.rotation[axis] = value_str
+            elif field == 'activity':
+                source.activity = float(value)
+            else:
+                setattr(source, field, value)
+            return True, None
+
+        if target_type == 'sim_option':
+            key = target_ref.get('key')
+            if not key:
+                return False, "sim_option key is missing."
+            sim_options[key] = value
+            return True, None
+
+        return False, f"Unsupported target_type '{target_type}'."
+
+    def _compute_run_metrics(self):
+        """Compute lightweight per-run metrics for study objective evaluation."""
+        state = self.current_geometry_state
+        placement_count = 0
+        for lv in state.logical_volumes.values():
+            if lv.content_type == 'physvol' and isinstance(lv.content, list):
+                placement_count += len(lv.content)
+        for asm in state.assemblies.values():
+            placement_count += len(getattr(asm, 'placements', []) or [])
+
+        return {
+            'solids_count': len(state.solids),
+            'logical_volumes_count': len(state.logical_volumes),
+            'sources_count': len(state.sources),
+            'placements_count': placement_count,
+        }
+
+    def _compute_silicon_slab_terms(self, objective_cfg, run_record):
+        values = run_record.get('values', {}) or {}
+        thickness_param = objective_cfg.get('thickness_parameter')
+        if not thickness_param:
+            return None
+
+        try:
+            thickness_mm = float(values.get(thickness_param))
+        except (TypeError, ValueError):
+            return None
+
+        thickness_mm = max(0.0, thickness_mm)
+
+        attenuation_length_mm = float(objective_cfg.get('attenuation_length_mm', 1.5))
+        attenuation_length_mm = max(1e-9, attenuation_length_mm)
+
+        reference_thickness_mm = float(objective_cfg.get('reference_thickness_mm', 3.0))
+        reference_thickness_mm = max(1e-9, reference_thickness_mm)
+
+        w_edep = float(objective_cfg.get('w_edep', 0.8))
+        w_cost = float(objective_cfg.get('w_cost', 0.2))
+
+        edep_fraction = 1.0 - float(np.exp(-thickness_mm / attenuation_length_mm))
+        edep_fraction = max(0.0, min(1.0, edep_fraction))
+
+        cost_norm = thickness_mm / reference_thickness_mm
+        score = (w_edep * edep_fraction) - (w_cost * cost_norm)
+
+        return {
+            'thickness_mm': thickness_mm,
+            'edep_fraction': edep_fraction,
+            'cost_norm': float(cost_norm),
+            'score': float(score),
+            'w_edep': w_edep,
+            'w_cost': w_cost,
+            'attenuation_length_mm': attenuation_length_mm,
+            'reference_thickness_mm': reference_thickness_mm,
+        }
+
+    def _evaluate_study_objectives(self, objectives, run_record):
+        """Evaluate configured objectives from run-local metrics.
+
+        Supported objective fields:
+          - name (optional; defaults to metric)
+          - metric: success_flag|solids_count|logical_volumes_count|placements_count|sources_count|parameter_value|
+                    sim_metric|formula|silicon_slab_edep_fraction|silicon_slab_cost_norm|silicon_slab_tradeoff
+          - direction: maximize|minimize (metadata only for now)
+          - parameter: required when metric=parameter_value
+          - key: required when metric=sim_metric
+          - expression: required when metric=formula
+          - thickness_parameter: required for silicon_slab_* metrics
+        """
+        if not objectives:
+            return {}
+
+        out = {}
+        metrics = run_record.get('metrics', {}) or {}
+        sim_metrics = run_record.get('sim_metrics', {}) or {}
+        success = 1.0 if run_record.get('success') else 0.0
+
+        for obj in objectives:
+            if not isinstance(obj, dict):
+                continue
+            metric = obj.get('metric')
+            if not metric:
+                continue
+            name = obj.get('name', metric)
+
+            if metric == 'success_flag':
+                out[name] = success
+            elif metric in {'solids_count', 'logical_volumes_count', 'placements_count', 'sources_count'}:
+                out[name] = float(metrics.get(metric, 0.0))
+            elif metric == 'parameter_value':
+                param_name = obj.get('parameter')
+                if not param_name:
+                    continue
+                try:
+                    out[name] = float(run_record.get('values', {}).get(param_name))
+                except (TypeError, ValueError):
+                    pass
+            elif metric == 'sim_metric':
+                key = obj.get('key')
+                if not key:
+                    continue
+                try:
+                    out[name] = float(sim_metrics.get(key))
+                except (TypeError, ValueError):
+                    pass
+            elif metric == 'formula':
+                expr = obj.get('expression') or obj.get('expr')
+                if not expr:
+                    continue
+                env = {}
+                env.update(metrics)
+                env.update(run_record.get('values', {}) or {})
+                env.update(sim_metrics)
+                env.update(out)
+                try:
+                    out[name] = float(evaluate_objective_formula(expr, env))
+                except Exception:
+                    continue
+            elif metric in {'silicon_slab_edep_fraction', 'silicon_slab_cost_norm', 'silicon_slab_tradeoff'}:
+                terms = self._compute_silicon_slab_terms(obj, run_record)
+                if not terms:
+                    continue
+                if metric == 'silicon_slab_edep_fraction':
+                    out[name] = float(terms['edep_fraction'])
+                elif metric == 'silicon_slab_cost_norm':
+                    out[name] = float(terms['cost_norm'])
+                else:
+                    out[name] = float(terms['score'])
+
+        return out
+
+    def _generate_param_study_samples(self, study):
+        registry = self.current_geometry_state.parameter_registry
+        param_names = study.get('parameters', [])
+        mode = study.get('mode', 'grid')
+
+        if mode == 'grid':
+            grid_cfg = study.get('grid', {}) or {}
+            default_steps = int(grid_cfg.get('steps', 3))
+            per_param_steps = grid_cfg.get('per_parameter_steps', {}) or {}
+
+            value_arrays = []
+            for p in param_names:
+                p_entry = registry[p]
+                mn = float(p_entry['bounds']['min'])
+                mx = float(p_entry['bounds']['max'])
+                steps = int(per_param_steps.get(p, default_steps))
+                steps = max(2, steps)
+                value_arrays.append(np.linspace(mn, mx, steps).tolist())
+
+            samples = []
+            for combo in itertools.product(*value_arrays):
+                sample = {param_names[i]: float(combo[i]) for i in range(len(param_names))}
+                samples.append(sample)
+            return samples
+
+        rnd_cfg = study.get('random', {}) or {}
+        n_samples = max(1, int(rnd_cfg.get('samples', 10)))
+        seed = int(rnd_cfg.get('seed', 42))
+        rng = random.Random(seed)
+
+        samples = []
+        for _ in range(n_samples):
+            sample = {}
+            for p in param_names:
+                p_entry = registry[p]
+                mn = float(p_entry['bounds']['min'])
+                mx = float(p_entry['bounds']['max'])
+                sample[p] = rng.uniform(mn, mx)
+            samples.append(sample)
+        return samples
+
+    def run_param_study(self, name, max_runs=None):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        studies = self.current_geometry_state.param_studies or {}
+        if name not in studies:
+            return None, f"Study '{name}' not found."
+
+        study = studies[name]
+        samples = self._generate_param_study_samples(study)
+        requested_limit = self.MAX_PARAM_STUDY_RUNS
+        if max_runs is not None:
+            requested_limit = min(requested_limit, max(0, int(max_runs)))
+        samples = samples[:requested_limit]
+
+        original_state = GeometryState.from_dict(self.current_geometry_state.to_dict())
+        runs = []
+        success_count = 0
+        stop_reason = 'completed'
+
+        self.update_managed_run_progress(
+            total_evaluations=len(samples),
+            evaluations_completed=0,
+            success_count=0,
+            failure_count=0,
+            phase='running',
+            message=f"Parameter sweep '{name}' started.",
+        )
+
+        try:
+            for i, sample in enumerate(samples):
+                abort_reason = self._should_abort_managed_run()
+                if abort_reason:
+                    stop_reason = abort_reason
+                    break
+                self.current_geometry_state = GeometryState.from_dict(original_state.to_dict())
+
+                self.update_managed_run_progress(
+                    current_run_index=i,
+                    current_values=sample,
+                    evaluations_completed=len(runs),
+                    success_count=success_count,
+                    failure_count=len(runs) - success_count,
+                    phase='evaluating',
+                    message=f"Evaluating candidate {i + 1}/{len(samples)}",
+                )
+
+                sim_options = {}
+                apply_error = None
+                for param_name, value in sample.items():
+                    param_entry = self.current_geometry_state.parameter_registry.get(param_name)
+                    if not param_entry:
+                        apply_error = f"Parameter '{param_name}' missing in registry during run."
+                        break
+                    ok, err = self._apply_param_value(param_entry, value, sim_options)
+                    if not ok:
+                        apply_error = err
+                        break
+
+                if apply_error:
+                    run_record = {
+                        'run_index': i,
+                        'values': sample,
+                        'sim_options': sim_options,
+                        'success': False,
+                        'error': apply_error,
+                        'metrics': {},
+                    }
+                    run_record['objectives'] = self._evaluate_study_objectives(study.get('objectives', []), run_record)
+                    runs.append(run_record)
+                    self.update_managed_run_progress(
+                        evaluations_completed=len(runs),
+                        success_count=success_count,
+                        failure_count=len(runs) - success_count,
+                        phase='evaluating',
+                        message=f"Candidate {i + 1}/{len(samples)} failed: {apply_error}",
+                    )
+                    continue
+
+                ok, err = self.recalculate_geometry_state()
+                if ok:
+                    success_count += 1
+
+                run_record = {
+                    'run_index': i,
+                    'values': sample,
+                    'sim_options': sim_options,
+                    'success': bool(ok),
+                    'error': err,
+                    'metrics': self._compute_run_metrics() if ok else {},
+                }
+                run_record['objectives'] = self._evaluate_study_objectives(study.get('objectives', []), run_record)
+
+                runs.append(run_record)
+                self.update_managed_run_progress(
+                    evaluations_completed=len(runs),
+                    success_count=success_count,
+                    failure_count=len(runs) - success_count,
+                    phase='evaluating',
+                    message=f"Candidate {i + 1}/{len(samples)} {'ok' if run_record.get('success') else 'failed'}",
+                )
+        finally:
+            self.current_geometry_state = original_state
+            self.recalculate_geometry_state()
+
+        self.update_managed_run_progress(
+            evaluations_completed=len(runs),
+            success_count=success_count,
+            failure_count=len(runs) - success_count,
+            phase=stop_reason,
+            current_values={},
+            message=f"Parameter sweep finished with status '{stop_reason}'.",
+        )
+
+        return {
+            'study_name': name,
+            'mode': study.get('mode'),
+            'requested_runs': len(samples),
+            'evaluations_used': len(runs),
+            'successful_runs': success_count,
+            'failed_runs': len(runs) - success_count,
+            'stop_reason': stop_reason,
+            'runs': runs,
+        }, None
+
+    def apply_study_candidate_values(self, study_name, values):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        studies = self.current_geometry_state.param_studies or {}
+        if study_name not in studies:
+            return None, f"Study '{study_name}' not found."
+
+        if not isinstance(values, dict) or not values:
+            return None, "values must be a non-empty object/dict."
+
+        study = studies[study_name]
+        study_params = list(study.get('parameters', []) or [])
+
+        sim_options = {}
+        applied_values = {}
+        for param_name in study_params:
+            if param_name not in values:
+                continue
+            param_entry = self.current_geometry_state.parameter_registry.get(param_name)
+            if not param_entry:
+                return None, f"Parameter '{param_name}' not found in registry."
+
+            raw_v = values.get(param_name)
+            try:
+                v = float(raw_v)
+            except (TypeError, ValueError):
+                return None, f"Parameter '{param_name}' value must be numeric."
+
+            ok, err = self._apply_param_value(param_entry, v, sim_options)
+            if not ok:
+                return None, err
+            applied_values[param_name] = v
+
+        if not applied_values:
+            return None, "No matching study parameters found in values payload."
+
+        ok, err = self.recalculate_geometry_state()
+        if not ok:
+            return None, err
+
+        self._capture_history_state(f"Applied candidate values for study '{study_name}'")
+
+        return {
+            'study_name': study_name,
+            'applied_values': applied_values,
+            'sim_options': sim_options,
+        }, None
+
+    def _evaluate_param_sample(self, study, sample, run_index=0, evaluator=None):
+        sim_options = {}
+        apply_error = None
+        for param_name, value in sample.items():
+            param_entry = self.current_geometry_state.parameter_registry.get(param_name)
+            if not param_entry:
+                apply_error = f"Parameter '{param_name}' missing in registry during run."
+                break
+            ok, err = self._apply_param_value(param_entry, value, sim_options)
+            if not ok:
+                apply_error = err
+                break
+
+        if apply_error:
+            run_record = {
+                'run_index': run_index,
+                'values': sample,
+                'sim_options': sim_options,
+                'success': False,
+                'error': apply_error,
+                'metrics': {},
+                'sim_metrics': {},
+            }
+            run_record['objectives'] = self._evaluate_study_objectives(study.get('objectives', []), run_record)
+            return run_record
+
+        ok, err = self.recalculate_geometry_state()
+        run_record = {
+            'run_index': run_index,
+            'values': sample,
+            'sim_options': sim_options,
+            'success': bool(ok),
+            'error': err,
+            'metrics': self._compute_run_metrics() if ok else {},
+            'sim_metrics': {},
+        }
+
+        if run_record['success'] and callable(evaluator):
+            try:
+                sim_eval = evaluator(run_record=run_record, project_manager=self, study=study) or {}
+                sim_success = bool(sim_eval.get('success', True))
+                run_record['sim_metrics'] = dict(sim_eval.get('sim_metrics', {}) or {})
+                if sim_eval.get('simulation') is not None:
+                    run_record['simulation'] = sim_eval.get('simulation')
+                if not sim_success:
+                    run_record['success'] = False
+                    run_record['error'] = sim_eval.get('error', 'Simulation evaluator failed.')
+            except Exception as e:
+                run_record['success'] = False
+                run_record['error'] = f"Simulation evaluator exception: {e}"
+
+        run_record['objectives'] = self._evaluate_study_objectives(study.get('objectives', []), run_record)
+        return run_record
+
+    def _score_run_for_objective(self, run_record, objective_name, direction='maximize'):
+        val = run_record.get('objectives', {}).get(objective_name)
+        if val is None:
+            return -float('inf')
+        try:
+            x = float(val)
+        except (TypeError, ValueError):
+            return -float('inf')
+        return x if direction == 'maximize' else -x
+
+    def _get_optimizer_bounds(self, param_names, registry):
+        mins = np.array([float(registry[p]['bounds']['min']) for p in param_names], dtype=float)
+        maxs = np.array([float(registry[p]['bounds']['max']) for p in param_names], dtype=float)
+        return mins, maxs
+
+    def _vector_to_sample(self, param_names, vec):
+        return {param_names[i]: float(vec[i]) for i in range(len(param_names))}
+
+    def _evaluate_candidate_vector(self, study, param_names, vec, mins, maxs, run_index, objective_name, direction, penalty_weight=0.0, generation=None, evaluator=None):
+        clipped = np.clip(vec, mins, maxs)
+        violation = vec - clipped
+        boundary_penalty = penalty_weight * float(np.linalg.norm(violation))
+
+        sample = self._vector_to_sample(param_names, clipped)
+        run_record = self._evaluate_param_sample(study, sample, run_index=run_index, evaluator=evaluator)
+
+        raw_score = self._score_run_for_objective(run_record, objective_name, direction=direction)
+        score = raw_score - boundary_penalty
+
+        run_record['optimizer_raw_score'] = raw_score
+        run_record['optimizer_penalty'] = boundary_penalty
+        run_record['optimizer_score'] = score
+        if generation is not None:
+            run_record['generation'] = generation
+
+        return run_record, clipped
+
+    def _run_random_search_optimizer(self, study, param_names, registry, objective_name, direction, budget, seed, evaluator=None):
+        rng = random.Random(seed)
+        mins, maxs = self._get_optimizer_bounds(param_names, registry)
+
+        candidates = []
+        best = None
+        best_score = -float('inf')
+        stop_reason = 'budget_exhausted'
+
+        self.update_managed_run_progress(
+            total_evaluations=budget,
+            evaluations_completed=0,
+            success_count=0,
+            failure_count=0,
+            phase='running',
+            message=f"Optimizer random_search started (budget={budget}).",
+        )
+
+        for i in range(budget):
+            abort_reason = self._should_abort_managed_run()
+            if abort_reason:
+                stop_reason = abort_reason
+                break
+            sample = {}
+            for p in param_names:
+                entry = registry[p]
+                mn = float(entry['bounds']['min'])
+                mx = float(entry['bounds']['max'])
+                sample[p] = rng.uniform(mn, mx)
+
+            self.update_managed_run_progress(
+                current_run_index=i,
+                current_values=sample,
+                evaluations_completed=len(candidates),
+                success_count=sum(1 for c in candidates if c.get('success')),
+                failure_count=sum(1 for c in candidates if not c.get('success')),
+                phase='evaluating',
+                message=f"Evaluating candidate {i + 1}/{budget}",
+            )
+
+            run_record = self._evaluate_param_sample(study, sample, run_index=i, evaluator=evaluator)
+            score = self._score_run_for_objective(run_record, objective_name, direction=direction)
+            run_record['optimizer_score'] = score
+            run_record['optimizer_raw_score'] = score
+            run_record['optimizer_penalty'] = 0.0
+            candidates.append(run_record)
+
+            if score > best_score:
+                best_score = score
+                best = run_record
+
+            self.update_managed_run_progress(
+                evaluations_completed=len(candidates),
+                success_count=sum(1 for c in candidates if c.get('success')),
+                failure_count=sum(1 for c in candidates if not c.get('success')),
+                phase='evaluating',
+                message=f"Completed candidate {i + 1}/{budget}",
+            )
+
+        self.update_managed_run_progress(
+            evaluations_completed=len(candidates),
+            success_count=sum(1 for c in candidates if c.get('success')),
+            failure_count=sum(1 for c in candidates if not c.get('success')),
+            phase=stop_reason,
+            current_values={},
+            message=f"Optimizer random_search finished with status '{stop_reason}'.",
+        )
+
+        return {
+            'candidates': candidates,
+            'best': best,
+            'stop_reason': stop_reason,
+            'generation_stats': [],
+            'step_size_history': [],
+            'evaluations_used': len(candidates),
+        }
+
+    def _run_cmaes_optimizer(self, study, param_names, registry, objective_name, direction, budget, seed, cmaes_config=None, evaluator=None):
+        cfg = cmaes_config or {}
+        rng = np.random.default_rng(seed)
+
+        mins, maxs = self._get_optimizer_bounds(param_names, registry)
+        n = len(param_names)
+        if n <= 0:
+            return {
+                'candidates': [],
+                'best': None,
+                'stop_reason': 'no_parameters',
+                'generation_stats': [],
+                'step_size_history': [],
+                'evaluations_used': 0,
+            }
+
+        pop_size_default = max(4, 4 + int(3 * np.log(max(2, n))))
+        lambda_pop = int(cfg.get('population_size', pop_size_default))
+        lambda_pop = max(4, min(lambda_pop, budget))
+        mu = max(1, lambda_pop // 2)
+
+        raw_weights = np.log(mu + 0.5) - np.log(np.arange(1, mu + 1))
+        weights = raw_weights / np.sum(raw_weights)
+        mueff = (np.sum(weights) ** 2) / np.sum(weights ** 2)
+
+        ranges = np.maximum(maxs - mins, 1e-12)
+        mean = np.array([float(registry[p].get('default', (mins[i] + maxs[i]) * 0.5)) for i, p in enumerate(param_names)], dtype=float)
+        mean = np.clip(mean, mins, maxs)
+
+        sigma_rel = float(cfg.get('sigma_rel', 0.3))
+        sigma = float(cfg.get('sigma', sigma_rel * float(np.mean(ranges))))
+        sigma = max(sigma, 1e-12)
+
+        cc = (4 + mueff / n) / (n + 4 + 2 * mueff / n)
+        cs = (mueff + 2) / (n + mueff + 5)
+        c1 = 2 / ((n + 1.3) ** 2 + mueff)
+        cmu = min(1 - c1, 2 * (mueff - 2 + 1 / mueff) / ((n + 2) ** 2 + mueff))
+        damps = 1 + 2 * max(0, np.sqrt((mueff - 1) / (n + 1)) - 1) + cs
+        chi_n = np.sqrt(n) * (1 - 1 / (4 * n) + 1 / (21 * (n ** 2)))
+
+        C = np.eye(n)
+        B = np.eye(n)
+        D = np.ones(n)
+        invsqrtC = np.eye(n)
+        pc = np.zeros(n)
+        ps = np.zeros(n)
+
+        penalty_weight = float(cfg.get('boundary_penalty_weight', 1.0))
+        stagnation_generations = max(1, int(cfg.get('stagnation_generations', 12)))
+        min_improvement = float(cfg.get('min_improvement', 1e-9))
+        sigma_min = float(cfg.get('sigma_min', 1e-12))
+
+        candidates = []
+        best = None
+        best_score = -float('inf')
+        no_improve_gens = 0
+        generation = 0
+        eval_count = 0
+        generation_stats = []
+        step_size_history = []
+        stop_reason = 'budget_exhausted'
+
+        self.update_managed_run_progress(
+            total_evaluations=budget,
+            evaluations_completed=0,
+            success_count=0,
+            failure_count=0,
+            phase='running',
+            message=f"Optimizer cmaes started (budget={budget}).",
+        )
+
+        while eval_count < budget:
+            abort_reason = self._should_abort_managed_run()
+            if abort_reason:
+                stop_reason = abort_reason
+                break
+
+            pop = []
+            for k in range(lambda_pop):
+                if eval_count >= budget:
+                    break
+
+                abort_reason = self._should_abort_managed_run()
+                if abort_reason:
+                    stop_reason = abort_reason
+                    break
+                z = rng.standard_normal(n)
+                y = B @ (D * z)
+                x = mean + sigma * y
+                sample_preview = self._vector_to_sample(param_names, np.clip(x, mins, maxs))
+
+                self.update_managed_run_progress(
+                    current_run_index=eval_count,
+                    current_values=sample_preview,
+                    evaluations_completed=len(candidates),
+                    success_count=sum(1 for c in candidates if c.get('success')),
+                    failure_count=sum(1 for c in candidates if not c.get('success')),
+                    phase='evaluating',
+                    message=f"Evaluating candidate {eval_count + 1}/{budget} (generation {generation})",
+                )
+
+                run_record, clipped = self._evaluate_candidate_vector(
+                    study=study,
+                    param_names=param_names,
+                    vec=x,
+                    mins=mins,
+                    maxs=maxs,
+                    run_index=eval_count,
+                    objective_name=objective_name,
+                    direction=direction,
+                    penalty_weight=penalty_weight,
+                    generation=generation,
+                    evaluator=evaluator,
+                )
+                pop.append((run_record, clipped))
+                candidates.append(run_record)
+                eval_count += 1
+
+                if run_record['optimizer_score'] > best_score:
+                    best_score = run_record['optimizer_score']
+                    best = run_record
+
+                self.update_managed_run_progress(
+                    evaluations_completed=len(candidates),
+                    success_count=sum(1 for c in candidates if c.get('success')),
+                    failure_count=sum(1 for c in candidates if not c.get('success')),
+                    phase='evaluating',
+                    message=f"Completed candidate {eval_count}/{budget}",
+                )
+
+            if stop_reason not in {'budget_exhausted', 'empty_population', 'sigma_min_reached', 'stagnation'}:
+                break
+
+            if not pop:
+                stop_reason = 'empty_population'
+                break
+
+            pop.sort(key=lambda t: t[0]['optimizer_score'], reverse=True)
+            selected = pop[:mu]
+
+            old_mean = mean.copy()
+            y_list = [(vec - old_mean) / sigma for _, vec in selected]
+            y_w = np.sum(np.array([weights[i] * y_list[i] for i in range(len(y_list))]), axis=0)
+            mean = old_mean + sigma * y_w
+            mean = np.clip(mean, mins, maxs)
+
+            ps = (1 - cs) * ps + np.sqrt(cs * (2 - cs) * mueff) * (invsqrtC @ y_w)
+            norm_ps = np.linalg.norm(ps)
+            hsig = 1.0 if (norm_ps / np.sqrt(1 - (1 - cs) ** (2 * (generation + 1))) / chi_n) < (1.4 + 2 / (n + 1)) else 0.0
+            pc = (1 - cc) * pc + hsig * np.sqrt(cc * (2 - cc) * mueff) * y_w
+
+            delta_hsig = (1 - hsig) * cc * (2 - cc)
+            C = (1 - c1 - cmu + c1 * delta_hsig) * C + c1 * np.outer(pc, pc)
+            for i in range(len(y_list)):
+                C += cmu * weights[i] * np.outer(y_list[i], y_list[i])
+
+            C = (C + C.T) * 0.5
+            eigvals, eigvecs = np.linalg.eigh(C)
+            eigvals = np.maximum(eigvals, 1e-20)
+            D = np.sqrt(eigvals)
+            B = eigvecs
+            invsqrtC = B @ np.diag(1.0 / D) @ B.T
+
+            sigma *= np.exp((cs / damps) * ((norm_ps / chi_n) - 1))
+            sigma = max(sigma, sigma_min)
+
+            step_size_history.append(float(sigma))
+
+            gen_best = pop[0][0]
+            generation_stats.append({
+                'generation': generation,
+                'evaluations_used': eval_count,
+                'population_size': len(pop),
+                'sigma': float(sigma),
+                'generation_best_score': float(gen_best.get('optimizer_score', -float('inf'))),
+                'generation_best_objective': gen_best.get('objectives', {}).get(objective_name),
+            })
+
+            if generation_stats and len(generation_stats) >= 2:
+                prev_best = generation_stats[-2]['generation_best_score']
+                curr_best = generation_stats[-1]['generation_best_score']
+                if (curr_best - prev_best) > min_improvement:
+                    no_improve_gens = 0
+                else:
+                    no_improve_gens += 1
+
+            if sigma <= sigma_min:
+                stop_reason = 'sigma_min_reached'
+                break
+            if no_improve_gens >= stagnation_generations:
+                stop_reason = 'stagnation'
+                break
+
+            generation += 1
+
+        self.update_managed_run_progress(
+            evaluations_completed=len(candidates),
+            success_count=sum(1 for c in candidates if c.get('success')),
+            failure_count=sum(1 for c in candidates if not c.get('success')),
+            phase=stop_reason,
+            current_values={},
+            message=f"Optimizer cmaes finished with status '{stop_reason}'.",
+        )
+
+        return {
+            'candidates': candidates,
+            'best': best,
+            'stop_reason': stop_reason,
+            'generation_stats': generation_stats,
+            'step_size_history': step_size_history,
+            'evaluations_used': len(candidates),
+            'cmaes': {
+                'population_size': lambda_pop,
+                'mu': mu,
+                'stagnation_generations': stagnation_generations,
+                'min_improvement': min_improvement,
+                'sigma_min': sigma_min,
+                'boundary_penalty_weight': penalty_weight,
+            },
+        }
+
+    def _rbf_kernel(self, x1, x2, length_scale):
+        ls2 = max(float(length_scale) ** 2, 1e-12)
+        d2 = np.sum((x1[:, None, :] - x2[None, :, :]) ** 2, axis=2)
+        return np.exp(-0.5 * d2 / ls2)
+
+    def _default_gp_length_scale(self, x):
+        if x.shape[0] <= 1:
+            return 1.0
+        d2 = np.sum((x[:, None, :] - x[None, :, :]) ** 2, axis=2)
+        d = np.sqrt(np.maximum(d2, 0.0))
+        upper = d[np.triu_indices_from(d, k=1)]
+        upper = upper[np.isfinite(upper)]
+        upper = upper[upper > 0]
+        if upper.size == 0:
+            return 1.0
+        return float(np.median(upper))
+
+    def _fit_gp_surrogate(self, x_train, y_train, noise=1e-6, length_scale=None):
+        if x_train.shape[0] < 2:
+            return None
+
+        if length_scale is None:
+            length_scale = self._default_gp_length_scale(x_train)
+
+        K = self._rbf_kernel(x_train, x_train, length_scale)
+        K = K + float(noise) * np.eye(x_train.shape[0], dtype=float)
+
+        try:
+            alpha = np.linalg.solve(K, y_train)
+        except np.linalg.LinAlgError:
+            alpha = np.linalg.lstsq(K, y_train, rcond=None)[0]
+
+        try:
+            K_inv = np.linalg.inv(K)
+        except np.linalg.LinAlgError:
+            K_inv = np.linalg.pinv(K)
+
+        return {
+            'x_train': x_train,
+            'y_train': y_train,
+            'alpha': alpha,
+            'K_inv': K_inv,
+            'length_scale': float(length_scale),
+            'noise': float(noise),
+        }
+
+    def _gp_predict_with_uncertainty(self, model, x_query):
+        if not model:
+            return np.zeros((x_query.shape[0],), dtype=float), np.ones((x_query.shape[0],), dtype=float)
+
+        x_train = model['x_train']
+        alpha = model['alpha']
+        K_inv = model['K_inv']
+        length_scale = model['length_scale']
+
+        k_q = self._rbf_kernel(x_query, x_train, length_scale)
+        mean = k_q @ alpha
+
+        # RBF prior variance at each point is 1.0
+        quad = np.sum((k_q @ K_inv) * k_q, axis=1)
+        var = np.maximum(1e-12, 1.0 - quad)
+        std = np.sqrt(var)
+        return mean, std
+
+    def _sample_random_candidate(self, param_names, registry, rng):
+        sample = {}
+        for p in param_names:
+            entry = registry[p]
+            mn = float(entry['bounds']['min'])
+            mx = float(entry['bounds']['max'])
+            sample[p] = rng.uniform(mn, mx)
+        return sample
+
+    def run_surrogate_param_optimizer(
+        self,
+        study_name,
+        budget=40,
+        seed=42,
+        objective_name=None,
+        direction=None,
+        warmup_runs=10,
+        candidate_pool_size=256,
+        exploration_beta=1.0,
+        gp_noise=1e-6,
+        evaluator=None,
+    ):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        studies = self.current_geometry_state.param_studies or {}
+        if study_name not in studies:
+            return None, f"Study '{study_name}' not found."
+
+        study = studies[study_name]
+        param_names = study.get('parameters', [])
+        if not param_names:
+            return None, "Study has no parameters."
+
+        registry = self.current_geometry_state.parameter_registry
+        for p in param_names:
+            if p not in registry:
+                return None, f"Parameter '{p}' missing in registry."
+
+        objectives = study.get('objectives', []) or []
+        if objective_name is None:
+            objective_name = objectives[0].get('name', objectives[0].get('metric')) if objectives else 'success_flag'
+
+        if direction is None:
+            direction = 'maximize'
+            for o in objectives:
+                nm = o.get('name', o.get('metric'))
+                if nm == objective_name:
+                    direction = o.get('direction', 'maximize')
+                    break
+
+        budget = max(1, min(int(budget), self.MAX_OPTIMIZER_BUDGET))
+        warmup_runs = max(1, int(warmup_runs))
+        candidate_pool_size = max(8, int(candidate_pool_size))
+        exploration_beta = float(exploration_beta)
+        gp_noise = float(gp_noise)
+
+        original_state = GeometryState.from_dict(self.current_geometry_state.to_dict())
+        rng = random.Random(int(seed))
+        np_rng = np.random.default_rng(int(seed))
+
+        mins, maxs = self._get_optimizer_bounds(param_names, registry)
+
+        candidates = []
+        best = None
+        best_score = -float('inf')
+        model_update_count = 0
+        stop_reason = 'budget_exhausted'
+
+        x_obs = []
+        y_obs = []
+
+        self.update_managed_run_progress(
+            total_evaluations=budget,
+            evaluations_completed=0,
+            success_count=0,
+            failure_count=0,
+            phase='running',
+            message=f"Optimizer surrogate_gp started (budget={budget}).",
+        )
+
+        try:
+            for i in range(budget):
+                abort_reason = self._should_abort_managed_run()
+                if abort_reason:
+                    stop_reason = abort_reason
+                    break
+                self.current_geometry_state = GeometryState.from_dict(original_state.to_dict())
+
+                proposal_source = 'warmup_random'
+                pred_mean = None
+                pred_std = None
+                pred_acq = None
+
+                can_use_surrogate = i >= warmup_runs and len(y_obs) >= max(5, len(param_names) + 1)
+
+                if can_use_surrogate:
+                    x_train = np.asarray(x_obs, dtype=float)
+                    y_train = np.asarray(y_obs, dtype=float)
+                    gp_model = self._fit_gp_surrogate(x_train, y_train, noise=gp_noise)
+
+                    if gp_model is not None:
+                        model_update_count += 1
+                        pool = np.zeros((candidate_pool_size, len(param_names)), dtype=float)
+                        for j in range(candidate_pool_size):
+                            for k, p in enumerate(param_names):
+                                mn = float(registry[p]['bounds']['min'])
+                                mx = float(registry[p]['bounds']['max'])
+                                pool[j, k] = np_rng.uniform(mn, mx)
+
+                        mu, std = self._gp_predict_with_uncertainty(gp_model, pool)
+                        if direction == 'maximize':
+                            acq = mu + exploration_beta * std
+                        else:
+                            acq = (-mu) + exploration_beta * std
+
+                        best_idx = int(np.argmax(acq))
+                        vec = np.clip(pool[best_idx], mins, maxs)
+                        sample = self._vector_to_sample(param_names, vec)
+                        proposal_source = 'surrogate_ucb'
+                        pred_mean = float(mu[best_idx])
+                        pred_std = float(std[best_idx])
+                        pred_acq = float(acq[best_idx])
+                    else:
+                        sample = self._sample_random_candidate(param_names, registry, rng)
+                else:
+                    sample = self._sample_random_candidate(param_names, registry, rng)
+
+                self.update_managed_run_progress(
+                    current_run_index=i,
+                    current_values=sample,
+                    evaluations_completed=len(candidates),
+                    success_count=sum(1 for c in candidates if c.get('success')),
+                    failure_count=sum(1 for c in candidates if not c.get('success')),
+                    phase='evaluating',
+                    message=f"Evaluating candidate {i + 1}/{budget}",
+                )
+
+                run_record = self._evaluate_param_sample(study, sample, run_index=i, evaluator=evaluator)
+                score = self._score_run_for_objective(run_record, objective_name, direction=direction)
+
+                run_record['optimizer_score'] = score
+                run_record['optimizer_raw_score'] = score
+                run_record['optimizer_penalty'] = 0.0
+                run_record['proposal_source'] = proposal_source
+                if pred_mean is not None:
+                    run_record['surrogate_pred_mean'] = pred_mean
+                    run_record['surrogate_pred_std'] = pred_std
+                    run_record['surrogate_acquisition'] = pred_acq
+
+                candidates.append(run_record)
+
+                obj_val = run_record.get('objectives', {}).get(objective_name)
+                try:
+                    obj_float = float(obj_val)
+                    if np.isfinite(obj_float):
+                        x_obs.append([float(sample[p]) for p in param_names])
+                        y_obs.append(obj_float)
+                except (TypeError, ValueError):
+                    pass
+
+                if score > best_score:
+                    best_score = score
+                    best = run_record
+
+                self.update_managed_run_progress(
+                    evaluations_completed=len(candidates),
+                    success_count=sum(1 for c in candidates if c.get('success')),
+                    failure_count=sum(1 for c in candidates if not c.get('success')),
+                    phase='evaluating',
+                    message=f"Completed candidate {i + 1}/{budget}",
+                )
+        finally:
+            self.current_geometry_state = original_state
+            self.recalculate_geometry_state()
+
+        self.update_managed_run_progress(
+            evaluations_completed=len(candidates),
+            success_count=sum(1 for c in candidates if c.get('success')),
+            failure_count=sum(1 for c in candidates if not c.get('success')),
+            phase=stop_reason,
+            current_values={},
+            message=f"Optimizer surrogate_gp finished with status '{stop_reason}'.",
+        )
+
+        run_id = f"opt_{datetime.utcnow().strftime('%Y%m%dT%H%M%S_%f')}"
+        summary = {
+            'run_id': run_id,
+            'created_at': datetime.utcnow().isoformat() + 'Z',
+            'study_name': study_name,
+            'method': 'surrogate_gp',
+            'seed': int(seed),
+            'budget': budget,
+            'max_budget_cap': self.MAX_OPTIMIZER_BUDGET,
+            'objective': {
+                'name': objective_name,
+                'direction': direction,
+            },
+            'success_count': sum(1 for c in candidates if c.get('success')),
+            'failure_count': sum(1 for c in candidates if not c.get('success')),
+            'best_run': best,
+            'candidates': candidates,
+            'stop_reason': stop_reason,
+            'evaluations_used': len(candidates),
+            'generation_stats': [],
+            'step_size_history': [],
+            'surrogate': {
+                'type': 'gp_rbf',
+                'warmup_runs': warmup_runs,
+                'candidate_pool_size': candidate_pool_size,
+                'exploration_beta': exploration_beta,
+                'gp_noise': gp_noise,
+                'model_updates': model_update_count,
+                'training_points': len(y_obs),
+            },
+        }
+
+        self.current_geometry_state.optimizer_runs[run_id] = summary
+        self._capture_history_state(f"Ran surrogate GP optimizer on study '{study_name}'")
+        return summary, None
+
+    def run_simulation_in_loop_optimizer(
+        self,
+        study_name,
+        method='surrogate_gp',
+        budget=20,
+        seed=42,
+        objective_name=None,
+        direction=None,
+        cmaes_config=None,
+        surrogate_config=None,
+        evaluator=None,
+    ):
+        if not callable(evaluator):
+            return None, "A simulation evaluator callback is required."
+
+        method = (method or 'surrogate_gp').strip().lower()
+
+        if method == 'surrogate_gp':
+            surrogate_cfg = surrogate_config or {}
+            result, err = self.run_surrogate_param_optimizer(
+                study_name=study_name,
+                budget=budget,
+                seed=seed,
+                objective_name=objective_name,
+                direction=direction,
+                warmup_runs=surrogate_cfg.get('warmup_runs', 10),
+                candidate_pool_size=surrogate_cfg.get('candidate_pool_size', 256),
+                exploration_beta=surrogate_cfg.get('exploration_beta', 1.0),
+                gp_noise=surrogate_cfg.get('gp_noise', 1e-6),
+                evaluator=evaluator,
+            )
+        elif method in {'random_search', 'cmaes'}:
+            result, err = self.run_param_optimizer(
+                study_name=study_name,
+                method=method,
+                budget=budget,
+                seed=seed,
+                objective_name=objective_name,
+                direction=direction,
+                cmaes_config=cmaes_config,
+                evaluator=evaluator,
+            )
+        else:
+            return None, f"Unsupported simulation-in-loop method '{method}'."
+
+        if result:
+            result['simulation_in_loop'] = True
+            result['simulation_method'] = method
+        return result, err
+
+    def _extract_best_objective_value(self, optimizer_result, objective_name):
+        if not isinstance(optimizer_result, dict):
+            return None
+        best = optimizer_result.get('best_run') or {}
+        objectives = best.get('objectives', {}) if isinstance(best, dict) else {}
+        val = objectives.get(objective_name)
+        try:
+            x = float(val)
+            if np.isfinite(x):
+                return x
+        except (TypeError, ValueError):
+            return None
+        return None
+
+    def run_optimizer_head_to_head(
+        self,
+        study_name,
+        budget=40,
+        seed=42,
+        objective_name=None,
+        direction=None,
+        classical_method='cmaes',
+        cmaes_config=None,
+        surrogate_config=None,
+        evaluator=None,
+    ):
+        surrogate_cfg = surrogate_config or {}
+
+        t0 = time.perf_counter()
+        classical_result, classical_err = self.run_param_optimizer(
+            study_name=study_name,
+            method=classical_method,
+            budget=budget,
+            seed=seed,
+            objective_name=objective_name,
+            direction=direction,
+            cmaes_config=cmaes_config,
+            evaluator=evaluator,
+        )
+        classical_elapsed_s = float(time.perf_counter() - t0)
+        if not classical_result:
+            return None, classical_err or "Classical optimizer failed."
+
+        resolved_objective = (classical_result.get('objective') or {}).get('name')
+        resolved_direction = (classical_result.get('objective') or {}).get('direction', direction or 'maximize')
+
+        t1 = time.perf_counter()
+        surrogate_result, surrogate_err = self.run_surrogate_param_optimizer(
+            study_name=study_name,
+            budget=budget,
+            seed=seed,
+            objective_name=resolved_objective,
+            direction=resolved_direction,
+            warmup_runs=surrogate_cfg.get('warmup_runs', 10),
+            candidate_pool_size=surrogate_cfg.get('candidate_pool_size', 256),
+            exploration_beta=surrogate_cfg.get('exploration_beta', 1.0),
+            gp_noise=surrogate_cfg.get('gp_noise', 1e-6),
+            evaluator=evaluator,
+        )
+        surrogate_elapsed_s = float(time.perf_counter() - t1)
+        if not surrogate_result:
+            return None, surrogate_err or "Surrogate optimizer failed."
+
+        obj_name = resolved_objective
+        direction = resolved_direction or 'maximize'
+
+        classical_best = self._extract_best_objective_value(classical_result, obj_name)
+        surrogate_best = self._extract_best_objective_value(surrogate_result, obj_name)
+
+        sign = 1.0 if direction == 'maximize' else -1.0
+        winner = 'undetermined'
+        delta_score = None
+        relative_improvement_pct = None
+
+        if classical_best is not None and surrogate_best is not None:
+            c_score = sign * classical_best
+            s_score = sign * surrogate_best
+            delta_score = float(s_score - c_score)
+
+            if abs(delta_score) < 1e-12:
+                winner = 'tie'
+            elif delta_score > 0:
+                winner = 'surrogate'
+            else:
+                winner = 'classical'
+
+            denom = abs(c_score)
+            if denom > 1e-12:
+                relative_improvement_pct = float((delta_score / denom) * 100.0)
+
+        speedup_ratio = None
+        if surrogate_elapsed_s > 1e-12:
+            speedup_ratio = float(classical_elapsed_s / surrogate_elapsed_s)
+
+        summary = {
+            'study_name': study_name,
+            'budget': int(budget),
+            'seed': int(seed),
+            'objective': {
+                'name': obj_name,
+                'direction': direction,
+            },
+            'classical': {
+                'method': classical_method,
+                'run_id': classical_result.get('run_id'),
+                'elapsed_s': classical_elapsed_s,
+                'evaluations_used': classical_result.get('evaluations_used', len(classical_result.get('candidates', []))),
+                'success_count': classical_result.get('success_count'),
+                'failure_count': classical_result.get('failure_count'),
+                'best_objective': classical_best,
+                'stop_reason': classical_result.get('stop_reason'),
+            },
+            'surrogate': {
+                'method': surrogate_result.get('method', 'surrogate_gp'),
+                'run_id': surrogate_result.get('run_id'),
+                'elapsed_s': surrogate_elapsed_s,
+                'evaluations_used': surrogate_result.get('evaluations_used', len(surrogate_result.get('candidates', []))),
+                'success_count': surrogate_result.get('success_count'),
+                'failure_count': surrogate_result.get('failure_count'),
+                'best_objective': surrogate_best,
+                'stop_reason': surrogate_result.get('stop_reason'),
+                'config': surrogate_result.get('surrogate', {}),
+            },
+            'comparison': {
+                'winner': winner,
+                'delta_score_surrogate_minus_classical': delta_score,
+                'relative_improvement_pct': relative_improvement_pct,
+                'objective_delta_raw_surrogate_minus_classical': (None if (surrogate_best is None or classical_best is None) else float(surrogate_best - classical_best)),
+                'speedup_ratio_classical_over_surrogate': speedup_ratio,
+            },
+            'run_ids': {
+                'classical': classical_result.get('run_id'),
+                'surrogate': surrogate_result.get('run_id'),
+            },
+            'details': {
+                'classical_result': classical_result,
+                'surrogate_result': surrogate_result,
+            },
+        }
+
+        return summary, None
+
+    def list_optimizer_runs(self, study_name=None, limit=50):
+        if not self.current_geometry_state:
+            return []
+        runs = list((self.current_geometry_state.optimizer_runs or {}).values())
+        runs.sort(key=lambda r: r.get('created_at', ''), reverse=True)
+        if study_name:
+            runs = [r for r in runs if r.get('study_name') == study_name]
+        return runs[:max(1, int(limit))]
+
+    def _get_optimizer_run(self, run_id):
+        runs = (self.current_geometry_state.optimizer_runs or {}) if self.current_geometry_state else {}
+        return runs.get(run_id)
+
+    def run_param_optimizer(self, study_name, method='random_search', budget=20, seed=42, objective_name=None, direction=None, cmaes_config=None, evaluator=None):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        studies = self.current_geometry_state.param_studies or {}
+        if study_name not in studies:
+            return None, f"Study '{study_name}' not found."
+
+        study = studies[study_name]
+        if method not in {'random_search', 'cmaes'}:
+            return None, f"Unsupported optimizer method '{method}'."
+
+        budget = max(1, int(budget))
+        budget = min(budget, self.MAX_OPTIMIZER_BUDGET)
+        seed = int(seed)
+
+        objectives = study.get('objectives', []) or []
+        if objective_name is None:
+            objective_name = objectives[0].get('name', objectives[0].get('metric')) if objectives else 'success_flag'
+        if direction is None:
+            if objectives:
+                for o in objectives:
+                    nm = o.get('name', o.get('metric'))
+                    if nm == objective_name:
+                        direction = o.get('direction', 'maximize')
+                        break
+            if direction is None:
+                direction = 'maximize'
+
+        param_names = study.get('parameters', [])
+        registry = self.current_geometry_state.parameter_registry
+
+        original_state = GeometryState.from_dict(self.current_geometry_state.to_dict())
+        algo_result = None
+
+        try:
+            self.current_geometry_state = GeometryState.from_dict(original_state.to_dict())
+            if method == 'random_search':
+                algo_result = self._run_random_search_optimizer(
+                    study=study,
+                    param_names=param_names,
+                    registry=registry,
+                    objective_name=objective_name,
+                    direction=direction,
+                    budget=budget,
+                    seed=seed,
+                    evaluator=evaluator,
+                )
+            else:
+                algo_result = self._run_cmaes_optimizer(
+                    study=study,
+                    param_names=param_names,
+                    registry=registry,
+                    objective_name=objective_name,
+                    direction=direction,
+                    budget=budget,
+                    seed=seed,
+                    cmaes_config=cmaes_config,
+                    evaluator=evaluator,
+                )
+        finally:
+            self.current_geometry_state = original_state
+            self.recalculate_geometry_state()
+
+        candidates = algo_result.get('candidates', []) if isinstance(algo_result, dict) else []
+        best = algo_result.get('best') if isinstance(algo_result, dict) else None
+
+        run_id = f"opt_{datetime.utcnow().strftime('%Y%m%dT%H%M%S_%f')}"
+        summary = {
+            'run_id': run_id,
+            'created_at': datetime.utcnow().isoformat() + 'Z',
+            'study_name': study_name,
+            'method': method,
+            'seed': seed,
+            'budget': budget,
+            'max_budget_cap': self.MAX_OPTIMIZER_BUDGET,
+            'objective': {
+                'name': objective_name,
+                'direction': direction,
+            },
+            'success_count': sum(1 for c in candidates if c.get('success')),
+            'failure_count': sum(1 for c in candidates if not c.get('success')),
+            'best_run': best,
+            'candidates': candidates,
+            'stop_reason': algo_result.get('stop_reason') if isinstance(algo_result, dict) else None,
+            'evaluations_used': algo_result.get('evaluations_used', len(candidates)) if isinstance(algo_result, dict) else len(candidates),
+            'generation_stats': algo_result.get('generation_stats', []) if isinstance(algo_result, dict) else [],
+            'step_size_history': algo_result.get('step_size_history', []) if isinstance(algo_result, dict) else [],
+        }
+        if method == 'cmaes' and isinstance(algo_result, dict):
+            summary['cmaes'] = algo_result.get('cmaes', {})
+
+        self.current_geometry_state.optimizer_runs[run_id] = summary
+        self._capture_history_state(f"Ran optimizer '{method}' on study '{study_name}'")
+
+        return summary, None
+
+    def replay_optimizer_best_candidate(self, run_id, apply_to_project=True):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        opt_run = self._get_optimizer_run(run_id)
+        if not opt_run:
+            return None, f"Optimizer run '{run_id}' not found."
+
+        study_name = opt_run.get('study_name')
+        studies = self.current_geometry_state.param_studies or {}
+        if study_name not in studies:
+            return None, f"Study '{study_name}' referenced by optimizer run not found."
+
+        best = opt_run.get('best_run') or {}
+        best_values = best.get('values')
+        if not isinstance(best_values, dict) or not best_values:
+            return None, "Optimizer run has no best candidate values to replay."
+
+        study = studies[study_name]
+        original_state = GeometryState.from_dict(self.current_geometry_state.to_dict())
+
+        try:
+            run_record = self._evaluate_param_sample(study, dict(best_values), run_index=0)
+            replay_record = {
+                'timestamp': datetime.utcnow().isoformat() + 'Z',
+                'run_id': run_id,
+                'success': bool(run_record.get('success')),
+                'error': run_record.get('error'),
+                'objective_values': run_record.get('objectives', {}),
+                'optimizer_score': run_record.get('optimizer_score'),
+            }
+
+            opt_run.setdefault('replay_records', []).append(replay_record)
+
+            if apply_to_project:
+                self._capture_history_state(f"Replayed best candidate from optimizer run '{run_id}'")
+                return {
+                    'run_id': run_id,
+                    'applied_to_project': True,
+                    'replay_record': replay_record,
+                    'run_record': run_record,
+                }, None
+
+            # not applying: restore previous state
+            self.current_geometry_state = original_state
+            self.recalculate_geometry_state()
+            return {
+                'run_id': run_id,
+                'applied_to_project': False,
+                'replay_record': replay_record,
+                'run_record': run_record,
+            }, None
+        except Exception as e:
+            self.current_geometry_state = original_state
+            self.recalculate_geometry_state()
+            return None, str(e)
+
+    def verify_optimizer_best_candidate(self, run_id, repeats=3):
+        if not self.current_geometry_state:
+            return None, "No active project state."
+
+        opt_run = self._get_optimizer_run(run_id)
+        if not opt_run:
+            return None, f"Optimizer run '{run_id}' not found."
+
+        study_name = opt_run.get('study_name')
+        studies = self.current_geometry_state.param_studies or {}
+        if study_name not in studies:
+            return None, f"Study '{study_name}' referenced by optimizer run not found."
+
+        best = opt_run.get('best_run') or {}
+        best_values = best.get('values')
+        if not isinstance(best_values, dict) or not best_values:
+            return None, "Optimizer run has no best candidate values to verify."
+
+        repeats = max(1, min(int(repeats), 100))
+        objective = opt_run.get('objective', {}) or {}
+        objective_name = objective.get('name')
+
+        study = studies[study_name]
+        original_state = GeometryState.from_dict(self.current_geometry_state.to_dict())
+
+        verification_runs = []
+        stop_reason = 'completed'
+        try:
+            for i in range(repeats):
+                abort_reason = self._should_abort_managed_run()
+                if abort_reason:
+                    stop_reason = abort_reason
+                    break
+
+                self.current_geometry_state = GeometryState.from_dict(original_state.to_dict())
+                rr = self._evaluate_param_sample(study, dict(best_values), run_index=i)
+                verification_runs.append(rr)
+        finally:
+            self.current_geometry_state = original_state
+            self.recalculate_geometry_state()
+
+        obj_values = []
+        if objective_name:
+            for rr in verification_runs:
+                val = rr.get('objectives', {}).get(objective_name)
+                try:
+                    obj_values.append(float(val))
+                except (TypeError, ValueError):
+                    pass
+
+        if obj_values:
+            stats = {
+                'count': len(obj_values),
+                'mean': float(np.mean(obj_values)),
+                'std': float(np.std(obj_values)),
+                'min': float(np.min(obj_values)),
+                'max': float(np.max(obj_values)),
+            }
+        else:
+            stats = {'count': 0, 'mean': None, 'std': None, 'min': None, 'max': None}
+
+        verification_record = {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'run_id': run_id,
+            'requested_repeats': repeats,
+            'repeats': len(verification_runs),
+            'objective_name': objective_name,
+            'stats': stats,
+            'stop_reason': stop_reason,
+            'success_count': sum(1 for r in verification_runs if r.get('success')),
+            'failure_count': sum(1 for r in verification_runs if not r.get('success')),
+        }
+        opt_run.setdefault('verification_records', []).append(verification_record)
+
+        return {
+            'run_id': run_id,
+            'objective_name': objective_name,
+            'verification_record': verification_record,
+            'stop_reason': stop_reason,
+            'runs': verification_runs,
+        }, None
+
     def get_object_details(self, object_type, object_name_or_id):
         """
         Get details for a specific object by its type and name/ID.
@@ -897,6 +2830,20 @@ class ProjectManager:
 
         return obj.to_dict() if obj else None
 
+    def _normalize_update_property_path_parts(self, property_path):
+        if not isinstance(property_path, str):
+            return None, f"Invalid property path '{property_path}'"
+
+        normalized_property_path = property_path.strip()
+        if not normalized_property_path:
+            return None, f"Invalid property path '{property_path}'"
+
+        path_parts = normalized_property_path.split('.')
+        if any(not part for part in path_parts):
+            return None, f"Invalid property path '{property_path}'"
+
+        return path_parts, None
+
     def update_object_property(self, object_type, object_id, property_path, new_value):
         """
         Updates a property of an object.
@@ -939,8 +2886,11 @@ class ProjectManager:
         if not target_obj: 
             return False, f"Could not find object of type '{object_type}' with ID/Name '{object_id}'"
 
+        path_parts, path_error = self._normalize_update_property_path_parts(property_path)
+        if path_error:
+            return False, path_error
+
         try:
-            path_parts = property_path.split('.')
             current_level_obj = target_obj
             for part in path_parts[:-1]:
                 if isinstance(current_level_obj, dict):
@@ -953,7 +2903,7 @@ class ProjectManager:
                 current_level_obj[final_key] = new_value
             else:
                 setattr(current_level_obj, final_key, new_value)
-        except (AttributeError, KeyError) as e:
+        except (AttributeError, KeyError, TypeError, IndexError) as e:
             return False, f"Invalid property path '{property_path}': {e}"
         
         # Capture the new state
@@ -1001,6 +2951,37 @@ class ProjectManager:
     def add_material(self, name_suggestion, properties_dict):
         if not self.current_geometry_state: return None, "No project loaded"
         name = self._generate_unique_name(name_suggestion, self.current_geometry_state.materials)
+        
+        # Check if this is a NIST material name (starts with G4_)
+        # If it's a NIST name and has no components/Z/A/density, create as NIST material
+        is_nist_name = name_suggestion.startswith("G4_")
+        has_no_components = not properties_dict.get('components')
+        has_no_z = not properties_dict.get('Z_expr') and not properties_dict.get('Z')
+        has_no_a = not properties_dict.get('A_expr') and not properties_dict.get('A')
+        has_no_density = not properties_dict.get('density_expr') and not properties_dict.get('density')
+        
+        if is_nist_name and has_no_components and has_no_z:
+            # Create as NIST material - this tells Geant4 to use the built-in material
+            properties_dict = {**properties_dict, 'mat_type': 'nist'}
+        
+        # Auto-create missing elements referenced in components
+        components = properties_dict.get('components', [])
+        if components:
+            for comp in components:
+                ref_name = comp.get('ref', '')
+                if ref_name and ref_name not in self.current_geometry_state.elements:
+                    # Try to look up Z from periodic table
+                    ref_lower = ref_name.lower().strip()
+                    Z = getattr(self, '_get_element_z', lambda x: None)(ref_lower)
+                    if Z is None:
+                        # Check PERIODIC_TABLE from geometry_types
+                        from .geometry_types import PERIODIC_TABLE
+                        Z = PERIODIC_TABLE.get(ref_lower)
+                    
+                    # Create a simple element with the referenced name
+                    new_element = Element(name=ref_name, Z=Z)
+                    self.current_geometry_state.elements[ref_name] = new_element
+        
         # Assumes properties_dict contains expression strings like Z_expr, A_expr, density_expr
         new_material = Material(name, **properties_dict)
         self.current_geometry_state.add_material(new_material)
@@ -1329,7 +3310,7 @@ class ProjectManager:
         self.recalculate_geometry_state()
         return True, None
 
-    def add_physical_volume(self, parent_lv_name, pv_name_suggestion, placed_lv_ref, position, rotation, scale):
+    def add_physical_volume(self, parent_lv_name, pv_name_suggestion, placed_lv_ref, position, rotation, scale, copy_number_expr="0"):
         if not self.current_geometry_state: return None, "No project loaded"
         
         state = self.current_geometry_state
@@ -1353,6 +3334,7 @@ class ProjectManager:
         # position_dict and rotation_dict are assumed to be {'x':val,...} in internal units
         new_pv = PhysicalVolumePlacement(pv_name, placed_lv_ref,
                                         parent_lv_name=parent_lv_name,
+                                        copy_number_expr=copy_number_expr,
                                         position_val_or_ref=position,
                                         rotation_val_or_ref=rotation,
                                         scale_val_or_ref=scale)
@@ -2558,6 +4540,9 @@ class ProjectManager:
         """
         Processes an uploaded STEP file using options, imports the geometry,
         and merges it into the current project.
+
+        Returns:
+            (success: bool, error_msg: Optional[str], import_report: Optional[dict])
         """
         # Save the stream to a temporary file to be read by the STEP parser
         with tempfile.NamedTemporaryFile(delete=False, suffix=".step") as temp_f:
@@ -2573,11 +4558,13 @@ class ProjectManager:
             self.changed_object_ids['solids'].update(newly_created_solid_names)
             print(f"Changed solids {self.changed_object_ids['solids']}")
             
+            import_report = getattr(imported_state, 'smart_import_report', None)
+
             # The merge_from_state function already handles placements and grouping
             success, error_msg = self.merge_from_state(imported_state)
             
             if not success:
-                return False, f"Failed to merge STEP geometry: {error_msg}"
+                return False, f"Failed to merge STEP geometry: {error_msg}", None
             
             # Recalculate is handled inside merge_from_state, but an extra one ensures consistency.
             self.recalculate_geometry_state()
@@ -2585,7 +4572,7 @@ class ProjectManager:
             # Capture this entire import as a single history event
             self._capture_history_state(f"Imported STEP file '{options.get('groupingName')}'")
 
-            return True, None
+            return True, None, import_report
             
         except Exception as e:
             # Ensure we raise the error to be caught by the app route
@@ -2872,11 +4859,51 @@ class ProjectManager:
 
         return True, None
 
+    def _normalize_gps_commands(self, gps_commands):
+        """Normalize gps_commands values to strings to prevent [object Object] display issues."""
+        normalized = {}
+        
+        if gps_commands:
+            for key, value in gps_commands.items():
+                if isinstance(value, dict):
+                    # Convert {"value": 100, "unit": "keV"} to "100 keV"
+                    if 'value' in value and 'unit' in value:
+                        normalized[key] = f"{value['value']} {value['unit']}"
+                    else:
+                        normalized[key] = str(value)
+                elif value is None:
+                    normalized[key] = ""
+                else:
+                    normalized[key] = str(value)
+        
+        # Set sensible defaults for missing GPS commands
+        # Particle type - default to gamma if not specified
+        if 'particle' not in normalized or not normalized.get('particle'):
+            normalized['particle'] = 'gamma'
+        
+        # Direction mode - default to Direction (not Isotropic) if not specified
+        if 'ang/type' not in normalized or not normalized.get('ang/type'):
+            normalized['ang/type'] = 'Direction'
+        
+        # Energy format - ensure proper Geant4 format with * operator
+        if 'energy' in normalized and normalized['energy']:
+            energy_str = normalized['energy']
+            # Convert "1 GeV" to "1*GeV" format for Geant4
+            if ' ' in energy_str and '*' not in energy_str:
+                parts = energy_str.strip().split()
+                if len(parts) == 2:
+                    normalized['energy'] = f"{parts[0]}*{parts[1]}"
+        
+        return normalized
+
     def add_source(self, name_suggestion, gps_commands, position, rotation, activity=1.0, confine_to_pv=None, volume_link_id=None):
         """Adds a new particle source to the project, optionally linked to a volume."""
         if not self.current_geometry_state:
             return None, "No project loaded"
 
+        # Normalize gps_commands to ensure all values are strings
+        gps_commands = self._normalize_gps_commands(gps_commands)
+        
         name = self._generate_unique_name(name_suggestion, self.current_geometry_state.sources)
         
         # If Linked, calculate global transform
@@ -2973,7 +5000,8 @@ class ProjectManager:
             self.current_geometry_state.sources[new_name] = source_to_update
 
         if new_gps_commands is not None:
-            source_to_update.gps_commands = new_gps_commands
+            # Normalize gps_commands to ensure all values are strings
+            source_to_update.gps_commands = self._normalize_gps_commands(new_gps_commands)
 
         if new_position is not None:
             source_to_update.position = new_position
@@ -3291,7 +5319,915 @@ class ProjectManager:
             shape_cmds['pos/halfz'] = "200 mm"
         
         return shape_cmds, pv._evaluated_position, pv._evaluated_rotation
-    
+
+    def _preflight_add_issue(self, report, severity, code, message, object_refs=None, hint=None, metadata=None):
+        issue = {
+            'severity': severity,
+            'code': code,
+            'message': message,
+            'object_refs': object_refs or [],
+        }
+        if hint:
+            issue['hint'] = hint
+        if metadata is not None:
+            issue['metadata'] = metadata
+        report['issues'].append(issue)
+
+    def _preflight_issue_signature(self, issue):
+        refs = issue.get('object_refs', [])
+        if not isinstance(refs, list):
+            refs = [refs]
+
+        return {
+            'severity': str(issue.get('severity', 'info')),
+            'code': str(issue.get('code', 'unknown')),
+            'message': str(issue.get('message', '')),
+            'object_refs': [str(ref) for ref in refs],
+            'hint': str(issue['hint']) if issue.get('hint') is not None else None,
+            'metadata': issue.get('metadata'),
+        }
+
+    def _preflight_finalize(self, report):
+        severity_counts = {'error': 0, 'warning': 0, 'info': 0}
+        code_counts = {}
+        signatures = []
+
+        for issue in report['issues']:
+            sev = issue.get('severity', 'info')
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
+            code = issue.get('code', 'unknown')
+            code_counts[code] = code_counts.get(code, 0) + 1
+            signatures.append(self._preflight_issue_signature(issue))
+
+        sorted_signatures = sorted(
+            signatures,
+            key=lambda item: (
+                item.get('severity', 'info'),
+                item.get('code', 'unknown'),
+                item.get('message', ''),
+                tuple(item.get('object_refs', [])),
+                item.get('hint') or '',
+                json.dumps(item.get('metadata'), sort_keys=True, separators=(',', ':'), default=str),
+            ),
+        )
+
+        fingerprint_payload = json.dumps(
+            sorted_signatures,
+            sort_keys=True,
+            separators=(',', ':'),
+        ).encode('utf-8')
+        issue_fingerprint = hashlib.sha256(fingerprint_payload).hexdigest()
+
+        report['summary'] = {
+            'errors': severity_counts.get('error', 0),
+            'warnings': severity_counts.get('warning', 0),
+            'infos': severity_counts.get('info', 0),
+            'can_run': severity_counts.get('error', 0) == 0,
+            'counts_by_code': dict(sorted(code_counts.items())),
+            'issue_count': len(report['issues']),
+            'issue_fingerprint': issue_fingerprint,
+        }
+        return report
+
+    def _get_solid_local_half_extents(self, solid):
+        """Returns (hx, hy, hz) for supported primitive solids, else None."""
+        p = solid._evaluated_parameters or {}
+        solid_type = solid.type
+
+        try:
+            if solid_type == 'box':
+                return (float(p.get('x', 0.0)) / 2.0, float(p.get('y', 0.0)) / 2.0, float(p.get('z', 0.0)) / 2.0)
+            if solid_type in ['tube', 'cylinder', 'tubs']:
+                rmax = float(p.get('rmax', 0.0))
+                z = float(p.get('z', 0.0))
+                return (rmax, rmax, z / 2.0)
+            if solid_type in ['sphere']:
+                rmax = float(p.get('rmax', 0.0))
+                return (rmax, rmax, rmax)
+            if solid_type in ['orb']:
+                r = float(p.get('r', 0.0))
+                return (r, r, r)
+        except Exception:
+            return None
+
+        return None
+
+    def _compute_pv_aabb(self, pv):
+        state = self.current_geometry_state
+        lv = state.logical_volumes.get(pv.volume_ref)
+        if not lv:
+            return None
+
+        solid = state.solids.get(lv.solid_ref)
+        if not solid:
+            return None
+
+        half_extents = self._get_solid_local_half_extents(solid)
+        if not half_extents:
+            return None
+
+        hx, hy, hz = half_extents
+        if hx <= 0 or hy <= 0 or hz <= 0:
+            return None
+
+        corners = np.array([
+            [sx * hx, sy * hy, sz * hz, 1.0]
+            for sx in (-1.0, 1.0)
+            for sy in (-1.0, 1.0)
+            for sz in (-1.0, 1.0)
+        ])
+
+        matrix = pv.get_transform_matrix()
+        transformed = (matrix @ corners.T).T[:, :3]
+
+        mins = transformed.min(axis=0)
+        maxs = transformed.max(axis=0)
+
+        return {
+            'pv': pv,
+            'pv_name': pv.name,
+            'pv_id': pv.id,
+            'solid_type': solid.type,
+            'min': mins,
+            'max': maxs,
+        }
+
+    def _aabb_intersection_volume(self, a, b):
+        overlap = np.minimum(a['max'], b['max']) - np.maximum(a['min'], b['min'])
+        if np.any(overlap <= 0):
+            return 0.0
+        return float(overlap[0] * overlap[1] * overlap[2])
+
+    def _build_preflight_hierarchy_adjacency(self, state):
+        adjacency = {}
+
+        for lv_name in sorted(state.logical_volumes.keys()):
+            adjacency[f"LV:{lv_name}"] = []
+        for asm_name in sorted(state.assemblies.keys()):
+            adjacency[f"ASM:{asm_name}"] = []
+
+        for parent_lv in state.logical_volumes.values():
+            parent_node = f"LV:{parent_lv.name}"
+
+            if parent_lv.content_type == 'physvol':
+                if not parent_lv.content:
+                    continue
+                for pv in parent_lv.content:
+                    placed_ref = str(getattr(pv, 'volume_ref', '') or '').strip()
+                    if placed_ref in state.logical_volumes:
+                        adjacency[parent_node].append(f"LV:{placed_ref}")
+                    elif placed_ref in state.assemblies:
+                        adjacency[parent_node].append(f"ASM:{placed_ref}")
+                continue
+
+            if parent_lv.content_type in ['replica', 'division', 'parameterised'] and parent_lv.content:
+                placed_ref = str(getattr(parent_lv.content, 'volume_ref', '') or '').strip()
+                if placed_ref in state.logical_volumes:
+                    adjacency[parent_node].append(f"LV:{placed_ref}")
+
+        for asm in state.assemblies.values():
+            parent_node = f"ASM:{asm.name}"
+            for pv in asm.placements:
+                placed_ref = str(getattr(pv, 'volume_ref', '') or '').strip()
+                if placed_ref in state.logical_volumes:
+                    adjacency[parent_node].append(f"LV:{placed_ref}")
+                elif placed_ref in state.assemblies:
+                    adjacency[parent_node].append(f"ASM:{placed_ref}")
+
+        for node_name, child_nodes in adjacency.items():
+            adjacency[node_name] = sorted(set(child_nodes))
+
+        return adjacency
+
+    def _normalize_preflight_cycle_signature(self, cycle_nodes):
+        if not cycle_nodes:
+            return tuple()
+
+        if len(cycle_nodes) > 1 and cycle_nodes[0] == cycle_nodes[-1]:
+            core = list(cycle_nodes[:-1])
+        else:
+            core = list(cycle_nodes)
+
+        if len(core) <= 1:
+            return tuple(core)
+
+        rotations = [
+            tuple(core[idx:] + core[:idx])
+            for idx in range(len(core))
+        ]
+        return min(rotations)
+
+    def _find_preflight_hierarchy_cycles(self, state, max_cycles=20):
+        adjacency = self._build_preflight_hierarchy_adjacency(state)
+        visited = set()
+        active_index = {}
+        active_stack = []
+
+        try:
+            max_cycles = int(max_cycles)
+        except Exception:
+            max_cycles = 20
+
+        if max_cycles < 1:
+            max_cycles = 1
+
+        cycles = []
+        seen_signatures = set()
+        truncated = False
+
+        def _record_cycle(cycle_path):
+            nonlocal truncated
+            signature = self._normalize_preflight_cycle_signature(cycle_path)
+            if signature in seen_signatures:
+                return False
+
+            seen_signatures.add(signature)
+            cycles.append(cycle_path)
+            if len(cycles) >= max_cycles:
+                truncated = True
+                return True
+            return False
+
+        def _dfs(node_name):
+            visited.add(node_name)
+            active_index[node_name] = len(active_stack)
+            active_stack.append(node_name)
+
+            for child_name in adjacency.get(node_name, []):
+                if child_name in active_index:
+                    cycle_start_idx = active_index[child_name]
+                    cycle_path = active_stack[cycle_start_idx:] + [child_name]
+                    if _record_cycle(cycle_path):
+                        return True
+                    continue
+
+                if child_name in visited:
+                    continue
+
+                if _dfs(child_name):
+                    return True
+
+            active_stack.pop()
+            active_index.pop(node_name, None)
+            return False
+
+        for node_name in sorted(adjacency.keys()):
+            if node_name in visited:
+                continue
+            if _dfs(node_name):
+                break
+
+        metadata = {
+            'max_cycles': max_cycles,
+            'reported_cycles': len(cycles),
+            'truncated': truncated,
+        }
+        return cycles, metadata
+
+    def run_preflight_checks(self):
+        """Runs lightweight geometry preflight checks prior to simulation."""
+        report = {
+            'version': 1,
+            'name': 'geometry_preflight_v1',
+            'issues': [],
+        }
+
+        if not self.current_geometry_state:
+            self._preflight_add_issue(report, 'error', 'missing_project_state', 'No project geometry state is loaded.')
+            return self._preflight_finalize(report)
+
+        ok, err = self.recalculate_geometry_state()
+        if not ok:
+            self._preflight_add_issue(
+                report,
+                'error',
+                'recalculation_failed',
+                f'Geometry evaluation failed: {err}',
+                hint='Fix invalid expressions/defines before simulation.',
+            )
+            return self._preflight_finalize(report)
+
+        state = self.current_geometry_state
+
+        # 1) Root/world and placement reference integrity checks.
+        world_volume_ref = str(state.world_volume_ref or '').strip()
+        if not world_volume_ref:
+            self._preflight_add_issue(
+                report,
+                'error',
+                'missing_world_volume_reference',
+                'Project is missing world_volume_ref.',
+                hint='Set a valid world volume before running simulation.',
+            )
+        elif world_volume_ref not in state.logical_volumes:
+            self._preflight_add_issue(
+                report,
+                'error',
+                'unknown_world_volume_reference',
+                f"World volume '{world_volume_ref}' was not found in logical volumes.",
+                object_refs=[world_volume_ref],
+                hint='Set world_volume_ref to an existing logical volume.',
+            )
+
+        for parent_lv in state.logical_volumes.values():
+            if parent_lv.content_type != 'physvol' or not parent_lv.content:
+                continue
+
+            for pv in parent_lv.content:
+                placed_ref = str(getattr(pv, 'volume_ref', '') or '').strip()
+                if not placed_ref:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'missing_placement_volume_reference',
+                        f"Placement '{pv.name}' in parent LV '{parent_lv.name}' has no volume_ref.",
+                        object_refs=[pv.id, parent_lv.name],
+                        hint='Set this placement to reference a logical volume or assembly.',
+                    )
+                    continue
+
+                if placed_ref not in state.logical_volumes and placed_ref not in state.assemblies:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'unknown_placement_volume_reference',
+                        (
+                            f"Placement '{pv.name}' in parent LV '{parent_lv.name}' references missing volume "
+                            f"or assembly '{placed_ref}'."
+                        ),
+                        object_refs=[pv.id, parent_lv.name, placed_ref],
+                        hint='Update or remove the stale placement reference.',
+                    )
+
+                if world_volume_ref and placed_ref == world_volume_ref:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'world_volume_referenced_as_child',
+                        (
+                            f"Placement '{pv.name}' in parent LV '{parent_lv.name}' references the world volume "
+                            f"'{world_volume_ref}' as a child."
+                        ),
+                        object_refs=[pv.id, parent_lv.name, world_volume_ref],
+                        hint='World volume must be the root and should not be placed under another volume.',
+                    )
+
+        for asm in state.assemblies.values():
+            for pv in asm.placements:
+                placed_ref = str(getattr(pv, 'volume_ref', '') or '').strip()
+                if not placed_ref:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'missing_placement_volume_reference',
+                        f"Assembly placement '{pv.name}' in assembly '{asm.name}' has no volume_ref.",
+                        object_refs=[pv.id, asm.name],
+                        hint='Set this assembly placement to reference a logical volume or assembly.',
+                    )
+                    continue
+
+                if placed_ref not in state.logical_volumes and placed_ref not in state.assemblies:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'unknown_placement_volume_reference',
+                        (
+                            f"Assembly placement '{pv.name}' in assembly '{asm.name}' references missing volume "
+                            f"or assembly '{placed_ref}'."
+                        ),
+                        object_refs=[pv.id, asm.name, placed_ref],
+                        hint='Update or remove the stale assembly placement reference.',
+                    )
+
+                if world_volume_ref and placed_ref == world_volume_ref:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'world_volume_referenced_as_child',
+                        (
+                            f"Assembly placement '{pv.name}' in assembly '{asm.name}' references the world volume "
+                            f"'{world_volume_ref}' as a child."
+                        ),
+                        object_refs=[pv.id, asm.name, world_volume_ref],
+                        hint='World volume must be the root and should not be nested in assemblies.',
+                    )
+
+        # 2) Procedural placement reference and bounds checks.
+        valid_division_axes = {'kxaxis', 'kyaxis', 'kzaxis', 'x', 'y', 'z', 'krho', 'kphi', 'rho', 'phi'}
+        division_axis_to_box_dim = {
+            'kxaxis': 'x',
+            'kyaxis': 'y',
+            'kzaxis': 'z',
+            'x': 'x',
+            'y': 'y',
+            'z': 'z',
+        }
+
+        for parent_lv in state.logical_volumes.values():
+            if parent_lv.content_type not in ['replica', 'division', 'parameterised']:
+                continue
+
+            proc = parent_lv.content
+            if not proc:
+                self._preflight_add_issue(
+                    report,
+                    'error',
+                    'missing_procedural_placement_definition',
+                    (
+                        f"LogicalVolume '{parent_lv.name}' is marked as procedural type "
+                        f"'{parent_lv.content_type}' but has no content definition."
+                    ),
+                    object_refs=[parent_lv.name],
+                    hint='Recreate this procedural placement definition or switch the LV back to physvol content.',
+                )
+                continue
+
+            placed_ref = str(getattr(proc, 'volume_ref', '') or '').strip()
+            proc_name = str(getattr(proc, 'name', parent_lv.name) or parent_lv.name)
+
+            if not placed_ref:
+                self._preflight_add_issue(
+                    report,
+                    'error',
+                    'missing_procedural_volume_reference',
+                    (
+                        f"Procedural placement '{proc_name}' in LV '{parent_lv.name}' has no volume_ref."
+                    ),
+                    object_refs=[parent_lv.name],
+                    hint='Set this procedural placement to reference an existing logical volume.',
+                )
+            elif placed_ref not in state.logical_volumes:
+                self._preflight_add_issue(
+                    report,
+                    'error',
+                    'unknown_procedural_volume_reference',
+                    (
+                        f"Procedural placement '{proc_name}' in LV '{parent_lv.name}' references missing "
+                        f"logical volume '{placed_ref}'."
+                    ),
+                    object_refs=[parent_lv.name, placed_ref],
+                    hint='Update or remove the stale procedural volume reference.',
+                )
+
+            if world_volume_ref and placed_ref == world_volume_ref:
+                self._preflight_add_issue(
+                    report,
+                    'error',
+                    'world_volume_referenced_as_child',
+                    (
+                        f"Procedural placement '{proc_name}' in LV '{parent_lv.name}' references the world volume "
+                        f"'{world_volume_ref}' as a child."
+                    ),
+                    object_refs=[parent_lv.name, world_volume_ref],
+                    hint='World volume must be the root and cannot be used as a procedural child target.',
+                )
+
+            if parent_lv.content_type == 'replica':
+                replica_count = getattr(proc, '_evaluated_number', np.nan)
+                replica_width = getattr(proc, '_evaluated_width', np.nan)
+
+                if not np.isfinite(replica_count) or int(replica_count) <= 0:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'invalid_replica_instance_count',
+                        (
+                            f"Replica placement '{proc_name}' in LV '{parent_lv.name}' has invalid evaluated "
+                            f"number={replica_count}."
+                        ),
+                        object_refs=[parent_lv.name],
+                        hint='Replica number must evaluate to an integer > 0.',
+                    )
+
+                if not np.isfinite(replica_width) or float(replica_width) <= 0:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'invalid_replica_width',
+                        (
+                            f"Replica placement '{proc_name}' in LV '{parent_lv.name}' has invalid evaluated "
+                            f"width={replica_width}."
+                        ),
+                        object_refs=[parent_lv.name],
+                        hint='Replica width must evaluate to a positive finite value.',
+                    )
+
+                direction = getattr(proc, 'direction', {}) or {}
+                try:
+                    axis_vec = np.array([
+                        float(direction.get('x', np.nan)),
+                        float(direction.get('y', np.nan)),
+                        float(direction.get('z', np.nan)),
+                    ])
+                except Exception:
+                    axis_vec = np.array([np.nan, np.nan, np.nan])
+
+                if not np.all(np.isfinite(axis_vec)) or float(np.linalg.norm(axis_vec)) <= 0.0:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'invalid_replica_direction',
+                        (
+                            f"Replica placement '{proc_name}' in LV '{parent_lv.name}' has invalid direction "
+                            f"vector {direction}."
+                        ),
+                        object_refs=[parent_lv.name],
+                        hint='Replica direction must be a non-zero finite vector.',
+                    )
+
+            elif parent_lv.content_type == 'division':
+                axis = str(getattr(proc, 'axis', '') or '').strip().lower()
+                if axis not in valid_division_axes:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'invalid_division_axis',
+                        (
+                            f"Division placement '{proc_name}' in LV '{parent_lv.name}' has unsupported axis "
+                            f"'{getattr(proc, 'axis', '')}'."
+                        ),
+                        object_refs=[parent_lv.name],
+                        hint='Use one of: kXAxis, kYAxis, kZAxis (or x/y/z aliases).',
+                    )
+
+                division_number = getattr(proc, '_evaluated_number', np.nan)
+                division_width = getattr(proc, '_evaluated_width', np.nan)
+
+                has_positive_number = np.isfinite(division_number) and float(division_number) > 0
+                has_positive_width = np.isfinite(division_width) and float(division_width) > 0
+
+                if not has_positive_number and not has_positive_width:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'invalid_division_partition_bounds',
+                        (
+                            f"Division placement '{proc_name}' in LV '{parent_lv.name}' has invalid evaluated "
+                            f"number={division_number} and width={division_width}."
+                        ),
+                        object_refs=[parent_lv.name],
+                        hint='Division must evaluate to a positive number of slices and/or positive width.',
+                    )
+
+                if has_positive_number:
+                    axis_key = division_axis_to_box_dim.get(axis)
+                    mother_solid = state.solids.get(parent_lv.solid_ref)
+                    if axis_key and mother_solid and mother_solid.type == 'box':
+                        mother_params = mother_solid._evaluated_parameters or {}
+                        mother_extent = float(mother_params.get(axis_key, np.nan))
+                        division_offset = getattr(proc, '_evaluated_offset', np.nan)
+
+                        if np.isfinite(mother_extent) and np.isfinite(division_offset):
+                            derived_slice_width = (mother_extent - (2.0 * float(division_offset))) / float(division_number)
+                            if derived_slice_width <= 0:
+                                self._preflight_add_issue(
+                                    report,
+                                    'error',
+                                    'invalid_division_slice_width',
+                                    (
+                                        f"Division placement '{proc_name}' in LV '{parent_lv.name}' yields non-positive "
+                                        f"slice width {derived_slice_width} mm from mother extent {mother_extent} mm "
+                                        f"and offset {division_offset} mm."
+                                    ),
+                                    object_refs=[parent_lv.name],
+                                    hint='Reduce division offset or increase mother extent/number settings.',
+                                )
+
+            elif parent_lv.content_type == 'parameterised':
+                ncopies = getattr(proc, '_evaluated_ncopies', np.nan)
+                if not np.isfinite(ncopies) or int(ncopies) <= 0:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'invalid_parameterised_ncopies',
+                        (
+                            f"Parameterised placement '{proc_name}' in LV '{parent_lv.name}' has invalid evaluated "
+                            f"ncopies={ncopies}."
+                        ),
+                        object_refs=[parent_lv.name],
+                        hint='Set ncopies to an integer > 0.',
+                    )
+
+                parameter_sets = getattr(proc, 'parameters', None) or []
+                if not parameter_sets:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'missing_parameterised_parameters',
+                        (
+                            f"Parameterised placement '{proc_name}' in LV '{parent_lv.name}' has no parameter sets."
+                        ),
+                        object_refs=[parent_lv.name],
+                        hint='Add at least one parameter block for the parameterised placement.',
+                    )
+                elif np.isfinite(ncopies) and int(ncopies) > 0 and len(parameter_sets) != int(ncopies):
+                    self._preflight_add_issue(
+                        report,
+                        'warning',
+                        'parameterised_parameter_count_mismatch',
+                        (
+                            f"Parameterised placement '{proc_name}' in LV '{parent_lv.name}' has ncopies={int(ncopies)} "
+                            f"but defines {len(parameter_sets)} parameter sets."
+                        ),
+                        object_refs=[parent_lv.name],
+                        hint='Align ncopies with the number of provided parameter sets for deterministic behavior.',
+                    )
+
+        # 3) Placement hierarchy cycle checks (LV <-> LV/ASM and ASM <-> LV/ASM).
+        hierarchy_cycles, hierarchy_cycle_metadata = self._find_preflight_hierarchy_cycles(state)
+        for cycle_path in hierarchy_cycles:
+            cycle_str = ' -> '.join(cycle_path)
+            self._preflight_add_issue(
+                report,
+                'error',
+                'placement_hierarchy_cycle',
+                f'Placement hierarchy contains a recursive cycle: {cycle_str}.',
+                object_refs=cycle_path[:-1],
+                hint='Break recursive placement loops so the hierarchy becomes acyclic.',
+            )
+
+        if hierarchy_cycle_metadata.get('truncated'):
+            max_cycles = hierarchy_cycle_metadata.get('max_cycles', len(hierarchy_cycles))
+            reported_cycles = hierarchy_cycle_metadata.get('reported_cycles', len(hierarchy_cycles))
+            self._preflight_add_issue(
+                report,
+                'info',
+                'placement_hierarchy_cycle_report_truncated',
+                (
+                    f'Cycle reporting truncated at max_cycles={max_cycles}; '
+                    f'reported {reported_cycles} cycle findings.'
+                ),
+                metadata={
+                    'max_cycles': max_cycles,
+                    'reported_cycles': reported_cycles,
+                    'truncated': True,
+                },
+            )
+
+        # 4) Missing references and material checks.
+        for lv in state.logical_volumes.values():
+            if not lv.solid_ref or lv.solid_ref not in state.solids:
+                self._preflight_add_issue(
+                    report,
+                    'error',
+                    'missing_solid_reference',
+                    f"LogicalVolume '{lv.name}' references missing solid '{lv.solid_ref}'.",
+                    object_refs=[lv.name, lv.solid_ref],
+                    hint='Assign a valid solid to this logical volume.',
+                )
+
+            mat = lv.material_ref
+            if not mat:
+                self._preflight_add_issue(
+                    report,
+                    'error',
+                    'missing_material_reference',
+                    f"LogicalVolume '{lv.name}' has no material assigned.",
+                    object_refs=[lv.name],
+                    hint='Assign a material before running simulation.',
+                )
+            elif (mat not in state.materials) and (not str(mat).startswith('G4_')):
+                self._preflight_add_issue(
+                    report,
+                    'error',
+                    'unknown_material_reference',
+                    f"LogicalVolume '{lv.name}' references unknown material '{mat}'.",
+                    object_refs=[lv.name, mat],
+                    hint='Create this material or switch to a known/NIST material.',
+                )
+
+        # 5) Solid geometry sanity checks.
+        tiny_threshold_mm = 1e-3  # 1 micron in mm units
+        for solid in state.solids.values():
+            p = solid._evaluated_parameters or {}
+            st = solid.type
+
+            def check_positive(name, value):
+                if value is None or not np.isfinite(value):
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'non_finite_dimension',
+                        f"Solid '{solid.name}' has invalid parameter '{name}'={value}.",
+                        object_refs=[solid.name],
+                        hint='Check expressions/units for this solid parameter.',
+                    )
+                    return
+                if value <= 0:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'non_positive_dimension',
+                        f"Solid '{solid.name}' has non-positive '{name}'={value}.",
+                        object_refs=[solid.name],
+                        hint='Dimensions must be > 0.',
+                    )
+                elif value < tiny_threshold_mm:
+                    self._preflight_add_issue(
+                        report,
+                        'warning',
+                        'tiny_dimension',
+                        f"Solid '{solid.name}' has tiny '{name}'={value} mm.",
+                        object_refs=[solid.name],
+                        hint='Very small features can cause navigation issues.',
+                    )
+
+            if st == 'box':
+                for key in ['x', 'y', 'z']:
+                    check_positive(key, float(p.get(key, np.nan)))
+            elif st in ['tube', 'cylinder', 'tubs']:
+                check_positive('rmax', float(p.get('rmax', np.nan)))
+                check_positive('z', float(p.get('z', np.nan)))
+                rmin = float(p.get('rmin', 0.0))
+                rmax = float(p.get('rmax', np.nan))
+                if np.isfinite(rmin) and np.isfinite(rmax) and rmin >= rmax:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'invalid_radial_bounds',
+                        f"Solid '{solid.name}' has rmin >= rmax ({rmin} >= {rmax}).",
+                        object_refs=[solid.name],
+                        hint='Ensure rmin < rmax for tube-like solids.',
+                    )
+            elif st in ['sphere']:
+                check_positive('rmax', float(p.get('rmax', np.nan)))
+                rmin = float(p.get('rmin', 0.0))
+                rmax = float(p.get('rmax', np.nan))
+                if np.isfinite(rmin) and np.isfinite(rmax) and rmin >= rmax:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'invalid_radial_bounds',
+                        f"Solid '{solid.name}' has rmin >= rmax ({rmin} >= {rmax}).",
+                        object_refs=[solid.name],
+                    )
+            elif st == 'tessellated':
+                facets = solid.raw_parameters.get('facets', []) if isinstance(solid.raw_parameters, dict) else []
+                if len(facets) < 4:
+                    self._preflight_add_issue(
+                        report,
+                        'warning',
+                        'low_facet_count',
+                        f"Tessellated solid '{solid.name}' has very few facets ({len(facets)}).",
+                        object_refs=[solid.name],
+                        hint='Check CAD import quality; this may indicate degenerate geometry.',
+                    )
+
+        # 6) Approximate sibling overlap checks (AABB heuristic).
+        placement_groups = []
+        for lv in state.logical_volumes.values():
+            if lv.content_type == 'physvol' and lv.content:
+                placement_groups.append((f"LV:{lv.name}", lv.content))
+        for asm in state.assemblies.values():
+            if asm.placements:
+                placement_groups.append((f"ASM:{asm.name}", asm.placements))
+
+        max_overlap_reports = 50
+        overlap_reports = 0
+        for group_name, placements in placement_groups:
+            aabbs = []
+            for pv in placements:
+                box = self._compute_pv_aabb(pv)
+                if box is not None:
+                    aabbs.append(box)
+
+            for a, b in itertools.combinations(aabbs, 2):
+                ivol = self._aabb_intersection_volume(a, b)
+                if ivol > 0.0:
+                    self._preflight_add_issue(
+                        report,
+                        'warning',
+                        'possible_overlap_aabb',
+                        (
+                            f"Possible overlap in {group_name}: '{a['pv_name']}' and '{b['pv_name']}' "
+                            f"(AABB intersection ≈ {ivol:.3f} mm^3)."
+                        ),
+                        object_refs=[a['pv_id'], b['pv_id']],
+                        hint='Run Geant4 overlap checks for exact confirmation.',
+                    )
+                    overlap_reports += 1
+                    if overlap_reports >= max_overlap_reports:
+                        self._preflight_add_issue(
+                            report,
+                            'info',
+                            'overlap_report_truncated',
+                            f"Overlap reporting truncated after {max_overlap_reports} findings.",
+                        )
+                        return self._preflight_finalize(report)
+
+        return self._preflight_finalize(report)
+
+
+    def _collect_preflight_scope_refs(self, scope_type, scope_name):
+        if not scope_type or not scope_name:
+            raise ValueError('Scope type and name are required for scoped preflight.')
+
+        state = self.current_geometry_state
+        if not state:
+            raise ValueError('No geometry state is loaded.')
+
+        scope_kind = str(scope_type).strip().lower()
+        scope_name = str(scope_name).strip()
+
+        scope_refs = set()
+        visited_lvs = set()
+        visited_assemblies = set()
+
+        def add_ref(value):
+            if value:
+                scope_refs.add(str(value))
+
+        def visit_assembly(asm_name):
+            if not asm_name or asm_name in visited_assemblies:
+                return
+            visited_assemblies.add(asm_name)
+
+            asm = state.assemblies.get(asm_name)
+            if not asm:
+                return
+
+            add_ref(asm.name)
+            add_ref(f"ASM:{asm.name}")
+
+            for pv in asm.placements:
+                add_ref(pv.id)
+                add_ref(pv.name)
+                placed_ref = str(getattr(pv, 'volume_ref', '') or '').strip()
+                if placed_ref in state.logical_volumes:
+                    visit_logical_volume(placed_ref)
+                elif placed_ref in state.assemblies:
+                    visit_assembly(placed_ref)
+
+        def visit_logical_volume(lv_name):
+            if not lv_name or lv_name in visited_lvs:
+                return
+            visited_lvs.add(lv_name)
+
+            lv = state.logical_volumes.get(lv_name)
+            if not lv:
+                return
+
+            add_ref(lv.name)
+            add_ref(f"LV:{lv.name}")
+            add_ref(lv.solid_ref)
+            add_ref(lv.material_ref)
+
+            if lv.content_type == 'physvol':
+                for pv in lv.content or []:
+                    add_ref(pv.id)
+                    add_ref(pv.name)
+                    placed_ref = str(getattr(pv, 'volume_ref', '') or '').strip()
+                    if placed_ref in state.logical_volumes:
+                        visit_logical_volume(placed_ref)
+                    elif placed_ref in state.assemblies:
+                        visit_assembly(placed_ref)
+            else:
+                proc = lv.content
+                placed_ref = str(getattr(proc, 'volume_ref', '') or '').strip()
+                if placed_ref in state.logical_volumes:
+                    visit_logical_volume(placed_ref)
+                elif placed_ref in state.assemblies:
+                    visit_assembly(placed_ref)
+
+        if scope_kind == 'logical_volume':
+            if scope_name not in state.logical_volumes:
+                raise ValueError(f"Logical volume '{scope_name}' not found.")
+            visit_logical_volume(scope_name)
+        elif scope_kind == 'assembly':
+            if scope_name not in state.assemblies:
+                raise ValueError(f"Assembly '{scope_name}' not found.")
+            visit_assembly(scope_name)
+        else:
+            raise ValueError(f"Unsupported scope type '{scope_type}'.")
+
+        if not scope_refs:
+            raise ValueError('Scoped preflight could not resolve any objects for the provided scope.')
+
+        return scope_refs
+
+    def build_scoped_preflight_report(self, full_report, scope_type, scope_name):
+        scope_refs = self._collect_preflight_scope_refs(scope_type, scope_name)
+        filtered_issues = []
+        for issue in full_report.get('issues', []):
+            refs = issue.get('object_refs', [])
+            if not isinstance(refs, list):
+                refs = [refs]
+
+            for ref in refs:
+                if ref is None:
+                    continue
+                if str(ref) in scope_refs:
+                    filtered_issues.append(issue)
+                    break
+
+        scoped_report = {
+            'version': full_report.get('version', 1),
+            'name': f"{full_report.get('name', 'geometry_preflight_v1')}_scope",
+            'issues': list(filtered_issues),
+        }
+        return self._preflight_finalize(scoped_report)
+
     def generate_macro_file(self, job_id, sim_params, build_dir, run_dir, version_dir):
         """
         Generates a Geant4 macro file from simulation parameters.

@@ -1,0 +1,58 @@
+{
+  "success": true,
+  "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
+  "diagnostics": [
+    {
+      "backend_id": "lm_studio",
+      "provider_family": "lm_studio",
+      "adapter_kind": "local",
+      "checked_via": "v1_models_probe",
+      "models_endpoint": "http://127.0.0.1:1234/v1/models",
+      "status": "healthy",
+      "readiness_code": "ok",
+      "ready": true,
+      "message": "Backend models endpoint is reachable.",
+      "http_status": 200,
+      "model_count": 1,
+      "models": [
+        "qwen2.5-7b-instruct"
+      ],
+      "schema_version": "2026-03-15.local-backend-diagnostics.checkpoint3",
+      "effective_capability_overrides": {
+        "supports_tools": false,
+        "supports_json_mode": true,
+        "supports_vision": false,
+        "supports_streaming": true
+      },
+      "runtime_profile": {
+        "source": "session_profile",
+        "uses_session_profile": true,
+        "uses_request_overrides": false,
+        "label": "using saved profile",
+        "message": "Using saved session runtime profile defaults for this backend."
+      }
+    }
+  ],
+  "summary": {
+    "checked_backend_count": 1,
+    "status_counts": {
+      "healthy": 1,
+      "timeout": 0,
+      "unreachable": 0,
+      "misconfigured": 0
+    },
+    "ready_backend_count": 1
+  },
+  "runtime_profile": {
+    "source": "session_profile",
+    "session_profile_active": true,
+    "request_overrides_active": false,
+    "merge_precedence": "request_overrides_win_over_session_profile",
+    "supported_sources": [
+      "built_in_defaults",
+      "session_profile",
+      "request_overrides",
+      "session_profile_plus_request_overrides"
+    ]
+  }
+}

@@ -20,11 +20,14 @@ import sys
 import shutil
 import sched
 import time
+import tempfile
+from copy import deepcopy
+from pathlib import Path
 
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, Response, session, send_file
 from flask_cors import CORS
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from dotenv import load_dotenv, set_key, find_dotenv
 from google import genai  # Correct top-level import
@@ -39,6 +42,41 @@ from src.geometry_types import Material, Solid, LogicalVolume
 from src.geometry_types import GeometryState
 from src.ai_tools import AI_GEOMETRY_TOOLS, PRIMITIVE_SOLID_PARAM_SPECS, get_project_summary, get_component_details
 from src.templates import PHYSICS_TEMPLATES
+from src.surrogate_dataset import build_surrogate_dataset_from_payloads
+from src.surrogate_experiment import run_surrogate_experiment, run_surrogate_experiment_from_path
+from src.surrogate_synthetic import generate_synthetic_surrogate_benchmark
+from src.objective_engine import extract_objective_values_from_hdf5
+from src.objective_formula import get_allowed_formula_functions
+from src.ai_backend_adapters import (
+    ADAPTER_CONTRACT_VERSION,
+    LlamaCppAdapterConfig,
+    LMStudioAdapterConfig,
+    TextGenerationRequest,
+    TextMessage,
+    effective_runtime_capability_overrides_for_backend,
+    invoke_text_request_for_backend,
+    select_backend_for_text_request,
+)
+from src.ai_artifact_store import (
+    ARTIFACT_STORE_SCHEMA_VERSION,
+    AIArtifactStore,
+    AIArtifactValidationError,
+)
+from src.ai_multimodal_extraction_schema import (
+    AIMultimodalSchemaValidationError,
+    MULTIMODAL_EXTRACTION_SCHEMA_VERSION,
+    MULTIMODAL_REVIEW_ENVELOPE_SCHEMA_VERSION,
+    build_review_envelope,
+    normalize_extraction_payload,
+)
+from src.ai_multimodal_planning_schema import (
+    MULTIMODAL_PLANNING_ENVELOPE_SCHEMA_VERSION,
+    build_planning_envelope,
+)
+from src.ai_multimodal_operation_bridge import (
+    MULTIMODAL_PLANNING_EXECUTION_PLAN_SCHEMA_VERSION,
+    build_geometry_execution_plan,
+)
 
 from PIL import Image
 
@@ -246,11 +284,11 @@ def get_geant4_env(sim_params=None):
         if 'optical_physics' in sim_params:
             env['G4OPTICALPHYSICS'] = 'true' if sim_params['optical_physics'] else 'false'
 
-    # Also ensure the binary directory is in PATH
+   # Also ensure the binary directory is in PATH
     bin_dir = os.path.join(conda_prefix, "bin")
     if bin_dir not in env["PATH"]:
         env["PATH"] = bin_dir + os.pathsep + env["PATH"]
-        
+         
     return env
 
 # --- New Global Configuration ---
@@ -265,6 +303,985 @@ SIMULATION_PROCESSES = {}
 SIMULATION_STATUS = {}
 LATEST_COMPLETED_JOB_ID = None
 SIMULATION_LOCK = threading.Lock()
+
+# --------------------------------------------------------------------------
+# Run policy guardrails (Phase A: safety defaults)
+RUN_POLICY_MAX_BUDGET = max(1, int(os.getenv("RUN_POLICY_MAX_BUDGET", "200")))
+RUN_POLICY_MAX_EVENTS_PER_CANDIDATE = max(1, int(os.getenv("RUN_POLICY_MAX_EVENTS_PER_CANDIDATE", "50000")))
+RUN_POLICY_MAX_THREADS = max(1, int(os.getenv("RUN_POLICY_MAX_THREADS", "8")))
+RUN_POLICY_MAX_TOTAL_EVENTS = max(1, int(os.getenv("RUN_POLICY_MAX_TOTAL_EVENTS", "2000000")))
+RUN_POLICY_MAX_WARMUP_RUNS = max(1, int(os.getenv("RUN_POLICY_MAX_WARMUP_RUNS", "100")))
+RUN_POLICY_MAX_CANDIDATE_POOL_SIZE = max(8, int(os.getenv("RUN_POLICY_MAX_CANDIDATE_POOL_SIZE", "4096")))
+RUN_POLICY_MAX_WALL_TIME_SECONDS = max(60, int(os.getenv("RUN_POLICY_MAX_WALL_TIME_SECONDS", "3600")))
+RUN_POLICY_DEFAULT_WALL_TIME_SECONDS = max(
+    60,
+    min(RUN_POLICY_MAX_WALL_TIME_SECONDS, int(os.getenv("RUN_POLICY_DEFAULT_WALL_TIME_SECONDS", "900")))
+)
+RUN_POLICY_REQUIRE_ALLOW_APPLY = os.getenv("RUN_POLICY_REQUIRE_ALLOW_APPLY", "true").strip().lower() in {"1", "true", "yes", "on"}
+RUN_POLICY_DEFAULT_APPLY_TO_PROJECT = os.getenv("RUN_POLICY_DEFAULT_APPLY_TO_PROJECT", "false").strip().lower() in {"1", "true", "yes", "on"}
+RUN_POLICY_REQUIRE_VERIFY_TOKEN = os.getenv("RUN_POLICY_REQUIRE_VERIFY_TOKEN", "true").strip().lower() in {"1", "true", "yes", "on"}
+RUN_POLICY_VERIFY_TOKEN_TTL_SECONDS = max(60, int(os.getenv("RUN_POLICY_VERIFY_TOKEN_TTL_SECONDS", "3600")))
+RUN_POLICY_VERIFY_MIN_REPEATS = max(1, int(os.getenv("RUN_POLICY_VERIFY_MIN_REPEATS", "3")))
+RUN_POLICY_VERIFY_MIN_SUCCESS_RATE = float(os.getenv("RUN_POLICY_VERIFY_MIN_SUCCESS_RATE", "1.0"))
+RUN_POLICY_VERIFY_MAX_STD_RAW = os.getenv("RUN_POLICY_VERIFY_MAX_STD", "").strip()
+RUN_POLICY_VERIFY_MAX_STD = float(RUN_POLICY_VERIFY_MAX_STD_RAW) if RUN_POLICY_VERIFY_MAX_STD_RAW else None
+
+APPLY_VERIFY_TOKENS = {}
+APPLY_VERIFY_TOKENS_LOCK = threading.Lock()
+
+APPLY_AUDIT_LOGS = {}
+APPLY_AUDIT_LOCK = threading.Lock()
+APPLY_AUDIT_MAX_ENTRIES = max(10, int(os.getenv("RUN_POLICY_APPLY_AUDIT_MAX_ENTRIES", "100")))
+APPLY_AUDIT_STORAGE_FILE = os.getenv(
+    "RUN_POLICY_APPLY_AUDIT_STORAGE_FILE",
+    os.path.join(PROJECTS_BASE_DIR, ".apply_audit_logs.json"),
+)
+
+
+def _current_user_id_for_policy():
+    return session.get('user_id') or 'local_user'
+
+
+def _project_scope_id_for_policy(pm: Optional[ProjectManager]) -> str:
+    scope_id = None
+    if pm and pm.current_geometry_state is not None:
+        scope_id = getattr(pm.current_geometry_state, 'project_scope_id', None)
+        if not scope_id:
+            scope_id = str(uuid.uuid4())
+            setattr(pm.current_geometry_state, 'project_scope_id', scope_id)
+    return str(scope_id or "default-scope")
+
+
+def _load_apply_audit_logs_from_disk() -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    path = APPLY_AUDIT_STORAGE_FILE
+    if not path:
+        return {}
+
+    try:
+        if not os.path.exists(path):
+            return {}
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as exc:
+        print(f"Warning: failed to load apply audit storage '{path}': {exc}")
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    normalized: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    for user_id, scopes in data.items():
+        user_key = str(user_id)
+        normalized[user_key] = {}
+
+        # Back-compat with legacy shape: {user_id: [records...]}
+        if isinstance(scopes, list):
+            clean_entries = [e for e in scopes if isinstance(e, dict)]
+            if len(clean_entries) > APPLY_AUDIT_MAX_ENTRIES:
+                clean_entries = clean_entries[-APPLY_AUDIT_MAX_ENTRIES:]
+            normalized[user_key]["default-scope"] = clean_entries
+            continue
+
+        if not isinstance(scopes, dict):
+            continue
+
+        for scope_id, entries in scopes.items():
+            if not isinstance(entries, list):
+                continue
+            scope_key = str(scope_id)
+            clean_entries = [e for e in entries if isinstance(e, dict)]
+            if len(clean_entries) > APPLY_AUDIT_MAX_ENTRIES:
+                clean_entries = clean_entries[-APPLY_AUDIT_MAX_ENTRIES:]
+            normalized[user_key][scope_key] = clean_entries
+
+    return normalized
+
+
+def _persist_apply_audit_logs_locked() -> None:
+    path = APPLY_AUDIT_STORAGE_FILE
+    if not path:
+        return
+
+    try:
+        storage_dir = os.path.dirname(path)
+        if storage_dir:
+            os.makedirs(storage_dir, exist_ok=True)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(APPLY_AUDIT_LOGS, f, indent=2, sort_keys=True)
+        os.replace(tmp_path, path)
+    except Exception as exc:
+        print(f"Warning: failed to persist apply audit storage '{path}': {exc}")
+
+
+def _initialize_apply_audit_logs() -> None:
+    loaded = _load_apply_audit_logs_from_disk()
+    with APPLY_AUDIT_LOCK:
+        APPLY_AUDIT_LOGS.clear()
+        APPLY_AUDIT_LOGS.update(loaded)
+
+
+def _cleanup_expired_verify_tokens(user_id):
+    now = time.time()
+    with APPLY_VERIFY_TOKENS_LOCK:
+        user_tokens = APPLY_VERIFY_TOKENS.get(user_id, {})
+        stale = [tok for tok, rec in user_tokens.items() if rec.get('expires_at', 0) <= now or rec.get('used')]
+        for tok in stale:
+            user_tokens.pop(tok, None)
+        if not user_tokens and user_id in APPLY_VERIFY_TOKENS:
+            APPLY_VERIFY_TOKENS.pop(user_id, None)
+
+
+def _issue_verify_token(user_id, run_id, verification_record):
+    token = str(uuid.uuid4())
+    now = time.time()
+    expires_at = now + RUN_POLICY_VERIFY_TOKEN_TTL_SECONDS
+
+    rec = {
+        'token': token,
+        'run_id': run_id,
+        'issued_at': now,
+        'expires_at': expires_at,
+        'used': False,
+        'verification_record': verification_record,
+    }
+
+    with APPLY_VERIFY_TOKENS_LOCK:
+        user_tokens = APPLY_VERIFY_TOKENS.setdefault(user_id, {})
+        user_tokens[token] = rec
+
+    return rec
+
+
+def _consume_verify_token(user_id, run_id, token):
+    if not token:
+        return None, "verification_token is required when apply_to_project=true."
+
+    _cleanup_expired_verify_tokens(user_id)
+
+    with APPLY_VERIFY_TOKENS_LOCK:
+        user_tokens = APPLY_VERIFY_TOKENS.get(user_id, {})
+        rec = user_tokens.get(token)
+        if not rec:
+            return None, "verification_token is missing, expired, or invalid."
+        if rec.get('used'):
+            return None, "verification_token has already been used."
+        if rec.get('run_id') != run_id:
+            return None, "verification_token does not match run_id."
+        if rec.get('expires_at', 0) <= time.time():
+            user_tokens.pop(token, None)
+            return None, "verification_token has expired."
+
+        rec['used'] = True
+        rec['used_at'] = time.time()
+        return rec, None
+
+
+def _append_apply_audit_record(user_id, scope_id, record):
+    now = datetime.utcnow().isoformat() + 'Z'
+    rec = {
+        'audit_id': str(uuid.uuid4()),
+        'created_at': now,
+        'rolled_back': False,
+        **(record or {}),
+    }
+
+    user_key = str(user_id or 'local_user')
+    scope_key = str(scope_id or 'default-scope')
+
+    with APPLY_AUDIT_LOCK:
+        user_scopes = APPLY_AUDIT_LOGS.setdefault(user_key, {})
+        entries = user_scopes.setdefault(scope_key, [])
+        entries.append(rec)
+        if len(entries) > APPLY_AUDIT_MAX_ENTRIES:
+            del entries[:-APPLY_AUDIT_MAX_ENTRIES]
+        _persist_apply_audit_logs_locked()
+
+    return rec
+
+
+def _list_apply_audit_records(user_id, scope_id, limit=20):
+    lim = max(1, min(int(limit or 20), 200))
+    user_key = str(user_id or 'local_user')
+    scope_key = str(scope_id or 'default-scope')
+
+    with APPLY_AUDIT_LOCK:
+        user_scopes = APPLY_AUDIT_LOGS.get(user_key, {})
+        entries = list(user_scopes.get(scope_key, [])) if isinstance(user_scopes, dict) else []
+
+        # Back-compat fallback for legacy records loaded into default-scope.
+        if not entries and scope_key != "default-scope" and isinstance(user_scopes, dict):
+            legacy_entries = user_scopes.get("default-scope", [])
+            if isinstance(legacy_entries, list):
+                entries = list(legacy_entries)
+
+    entries = sorted(entries, key=lambda r: r.get('created_at', ''), reverse=True)
+    return entries[:lim]
+
+
+def _mark_apply_audit_rolled_back(user_id, scope_id, audit_id):
+    user_key = str(user_id or 'local_user')
+    scope_key = str(scope_id or 'default-scope')
+
+    with APPLY_AUDIT_LOCK:
+        user_scopes = APPLY_AUDIT_LOGS.get(user_key, {})
+        entries = user_scopes.get(scope_key, []) if isinstance(user_scopes, dict) else []
+        for rec in entries:
+            if rec.get('audit_id') == audit_id:
+                if rec.get('rolled_back'):
+                    return rec
+                rec['rolled_back'] = True
+                rec['rolled_back_at'] = datetime.utcnow().isoformat() + 'Z'
+                _persist_apply_audit_logs_locked()
+                return rec
+    return None
+
+
+_initialize_apply_audit_logs()
+
+
+def _run_policy_limits():
+    return {
+        "max_budget": RUN_POLICY_MAX_BUDGET,
+        "max_events_per_candidate": RUN_POLICY_MAX_EVENTS_PER_CANDIDATE,
+        "max_threads": RUN_POLICY_MAX_THREADS,
+        "max_total_events": RUN_POLICY_MAX_TOTAL_EVENTS,
+        "max_warmup_runs": RUN_POLICY_MAX_WARMUP_RUNS,
+        "max_candidate_pool_size": RUN_POLICY_MAX_CANDIDATE_POOL_SIZE,
+        "max_wall_time_seconds": RUN_POLICY_MAX_WALL_TIME_SECONDS,
+        "default_wall_time_seconds": RUN_POLICY_DEFAULT_WALL_TIME_SECONDS,
+        "require_allow_apply": RUN_POLICY_REQUIRE_ALLOW_APPLY,
+        "default_apply_to_project": RUN_POLICY_DEFAULT_APPLY_TO_PROJECT,
+        "require_verify_token": RUN_POLICY_REQUIRE_VERIFY_TOKEN,
+        "verify_token_ttl_seconds": RUN_POLICY_VERIFY_TOKEN_TTL_SECONDS,
+        "verify_min_repeats": RUN_POLICY_VERIFY_MIN_REPEATS,
+        "verify_min_success_rate": RUN_POLICY_VERIFY_MIN_SUCCESS_RATE,
+        "verify_max_std": RUN_POLICY_VERIFY_MAX_STD,
+        "apply_audit_max_entries": APPLY_AUDIT_MAX_ENTRIES,
+        "apply_audit_storage_file": APPLY_AUDIT_STORAGE_FILE,
+    }
+
+
+def _objective_builder_schema():
+    formula_functions = get_allowed_formula_functions()
+
+    return {
+        "version": "m6-objective-builder-v1",
+        "endpoints": {
+            "schema": "/api/objective_builder/schema",
+            "example": "/api/objective_builder/example?template=weighted_tradeoff",
+            "validate": "/api/objective_builder/validate",
+            "build": "/api/objective_builder/build",
+            "upsert_study": "/api/objective_builder/upsert_study",
+            "launch": "/api/objective_builder/launch",
+            "extract_objectives": "/api/objectives/extract/<version_id>/<job_id>",
+            "run_sim_loop": "/api/param_optimizer/run_simulation_in_loop",
+            "run_sim_loop_head_to_head": "/api/param_optimizer/head_to_head_simulation_in_loop",
+            "verify_best": "/api/param_optimizer/verify_best",
+            "replay_best": "/api/param_optimizer/replay_best",
+        },
+        "formula": {
+            "allowed_functions": formula_functions,
+            "notes": [
+                "Formulas may reference previously computed objective names.",
+                "Formulas may reference context variables and parameter aliases used in study objectives.",
+            ],
+            "examples": [
+                "0.8*edep_sum - 0.2*cost_norm",
+                "log(1 + max(edep_sum, 0)) - 0.1*distance_norm",
+                "clip(signal_efficiency, 0, 1) - 0.05*cost_norm",
+            ],
+        },
+        "simulation_extract_metrics": [
+            {
+                "metric": "hdf5_reduce",
+                "label": "Reduce HDF5 dataset",
+                "required_fields": ["name", "metric", "dataset_path", "reduce"],
+                "optional_fields": ["q"],
+                "reduce_options": ["sum", "mean", "max", "min", "std", "count", "count_nonzero", "fraction_nonzero", "quantile"],
+            },
+            {
+                "metric": "context_value",
+                "label": "Context value",
+                "required_fields": ["name", "metric", "key"],
+                "optional_fields": ["default"],
+            },
+            {
+                "metric": "constant",
+                "label": "Constant numeric value",
+                "required_fields": ["name", "metric", "value"],
+            },
+            {
+                "metric": "formula",
+                "label": "Formula from extracted values",
+                "required_fields": ["name", "metric", "expression"],
+                "optional_fields": ["expr"],
+            },
+        ],
+        "study_objective_metrics": [
+            {
+                "metric": "sim_metric",
+                "label": "Simulation metric from extracted map",
+                "required_fields": ["name", "metric", "key", "direction"],
+                "direction_options": ["maximize", "minimize"],
+            },
+            {
+                "metric": "parameter_value",
+                "label": "Parameter value",
+                "required_fields": ["name", "metric", "parameter", "direction"],
+                "direction_options": ["maximize", "minimize"],
+            },
+            {
+                "metric": "formula",
+                "label": "Formula objective",
+                "required_fields": ["name", "metric", "expression", "direction"],
+                "optional_fields": ["expr"],
+                "direction_options": ["maximize", "minimize"],
+            },
+        ],
+        "templates": [
+            {
+                "id": "weighted_tradeoff",
+                "label": "Weighted tradeoff (performance - cost)",
+                "extract_objectives": [
+                    {"name": "edep_sum", "metric": "hdf5_reduce", "dataset_path": "default_ntuples/Hits/Edep", "reduce": "sum"},
+                    {"name": "cost_norm", "metric": "context_value", "key": "cost_norm", "default": 0.0},
+                ],
+                "study_objectives": [
+                    {"name": "edep_sum", "metric": "sim_metric", "key": "edep_sum", "direction": "maximize"},
+                    {"name": "score", "metric": "formula", "expression": "0.8*edep_sum - 0.2*cost_norm", "direction": "maximize"},
+                ],
+            }
+        ],
+        "run_policy": _run_policy_limits(),
+    }
+
+
+def _objective_builder_example_payload(pm: Optional[ProjectManager], template_id: str = 'weighted_tradeoff'):
+    schema = _objective_builder_schema()
+    templates = schema.get('templates', []) or []
+
+    selected = None
+    for t in templates:
+        if isinstance(t, dict) and t.get('id') == template_id:
+            selected = t
+            break
+
+    if selected is None and templates:
+        selected = templates[0]
+    if selected is None:
+        selected = {
+            'id': 'weighted_tradeoff',
+            'extract_objectives': [],
+            'study_objectives': [],
+        }
+
+    study_parameters = []
+    if pm and pm.current_geometry_state:
+        registry = pm.current_geometry_state.parameter_registry or {}
+        study_parameters = sorted(registry.keys())
+
+    if not study_parameters:
+        study_parameters = ['p1']
+
+    example = {
+        'template_id': selected.get('id', template_id),
+        'study_name': f"{selected.get('id', 'objective')}_study",
+        'study_mode': 'random',
+        'study_parameters': study_parameters,
+        'study_random': {
+            'samples': 20,
+            'seed': 42,
+        },
+        'extract_objectives': list(selected.get('extract_objectives', []) or []),
+        'study_objectives': list(selected.get('study_objectives', []) or []),
+        'context': {
+            'cost_norm': 0.0,
+        },
+        'run_method': 'surrogate_gp',
+        'run_budget': 20,
+        'run_seed': 42,
+        'sim_params': {
+            'events': 1000,
+            'threads': 1,
+            'save_hits': True,
+            'save_particles': True,
+            'hit_energy_threshold': '1 eV',
+        },
+        'surrogate': {
+            'warmup_runs': 4,
+            'candidate_pool_size': 128,
+            'exploration_beta': 1.0,
+        },
+    }
+
+    return example
+
+
+def _validate_formula_expression_for_builder(expression: Any):
+    if not isinstance(expression, str) or not expression.strip():
+        return False, "Formula expression must be a non-empty string.", []
+
+    allowed_funcs = set(get_allowed_formula_functions())
+    try:
+        tree = ast.parse(expression, mode='eval')
+    except Exception as e:
+        return False, f"Invalid formula syntax: {e}", []
+
+    allowed_nodes = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Call,
+        ast.Name,
+        ast.Load,
+        ast.Constant,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Pow,
+        ast.Mod,
+        ast.UAdd,
+        ast.USub,
+    )
+
+    var_names = set()
+
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed_nodes):
+            return False, f"Unsupported expression element '{type(node).__name__}'.", []
+
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name):
+                return False, "Only simple function names are allowed in formulas.", []
+            if node.func.id not in allowed_funcs:
+                return False, f"Function '{node.func.id}' is not allowed.", []
+            if node.keywords:
+                return False, "Keyword arguments are not allowed in formulas.", []
+
+        if isinstance(node, ast.Name):
+            if node.id not in allowed_funcs:
+                var_names.add(node.id)
+
+    return True, None, sorted(var_names)
+
+
+def _validate_objective_builder_payload(payload, pm: Optional[ProjectManager] = None):
+    data = dict(payload or {})
+    errors = []
+    warnings = []
+
+    extract_objectives = data.get('extract_objectives')
+    if extract_objectives is None:
+        extract_objectives = data.get('sim_objectives', [])
+    if extract_objectives is None:
+        extract_objectives = []
+
+    study_objectives = data.get('study_objectives') or []
+    study_parameters = data.get('study_parameters') or []
+
+    if not isinstance(extract_objectives, list):
+        errors.append("extract_objectives must be a list.")
+        extract_objectives = []
+    if not isinstance(study_objectives, list):
+        errors.append("study_objectives must be a list.")
+        study_objectives = []
+    if study_parameters and not isinstance(study_parameters, list):
+        errors.append("study_parameters must be a list when provided.")
+        study_parameters = []
+
+    extract_metric_specs = {m['metric']: m for m in _objective_builder_schema().get('simulation_extract_metrics', [])}
+    study_metric_specs = {m['metric']: m for m in _objective_builder_schema().get('study_objective_metrics', [])}
+
+    extract_names = []
+    extract_name_set = set()
+
+    for i, obj in enumerate(extract_objectives):
+        if not isinstance(obj, dict):
+            errors.append(f"extract_objectives[{i}] must be an object.")
+            continue
+
+        name = obj.get('name')
+        metric = obj.get('metric')
+
+        if not name:
+            errors.append(f"extract_objectives[{i}] is missing required field 'name'.")
+            continue
+        if name in extract_name_set:
+            errors.append(f"Duplicate extract objective name '{name}'.")
+        extract_name_set.add(name)
+        extract_names.append(name)
+
+        if metric not in extract_metric_specs:
+            errors.append(f"extract_objectives[{i}] metric '{metric}' is not supported.")
+            continue
+
+        required = extract_metric_specs[metric].get('required_fields', [])
+        for field in required:
+            val = obj.get(field)
+            if val is None or (isinstance(val, str) and not val.strip()):
+                errors.append(f"extract_objectives[{i}] metric '{metric}' requires field '{field}'.")
+
+        if metric == 'hdf5_reduce':
+            reduce_op = obj.get('reduce')
+            allowed_reduce = set(extract_metric_specs[metric].get('reduce_options', []))
+            if reduce_op not in allowed_reduce:
+                errors.append(f"extract_objectives[{i}] reduce='{reduce_op}' is invalid.")
+            if reduce_op == 'quantile' and obj.get('q') is None:
+                warnings.append(f"extract_objectives[{i}] uses quantile reduce without 'q'; default quantile may be used.")
+
+        if metric == 'formula':
+            expr = obj.get('expression') or obj.get('expr')
+            ok, err, vars_used = _validate_formula_expression_for_builder(expr)
+            if not ok:
+                errors.append(f"extract_objectives[{i}] formula invalid: {err}")
+            else:
+                known = set(extract_names[:-1])
+                unknown = [v for v in vars_used if v not in known]
+                if unknown:
+                    warnings.append(
+                        f"extract_objectives[{i}] formula references names not yet defined earlier in extract list: {unknown}"
+                    )
+
+    if study_objectives:
+        if not study_parameters:
+            warnings.append("study_parameters not provided; parameter reference checks are limited.")
+
+        registry_names = set()
+        if pm and pm.current_geometry_state:
+            registry_names = set((pm.current_geometry_state.parameter_registry or {}).keys())
+
+        for i, obj in enumerate(study_objectives):
+            if not isinstance(obj, dict):
+                errors.append(f"study_objectives[{i}] must be an object.")
+                continue
+
+            metric = obj.get('metric')
+            name = obj.get('name')
+            direction = obj.get('direction', 'maximize')
+
+            if not name:
+                errors.append(f"study_objectives[{i}] missing required field 'name'.")
+            if metric not in study_metric_specs:
+                errors.append(f"study_objectives[{i}] metric '{metric}' is not supported in objective builder MVP.")
+                continue
+            if direction not in {'maximize', 'minimize'}:
+                errors.append(f"study_objectives[{i}] has invalid direction '{direction}'.")
+
+            required = study_metric_specs[metric].get('required_fields', [])
+            for field in required:
+                val = obj.get(field)
+                if val is None or (isinstance(val, str) and not val.strip()):
+                    errors.append(f"study_objectives[{i}] metric '{metric}' requires field '{field}'.")
+
+            if metric == 'parameter_value':
+                pname = obj.get('parameter')
+                if pname and study_parameters and pname not in study_parameters:
+                    errors.append(f"study_objectives[{i}] parameter '{pname}' not found in study_parameters.")
+                if pname and registry_names and pname not in registry_names:
+                    warnings.append(f"study_objectives[{i}] parameter '{pname}' is not in current parameter registry.")
+
+            if metric == 'sim_metric':
+                key = obj.get('key')
+                if key and key not in extract_name_set:
+                    warnings.append(f"study_objectives[{i}] sim_metric key '{key}' not found in extract_objectives names.")
+
+            if metric == 'formula':
+                expr = obj.get('expression') or obj.get('expr')
+                ok, err, vars_used = _validate_formula_expression_for_builder(expr)
+                if not ok:
+                    errors.append(f"study_objectives[{i}] formula invalid: {err}")
+                else:
+                    known = set(extract_names)
+                    known.update(study_parameters if isinstance(study_parameters, list) else [])
+                    known.update([x.get('name') for x in study_objectives[:i] if isinstance(x, dict) and x.get('name')])
+                    unknown = [v for v in vars_used if v not in known]
+                    if unknown:
+                        warnings.append(
+                            f"study_objectives[{i}] formula references unknown names (check ordering/aliases): {unknown}"
+                        )
+
+    study_name = data.get('study_name', '__objective_builder_validation__')
+    study_mode = data.get('study_mode', 'random')
+
+    normalized = {
+        'extract_objectives': extract_objectives,
+        'study': {
+            'name': study_name,
+            'mode': study_mode,
+            'parameters': study_parameters,
+            'objectives': study_objectives,
+            'grid': data.get('study_grid', {'steps': 3}) or {'steps': 3},
+            'random': data.get('study_random', {'samples': 10, 'seed': 42}) or {'samples': 10, 'seed': 42},
+        },
+    }
+
+    return {
+        'valid': len(errors) == 0,
+        'errors': errors,
+        'warnings': warnings,
+        'normalized': normalized,
+    }
+
+
+def _build_objective_builder_payload(payload, validation):
+    data = dict(payload or {})
+    normalized = (validation or {}).get('normalized', {}) or {}
+
+    extract_objectives = list(normalized.get('extract_objectives', []) or [])
+    study = dict(normalized.get('study', {}) or {})
+    study_name = study.get('name') or data.get('study_name') or '__objective_builder_study__'
+    study_objectives = list(study.get('objectives', []) or [])
+
+    primary_obj = None
+    for candidate in study_objectives:
+        if isinstance(candidate, dict) and candidate.get('name') == 'score':
+            primary_obj = candidate
+            break
+    if primary_obj is None:
+        for candidate in study_objectives:
+            if isinstance(candidate, dict) and candidate.get('metric') == 'formula':
+                primary_obj = candidate
+                break
+    if primary_obj is None:
+        for candidate in study_objectives:
+            if isinstance(candidate, dict):
+                primary_obj = candidate
+                break
+
+    primary_name = (primary_obj or {}).get('name', 'score')
+    primary_direction = (primary_obj or {}).get('direction', 'maximize')
+
+    run_method = str(data.get('run_method', 'surrogate_gp')).strip().lower()
+    if run_method not in {'surrogate_gp', 'random_search', 'cmaes'}:
+        run_method = 'surrogate_gp'
+
+    budget = data.get('run_budget', data.get('budget', 20))
+    seed = data.get('run_seed', data.get('seed', 42))
+
+    sim_params = data.get('sim_params') or {
+        'events': 1000,
+        'threads': 1,
+        'save_hits': True,
+        'save_particles': True,
+        'hit_energy_threshold': '1 eV',
+    }
+
+    surrogate = data.get('surrogate') or {
+        'warmup_runs': 4,
+        'candidate_pool_size': 128,
+        'exploration_beta': 1.0,
+    }
+
+    cmaes = data.get('cmaes') or {
+        'population_size': 8,
+    }
+
+    build = {
+        'version': _objective_builder_schema().get('version'),
+        'study_upsert_payload': study,
+        'sim_objectives': extract_objectives,
+        'sim_context': data.get('context', {}) or {},
+        'run_sim_loop_payload': {
+            'study_name': study_name,
+            'method': run_method,
+            'budget': budget,
+            'seed': seed,
+            'objective_name': primary_name,
+            'direction': primary_direction,
+            'sim_params': sim_params,
+            'sim_objectives': extract_objectives,
+            'surrogate': surrogate,
+            'cmaes': cmaes,
+            'context': data.get('context', {}) or {},
+            'keep_candidate_runs': bool(data.get('keep_candidate_runs', False)),
+            'candidate_runs_root': data.get('candidate_runs_root'),
+        },
+        'verify_payload_template': {
+            'run_id': '<optimizer_run_id>',
+            'repeats': RUN_POLICY_VERIFY_MIN_REPEATS,
+            'min_repeats': RUN_POLICY_VERIFY_MIN_REPEATS,
+            'min_success_rate': RUN_POLICY_VERIFY_MIN_SUCCESS_RATE,
+            'max_std': RUN_POLICY_VERIFY_MAX_STD,
+        },
+        'apply_payload_template': {
+            'run_id': '<optimizer_run_id>',
+            'apply_to_project': True,
+            'allow_apply': True,
+            'verification_token': '<apply_token_from_verify_best>',
+        },
+        'notes': [
+            '1) Upsert the study with study_upsert_payload.',
+            '2) Run optimization using run_sim_loop_payload.',
+            '3) Call /verify_best and obtain apply_token.',
+            '4) Apply via /replay_best with allow_apply=true and verification_token.',
+        ],
+    }
+
+    return build
+
+
+def _coerce_int(value, field_name, errors):
+    try:
+        return int(value)
+    except Exception:
+        errors.append(f"{field_name} must be an integer.")
+        return None
+
+
+def _validate_apply_policy(payload):
+    data = dict(payload or {})
+
+    apply_to_project = bool(data.get('apply_to_project', RUN_POLICY_DEFAULT_APPLY_TO_PROJECT))
+    dry_run = bool(data.get('dry_run', False))
+    allow_apply = bool(data.get('allow_apply', False))
+    verification_token = data.get('verification_token')
+
+    notes = []
+    if dry_run and apply_to_project:
+        apply_to_project = False
+        notes.append("dry_run=true forces apply_to_project=false.")
+
+    details = []
+    if apply_to_project and RUN_POLICY_REQUIRE_ALLOW_APPLY and not allow_apply:
+        details.append("apply_to_project=true requires allow_apply=true.")
+
+    if apply_to_project and RUN_POLICY_REQUIRE_VERIFY_TOKEN and not verification_token:
+        details.append("apply_to_project=true requires verification_token from a successful /verify_best call.")
+
+    if details:
+        return None, {
+            "error": "Apply policy validation failed.",
+            "details": details,
+            "policy": {
+                "require_allow_apply": RUN_POLICY_REQUIRE_ALLOW_APPLY,
+                "require_verify_token": RUN_POLICY_REQUIRE_VERIFY_TOKEN,
+                "default_apply_to_project": RUN_POLICY_DEFAULT_APPLY_TO_PROJECT,
+            },
+        }
+
+    return {
+        "apply_to_project": apply_to_project,
+        "dry_run": dry_run,
+        "allow_apply": allow_apply,
+        "verification_token": verification_token,
+        "notes": notes,
+    }, None
+
+
+def _evaluate_verification_gate(result, data):
+    verification = ((result or {}).get('verification_record') or {})
+    repeats = max(1, int(verification.get('repeats', 0) or 0))
+    success_count = int(verification.get('success_count', 0) or 0)
+    stats = verification.get('stats', {}) or {}
+    std = stats.get('std')
+    stats_count = int(stats.get('count', 0) or 0)
+
+    min_repeats = data.get('min_repeats', RUN_POLICY_VERIFY_MIN_REPEATS)
+    try:
+        min_repeats = int(min_repeats)
+    except Exception:
+        min_repeats = RUN_POLICY_VERIFY_MIN_REPEATS
+    min_repeats = max(1, min_repeats)
+
+    min_success_rate = data.get('min_success_rate', RUN_POLICY_VERIFY_MIN_SUCCESS_RATE)
+    try:
+        min_success_rate = float(min_success_rate)
+    except Exception:
+        min_success_rate = RUN_POLICY_VERIFY_MIN_SUCCESS_RATE
+    min_success_rate = max(0.0, min(1.0, min_success_rate))
+
+    max_std = data.get('max_std', RUN_POLICY_VERIFY_MAX_STD)
+    if max_std is not None:
+        try:
+            max_std = float(max_std)
+        except Exception:
+            max_std = RUN_POLICY_VERIFY_MAX_STD
+
+    success_rate = float(success_count) / float(repeats) if repeats > 0 else 0.0
+
+    passed = True
+    reasons = []
+
+    if repeats < min_repeats:
+        passed = False
+        reasons.append(f"repeats={repeats} < min_repeats={min_repeats}")
+
+    if success_rate < min_success_rate:
+        passed = False
+        reasons.append(f"success_rate={success_rate:.3f} < min_success_rate={min_success_rate:.3f}")
+
+    if stats_count < min_repeats:
+        passed = False
+        reasons.append(f"objective_stats_count={stats_count} < min_repeats={min_repeats}")
+
+    if max_std is not None:
+        if std is None:
+            passed = False
+            reasons.append("objective std is unavailable while max_std is enforced.")
+        elif float(std) > float(max_std):
+            passed = False
+            reasons.append(f"std={float(std):.6g} > max_std={float(max_std):.6g}")
+
+    return {
+        'passed': bool(passed),
+        'reasons': reasons,
+        'min_repeats': min_repeats,
+        'min_success_rate': min_success_rate,
+        'max_std': max_std,
+        'success_rate': success_rate,
+        'repeats': repeats,
+        'stats_count': stats_count,
+        'stats_std': std,
+    }
+
+
+def _validate_and_normalize_run_policy(payload, *, head_to_head=False):
+    data = dict(payload or {})
+    errors = []
+
+    budget = _coerce_int(data.get('budget', 20), 'budget', errors)
+
+    sim_params = data.get('sim_params') or {}
+    if not isinstance(sim_params, dict):
+        errors.append("sim_params must be an object/dict.")
+        sim_params = {}
+    else:
+        sim_params = dict(sim_params)
+
+    events = _coerce_int(sim_params.get('events', 1), 'sim_params.events', errors)
+    threads = _coerce_int(sim_params.get('threads', 1), 'sim_params.threads', errors)
+
+    surrogate_cfg = data.get('surrogate') or {}
+    if surrogate_cfg is None:
+        surrogate_cfg = {}
+    if not isinstance(surrogate_cfg, dict):
+        errors.append("surrogate must be an object/dict when provided.")
+        surrogate_cfg = {}
+    else:
+        surrogate_cfg = dict(surrogate_cfg)
+
+    warmup_runs = _coerce_int(surrogate_cfg.get('warmup_runs', 10), 'surrogate.warmup_runs', errors)
+    candidate_pool_size = _coerce_int(surrogate_cfg.get('candidate_pool_size', 256), 'surrogate.candidate_pool_size', errors)
+    max_wall_time_seconds = _coerce_int(
+        data.get('max_wall_time_seconds', RUN_POLICY_DEFAULT_WALL_TIME_SECONDS),
+        'max_wall_time_seconds',
+        errors,
+    )
+
+    if budget is not None and budget < 1:
+        errors.append("budget must be >= 1.")
+    if budget is not None and budget > RUN_POLICY_MAX_BUDGET:
+        errors.append(f"budget={budget} exceeds max_budget={RUN_POLICY_MAX_BUDGET}.")
+
+    if events is not None and events < 1:
+        errors.append("sim_params.events must be >= 1.")
+    if events is not None and events > RUN_POLICY_MAX_EVENTS_PER_CANDIDATE:
+        errors.append(
+            f"sim_params.events={events} exceeds max_events_per_candidate={RUN_POLICY_MAX_EVENTS_PER_CANDIDATE}."
+        )
+
+    if threads is not None and threads < 1:
+        errors.append("sim_params.threads must be >= 1.")
+    if threads is not None and threads > RUN_POLICY_MAX_THREADS:
+        errors.append(f"sim_params.threads={threads} exceeds max_threads={RUN_POLICY_MAX_THREADS}.")
+
+    if warmup_runs is not None and warmup_runs < 1:
+        errors.append("surrogate.warmup_runs must be >= 1.")
+    if warmup_runs is not None and warmup_runs > RUN_POLICY_MAX_WARMUP_RUNS:
+        errors.append(f"surrogate.warmup_runs={warmup_runs} exceeds max_warmup_runs={RUN_POLICY_MAX_WARMUP_RUNS}.")
+
+    if candidate_pool_size is not None and candidate_pool_size < 8:
+        errors.append("surrogate.candidate_pool_size must be >= 8.")
+    if candidate_pool_size is not None and candidate_pool_size > RUN_POLICY_MAX_CANDIDATE_POOL_SIZE:
+        errors.append(
+            f"surrogate.candidate_pool_size={candidate_pool_size} exceeds max_candidate_pool_size={RUN_POLICY_MAX_CANDIDATE_POOL_SIZE}."
+        )
+
+    if max_wall_time_seconds is not None and max_wall_time_seconds < 60:
+        errors.append("max_wall_time_seconds must be >= 60.")
+    if max_wall_time_seconds is not None and max_wall_time_seconds > RUN_POLICY_MAX_WALL_TIME_SECONDS:
+        errors.append(
+            f"max_wall_time_seconds={max_wall_time_seconds} exceeds max_wall_time_seconds={RUN_POLICY_MAX_WALL_TIME_SECONDS}."
+        )
+
+    if budget is not None and events is not None:
+        multiplier = 2 if head_to_head else 1
+        effective_total_events = budget * events * multiplier
+        if effective_total_events > RUN_POLICY_MAX_TOTAL_EVENTS:
+            errors.append(
+                f"effective_total_events={effective_total_events} exceeds max_total_events={RUN_POLICY_MAX_TOTAL_EVENTS}. "
+                f"(computed as budget * events * {multiplier})"
+            )
+
+    if errors:
+        return None, {
+            "error": "Run policy validation failed.",
+            "details": errors,
+            "limits": _run_policy_limits(),
+        }
+
+    data['budget'] = budget
+    sim_params['events'] = events
+    sim_params['threads'] = threads
+    data['sim_params'] = sim_params
+
+    surrogate_cfg['warmup_runs'] = warmup_runs
+    surrogate_cfg['candidate_pool_size'] = candidate_pool_size
+    data['surrogate'] = surrogate_cfg
+    data['max_wall_time_seconds'] = max_wall_time_seconds
+
+    data['_run_policy'] = {
+        "head_to_head": bool(head_to_head),
+        "budget": budget,
+        "events": events,
+        "threads": threads,
+        "effective_total_events": budget * events * (2 if head_to_head else 1),
+        "max_wall_time_seconds": max_wall_time_seconds,
+        "surrogate": {
+            "warmup_runs": warmup_runs,
+            "candidate_pool_size": candidate_pool_size,
+        },
+    }
+
+    return data, None
+
+def _start_managed_optimizer_run(pm, run_payload, *, kind, metadata=None):
+    max_wall_time_seconds = None
+    if isinstance(run_payload, dict):
+        raw = run_payload.get('max_wall_time_seconds')
+        if raw is not None:
+            try:
+                max_wall_time_seconds = int(raw)
+            except Exception:
+                max_wall_time_seconds = None
+
+    control, err = pm.start_managed_run(
+        kind=kind,
+        max_wall_time_seconds=max_wall_time_seconds,
+        metadata=(metadata or {}),
+    )
+    if not control:
+        return None, jsonify({
+            "success": False,
+            "error": err or "Another optimization run is already active.",
+            "active_run": pm.get_managed_run_status().get('active'),
+        }), 409
+
+    return control, None, None
+
+
+def _finish_managed_optimizer_run(pm, *, status='completed', details=None):
+    try:
+        pm.finish_managed_run(status=status, details=(details or {}))
+    except Exception:
+        pass
+
+
+OBJECTIVE_BUILDER_LAUNCH_JOBS = {}
+OBJECTIVE_BUILDER_LAUNCH_LOCK = threading.Lock()
+
 
 # Track running LOR computation
 LOR_PROCESSING_STATUS = {}
@@ -525,6 +1542,1868 @@ def set_active_source_route():
     else:
         return jsonify({"success": False, "error": error_msg}), 500
 
+def _extract_preflight_summary(payload: Any) -> Optional[Dict[str, Any]]:
+    """Accept either a summary dict or wrappers containing one and return a normalized summary."""
+    if not isinstance(payload, dict):
+        return None
+
+    if isinstance(payload.get('summary'), dict):
+        return payload.get('summary')
+
+    if isinstance(payload.get('preflight_summary'), dict):
+        return payload.get('preflight_summary')
+
+    if isinstance(payload.get('preflight_report'), dict) and isinstance(payload['preflight_report'].get('summary'), dict):
+        return payload['preflight_report']['summary']
+
+    return payload
+
+
+def compare_preflight_summaries(baseline_summary: Any, candidate_summary: Any) -> Dict[str, Any]:
+    """Compare two preflight summaries and report deterministic code-level deltas."""
+
+    def _as_summary(summary_like: Any) -> Dict[str, Any]:
+        summary = _extract_preflight_summary(summary_like)
+        if not isinstance(summary, dict):
+            raise ValueError("Preflight summaries must be objects/dicts.")
+        return summary
+
+    def _as_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            low = value.strip().lower()
+            if low in ('true', '1', 'yes', 'on'):
+                return True
+            if low in ('false', '0', 'no', 'off'):
+                return False
+        return default
+
+    def _as_int(value: Any, default: int = 0) -> int:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(float(value.strip()))
+            except Exception:
+                return default
+        return default
+
+    def _normalize_counts(summary: Dict[str, Any]) -> Dict[str, int]:
+        raw = summary.get('counts_by_code')
+        if not isinstance(raw, dict):
+            return {}
+
+        normalized = {}
+        for code, count in raw.items():
+            code_str = str(code)
+            count_int = _as_int(count, default=0)
+            if count_int < 0:
+                count_int = 0
+            normalized[code_str] = count_int
+
+        return dict(sorted(normalized.items()))
+
+    baseline = _as_summary(baseline_summary)
+    candidate = _as_summary(candidate_summary)
+
+    baseline_counts = _normalize_counts(baseline)
+    candidate_counts = _normalize_counts(candidate)
+
+    all_codes = sorted(set(baseline_counts.keys()) | set(candidate_counts.keys()))
+
+    counts_delta_by_code = {}
+    added_counts_by_code = {}
+    resolved_counts_by_code = {}
+    increased_counts_by_code = {}
+    reduced_counts_by_code = {}
+    unchanged_counts_by_code = {}
+
+    added_issue_codes = []
+    resolved_issue_codes = []
+
+    for code in all_codes:
+        base_count = baseline_counts.get(code, 0)
+        cand_count = candidate_counts.get(code, 0)
+        delta = cand_count - base_count
+        if delta != 0:
+            counts_delta_by_code[code] = delta
+        else:
+            unchanged_counts_by_code[code] = cand_count
+
+        if base_count == 0 and cand_count > 0:
+            added_issue_codes.append(code)
+            added_counts_by_code[code] = cand_count
+        elif base_count > 0 and cand_count == 0:
+            resolved_issue_codes.append(code)
+            resolved_counts_by_code[code] = base_count
+        elif delta > 0:
+            increased_counts_by_code[code] = delta
+        elif delta < 0:
+            reduced_counts_by_code[code] = abs(delta)
+
+    baseline_can_run = _as_bool(baseline.get('can_run'), default=False)
+    candidate_can_run = _as_bool(candidate.get('can_run'), default=False)
+
+    baseline_issue_count = _as_int(baseline.get('issue_count'), default=sum(baseline_counts.values()))
+    candidate_issue_count = _as_int(candidate.get('issue_count'), default=sum(candidate_counts.values()))
+
+    baseline_fingerprint = baseline.get('issue_fingerprint')
+    candidate_fingerprint = candidate.get('issue_fingerprint')
+
+    return {
+        'baseline': {
+            'can_run': baseline_can_run,
+            'issue_count': baseline_issue_count,
+            'counts_by_code': baseline_counts,
+            'issue_fingerprint': baseline_fingerprint,
+        },
+        'candidate': {
+            'can_run': candidate_can_run,
+            'issue_count': candidate_issue_count,
+            'counts_by_code': candidate_counts,
+            'issue_fingerprint': candidate_fingerprint,
+        },
+        'status': {
+            'can_run_changed': baseline_can_run != candidate_can_run,
+            'regressed_can_run': baseline_can_run and not candidate_can_run,
+            'improved_can_run': (not baseline_can_run) and candidate_can_run,
+            'fingerprint_changed': (
+                isinstance(baseline_fingerprint, str)
+                and isinstance(candidate_fingerprint, str)
+                and baseline_fingerprint != candidate_fingerprint
+            ),
+        },
+        'issue_count_delta': candidate_issue_count - baseline_issue_count,
+        'added_issue_total': sum(added_counts_by_code.values()),
+        'resolved_issue_total': sum(resolved_counts_by_code.values()),
+        'increased_issue_total': sum(increased_counts_by_code.values()),
+        'reduced_issue_total': sum(reduced_counts_by_code.values()),
+        'added_issue_codes': sorted(added_issue_codes),
+        'resolved_issue_codes': sorted(resolved_issue_codes),
+        'increased_issue_codes': sorted(increased_counts_by_code.keys()),
+        'reduced_issue_codes': sorted(reduced_counts_by_code.keys()),
+        'unchanged_issue_codes': sorted(unchanged_counts_by_code.keys()),
+        'added_counts_by_code': added_counts_by_code,
+        'resolved_counts_by_code': resolved_counts_by_code,
+        'increased_counts_by_code': increased_counts_by_code,
+        'reduced_counts_by_code': reduced_counts_by_code,
+        'counts_delta_by_code': counts_delta_by_code,
+    }
+
+
+def _normalize_single_segment_selector_id(
+    selector_id: Any,
+    *,
+    field_name: str,
+    required_error: str,
+) -> str:
+    """Normalize selector ids that must remain a single non-empty path segment."""
+    selector_id_norm = str(selector_id or '').strip()
+    if not selector_id_norm:
+        raise ValueError(required_error)
+
+    if selector_id_norm in {'.', '..'}:
+        raise ValueError(f"Invalid {field_name} '{selector_id_norm}'.")
+
+    if '/' in selector_id_norm or '\\' in selector_id_norm:
+        raise ValueError(f"Invalid {field_name} '{selector_id_norm}'.")
+
+    return selector_id_norm
+
+
+def _normalize_preflight_version_selector_id(version_id: Any, *, required_error: str) -> str:
+    """Normalize explicit preflight version selectors as single-segment ids."""
+    return _normalize_single_segment_selector_id(
+        version_id,
+        field_name='version_id',
+        required_error=required_error,
+    )
+
+
+def _resolve_saved_version_json_path(pm: ProjectManager, project_name: str, version_id: Any) -> tuple[str, str]:
+    project_name_norm = str(project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare saved versions.")
+
+    # Saved/snapshot selectors are directory-name ids under `<project>/versions`.
+    # Keep selectors as a single path segment and reject path-like forms
+    # deterministically so malformed hostile ids fail as validation errors.
+    version_id_norm = _normalize_preflight_version_selector_id(
+        version_id,
+        required_error="version_id must be a non-empty string.",
+    )
+
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name_norm, 'versions'))
+    candidate_path = os.path.realpath(os.path.join(versions_root, version_id_norm, 'version.json'))
+
+    if not (candidate_path == versions_root or candidate_path.startswith(versions_root + os.sep)):
+        raise ValueError(f"Invalid version_id '{version_id_norm}'.")
+
+    if not os.path.exists(candidate_path):
+        raise FileNotFoundError(f"Version '{version_id_norm}' not found for project '{project_name_norm}'.")
+
+    return version_id_norm, candidate_path
+
+
+def _run_preflight_for_saved_version_json(version_json_path: str) -> Dict[str, Any]:
+    with open(version_json_path, 'r') as handle:
+        version_json = handle.read()
+
+    version_pm = ProjectManager(ExpressionEvaluator())
+    version_pm.load_project_from_json_string(version_json)
+    return version_pm.run_preflight_checks()
+
+
+def _is_path_within_root(path: str, root: str) -> bool:
+    path_real = os.path.realpath(path)
+    root_real = os.path.realpath(root)
+    return path_real == root_real or path_real.startswith(root_real + os.sep)
+
+
+def _read_file_mtime_utc(path: str) -> Optional[str]:
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    return datetime.utcfromtimestamp(mtime).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _build_version_source_metadata(pm: ProjectManager, project_name: str, version_id: str) -> Dict[str, Any]:
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name, 'versions'))
+    version_dir = os.path.realpath(os.path.join(versions_root, version_id))
+    version_json_path = os.path.realpath(os.path.join(version_dir, 'version.json'))
+
+    timestamp, description = _extract_version_timestamp_and_description(version_id)
+    is_autosave = version_id == AUTOSAVE_VERSION_ID
+
+    return {
+        'version_id': version_id,
+        'is_autosave': is_autosave,
+        'is_autosave_snapshot': _is_autosave_snapshot_version_id(version_id),
+        'timestamp_from_version_id': None if is_autosave else timestamp,
+        'description_from_version_id': None if is_autosave else description,
+        'version_json_path': version_json_path,
+        'version_json_exists': os.path.exists(version_json_path),
+        'version_json_mtime_utc': _read_file_mtime_utc(version_json_path),
+        'source_path_checks': {
+            'versions_root_exists': os.path.isdir(versions_root),
+            'version_dir_within_versions_root': _is_path_within_root(version_dir, versions_root),
+            'version_json_within_versions_root': _is_path_within_root(version_json_path, versions_root),
+        },
+    }
+
+
+def compare_preflight_versions(pm: ProjectManager, baseline_version_id: Any, candidate_version_id: Any, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Run preflight checks on two saved versions and compare their deterministic summaries."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+
+    baseline_id, baseline_path = _resolve_saved_version_json_path(pm, project_name_norm, baseline_version_id)
+    candidate_id, candidate_path = _resolve_saved_version_json_path(pm, project_name_norm, candidate_version_id)
+
+    baseline_report = _run_preflight_for_saved_version_json(baseline_path)
+    candidate_report = _run_preflight_for_saved_version_json(candidate_path)
+
+    comparison = compare_preflight_summaries(baseline_report, candidate_report)
+
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name_norm, 'versions'))
+
+    return {
+        'project_name': project_name_norm,
+        'baseline_version_id': baseline_id,
+        'candidate_version_id': candidate_id,
+        'baseline_report': baseline_report,
+        'candidate_report': candidate_report,
+        'comparison': comparison,
+        'ordering_metadata': {
+            'ordering_basis': 'explicit_version_ids',
+            'versions_root': versions_root,
+        },
+        'version_sources': {
+            'baseline': _build_version_source_metadata(pm, project_name_norm, baseline_id),
+            'candidate': _build_version_source_metadata(pm, project_name_norm, candidate_id),
+        },
+    }
+
+
+def _list_saved_version_ids(pm: ProjectManager, project_name: str) -> List[str]:
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name, 'versions'))
+    if not os.path.isdir(versions_root):
+        return []
+
+    version_ids = [
+        version_id
+        for version_id in os.listdir(versions_root)
+        if version_id != AUTOSAVE_VERSION_ID and os.path.isdir(os.path.join(versions_root, version_id))
+    ]
+
+    return sorted(version_ids, reverse=True)
+
+
+def compare_latest_preflight_versions(pm: ProjectManager, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Compare preflight summaries for the latest two saved project versions."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare latest saved versions.")
+
+    version_ids = _list_saved_version_ids(pm, project_name_norm)
+    if len(version_ids) < 2:
+        raise ValueError(
+            f"Need at least two saved versions for project '{project_name_norm}' to compare latest preflight checks."
+        )
+
+    candidate_version_id = version_ids[0]
+    baseline_version_id = version_ids[1]
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=baseline_version_id,
+        candidate_version_id=candidate_version_id,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_two_saved_versions',
+        'ordering_basis': 'manual_saved_versions_sorted_desc_lexicographic',
+        'selected_version_ids': [candidate_version_id, baseline_version_id],
+        'ordered_manual_saved_version_ids': version_ids,
+        'total_saved_versions': len(version_ids),
+    }
+    return result
+
+
+def compare_autosave_preflight_vs_latest_saved(pm: ProjectManager, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Compare autosave preflight checks against the latest manually saved project version."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare autosave with latest saved version.")
+
+    version_ids = _list_saved_version_ids(pm, project_name_norm)
+    if len(version_ids) < 1:
+        raise ValueError(
+            f"Need at least one saved version for project '{project_name_norm}' to compare autosave preflight checks."
+        )
+
+    latest_saved_version_id = version_ids[0]
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=latest_saved_version_id,
+        candidate_version_id=AUTOSAVE_VERSION_ID,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_autosave_vs_latest_saved',
+        'ordering_basis': 'manual_saved_versions_sorted_desc_lexicographic',
+        'selected_version_ids': [AUTOSAVE_VERSION_ID, latest_saved_version_id],
+        'ordered_manual_saved_version_ids': version_ids,
+        'total_saved_versions': len(version_ids),
+    }
+    return result
+
+
+def _list_saved_non_snapshot_version_ids(pm: ProjectManager, project_name: str) -> List[str]:
+    """Return saved version ids excluding autosave snapshots (newest-first)."""
+    return [
+        version_id
+        for version_id in _list_saved_version_ids(pm, project_name)
+        if not _is_autosave_snapshot_version_id(version_id)
+    ]
+
+
+def _normalize_manual_saved_index(manual_saved_index: Any) -> int:
+    """Parse and validate non-negative manual saved index selectors (N-back)."""
+    if manual_saved_index is None:
+        return 0
+
+    if isinstance(manual_saved_index, bool):
+        raise ValueError("manual_saved_index must be a non-negative integer.")
+
+    if isinstance(manual_saved_index, int):
+        index = manual_saved_index
+    elif isinstance(manual_saved_index, str):
+        value = manual_saved_index.strip()
+        if not value:
+            raise ValueError("manual_saved_index must be a non-negative integer.")
+        try:
+            index = int(value)
+        except ValueError as exc:
+            raise ValueError("manual_saved_index must be a non-negative integer.") from exc
+    else:
+        raise ValueError("manual_saved_index must be a non-negative integer.")
+
+    if index < 0:
+        raise ValueError("manual_saved_index must be a non-negative integer.")
+    return index
+
+
+def compare_autosave_preflight_vs_manual_saved_index(
+    pm: ProjectManager,
+    manual_saved_index: Any = 0,
+    project_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Compare autosave preflight checks against an N-back non-snapshot manual saved version."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare autosave with a manual saved version index.")
+
+    manual_saved_index_norm = _normalize_manual_saved_index(manual_saved_index)
+
+    version_ids = _list_saved_version_ids(pm, project_name_norm)
+    manual_version_ids = _list_saved_non_snapshot_version_ids(pm, project_name_norm)
+    if len(manual_version_ids) < 1:
+        raise ValueError(
+            f"Need at least one manually saved non-snapshot version for project '{project_name_norm}' to compare autosave preflight checks."
+        )
+    if manual_saved_index_norm >= len(manual_version_ids):
+        raise ValueError(
+            f"manual_saved_index={manual_saved_index_norm} is out of range for project '{project_name_norm}' "
+            f"(available manual saved versions: {len(manual_version_ids)})."
+        )
+
+    selected_manual_saved_version_id = manual_version_ids[manual_saved_index_norm]
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=selected_manual_saved_version_id,
+        candidate_version_id=AUTOSAVE_VERSION_ID,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_autosave_vs_manual_saved_index',
+        'ordering_basis': 'manual_saved_versions_sorted_desc_lexicographic',
+        'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
+        'ordered_manual_saved_version_ids': manual_version_ids,
+        'manual_saved_index': manual_saved_index_norm,
+        'selected_manual_saved_version_id': result['baseline_version_id'],
+        'total_saved_versions': len(version_ids),
+        'total_snapshot_versions': len(version_ids) - len(manual_version_ids),
+        'total_manual_saved_versions': len(manual_version_ids),
+    }
+    return result
+
+
+def compare_autosave_preflight_vs_previous_manual_saved(pm: ProjectManager, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Compare autosave preflight checks against the latest non-snapshot manually saved project version."""
+    result = compare_autosave_preflight_vs_manual_saved_index(
+        pm,
+        manual_saved_index=0,
+        project_name=project_name,
+    )
+    result['selection']['strategy'] = 'latest_autosave_vs_previous_manual_saved'
+    result['selection']['previous_manual_saved_version_id'] = result['baseline_version_id']
+    return result
+
+
+def _normalize_simulation_run_id(simulation_run_id: Any) -> str:
+    # Run ids are treated as directory-name selectors under each saved version's
+    # `sim_runs/` folder. Keep the selector as a single id segment and reject
+    # path-like inputs deterministically.
+    return _normalize_single_segment_selector_id(
+        simulation_run_id,
+        field_name='simulation_run_id',
+        required_error="simulation_run_id is required to compare autosave against simulation-linked manual saves.",
+    )
+
+
+def compare_autosave_preflight_vs_manual_saved_for_simulation_run_index(
+    pm: ProjectManager,
+    simulation_run_id: Any,
+    manual_saved_index: Any = 0,
+    project_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Compare autosave preflight checks against an N-back manual non-snapshot version matching a simulation run id."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare autosave against simulation-linked manual saves.")
+
+    simulation_run_id_norm = _normalize_simulation_run_id(simulation_run_id)
+    manual_saved_index_norm = _normalize_manual_saved_index(manual_saved_index)
+
+    version_ids = _list_saved_version_ids(pm, project_name_norm)
+    manual_version_ids = _list_saved_non_snapshot_version_ids(pm, project_name_norm)
+    if len(manual_version_ids) < 1:
+        raise ValueError(
+            f"Need at least one manually saved non-snapshot version for project '{project_name_norm}' to compare autosave preflight checks."
+        )
+
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name_norm, 'versions'))
+    matching_manual_version_ids = [
+        version_id
+        for version_id in manual_version_ids
+        if os.path.isdir(os.path.join(versions_root, version_id, 'sim_runs', simulation_run_id_norm))
+    ]
+
+    if not matching_manual_version_ids:
+        raise ValueError(
+            f"No manually saved non-snapshot versions for project '{project_name_norm}' contain simulation_run_id '{simulation_run_id_norm}'."
+        )
+
+    if manual_saved_index_norm >= len(matching_manual_version_ids):
+        raise ValueError(
+            f"manual_saved_index={manual_saved_index_norm} is out of range for simulation_run_id '{simulation_run_id_norm}' "
+            f"in project '{project_name_norm}' (available matching manual saved versions: {len(matching_manual_version_ids)})."
+        )
+
+    selected_manual_saved_version_id = matching_manual_version_ids[manual_saved_index_norm]
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=selected_manual_saved_version_id,
+        candidate_version_id=AUTOSAVE_VERSION_ID,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_autosave_vs_manual_saved_for_simulation_run_index',
+        'ordering_basis': 'matching_manual_saved_versions_sorted_desc_lexicographic',
+        'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
+        'simulation_run_id': simulation_run_id_norm,
+        'manual_saved_index': manual_saved_index_norm,
+        'selected_manual_saved_version_id': result['baseline_version_id'],
+        'matching_manual_saved_version_ids': matching_manual_version_ids,
+        'ordered_manual_saved_version_ids': manual_version_ids,
+        'total_matching_manual_saved_versions': len(matching_manual_version_ids),
+        'total_saved_versions': len(version_ids),
+        'total_snapshot_versions': len(version_ids) - len(manual_version_ids),
+        'total_manual_saved_versions': len(manual_version_ids),
+    }
+    return result
+
+
+def compare_autosave_preflight_vs_manual_saved_for_simulation_run(
+    pm: ProjectManager,
+    simulation_run_id: Any,
+    project_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Compare autosave preflight checks against the latest manual non-snapshot version that contains a given simulation run id."""
+    result = compare_autosave_preflight_vs_manual_saved_for_simulation_run_index(
+        pm,
+        simulation_run_id=simulation_run_id,
+        manual_saved_index=0,
+        project_name=project_name,
+    )
+    result['selection']['strategy'] = 'latest_autosave_vs_manual_saved_for_simulation_run'
+    return result
+
+
+def list_manual_saved_versions_for_simulation_run(
+    pm: ProjectManager,
+    simulation_run_id: Any,
+    project_name: Optional[str] = None,
+    limit: Any = None,
+) -> Dict[str, Any]:
+    """List newest-first manual non-snapshot versions that contain a specific simulation run id, with deterministic index metadata."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to list simulation-linked manual saved versions.")
+
+    simulation_run_id_norm = _normalize_simulation_run_id(simulation_run_id)
+    limit_norm = _parse_optional_nonnegative_limit(limit)
+
+    version_ids = _list_saved_version_ids(pm, project_name_norm)
+    manual_version_ids = _list_saved_non_snapshot_version_ids(pm, project_name_norm)
+
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name_norm, 'versions'))
+    matching_manual_version_ids = [
+        version_id
+        for version_id in manual_version_ids
+        if os.path.isdir(os.path.join(versions_root, version_id, 'sim_runs', simulation_run_id_norm))
+    ]
+
+    matching_versions: List[Dict[str, Any]] = []
+    for index, version_id in enumerate(matching_manual_version_ids):
+        source = _build_version_source_metadata(pm, project_name_norm, version_id)
+        matching_versions.append({
+            'manual_saved_index': index,
+            'version_id': version_id,
+            'timestamp': source['timestamp_from_version_id'],
+            'timestamp_source': 'version_id_prefix',
+            'has_version_json': source['version_json_exists'],
+            'version_json_mtime_utc': source['version_json_mtime_utc'],
+            'source_path_checks': source['source_path_checks'],
+        })
+
+    if limit_norm is not None:
+        matching_versions = matching_versions[:limit_norm]
+
+    return {
+        'project_name': project_name_norm,
+        'simulation_run_id': simulation_run_id_norm,
+        'ordering_basis': 'matching_manual_saved_versions_sorted_desc_lexicographic',
+        'ordered_manual_saved_version_ids': manual_version_ids,
+        'total_saved_versions': len(version_ids),
+        'total_snapshot_versions': len(version_ids) - len(manual_version_ids),
+        'total_manual_saved_versions': len(manual_version_ids),
+        'total_matching_manual_saved_versions': len(matching_manual_version_ids),
+        'returned_matching_manual_saved_versions': len(matching_versions),
+        'matching_manual_saved_versions': matching_versions,
+    }
+
+
+def compare_manual_preflight_versions_for_simulation_run_indices(
+    pm: ProjectManager,
+    simulation_run_id: Any,
+    baseline_manual_saved_index: Any = 1,
+    candidate_manual_saved_index: Any = 0,
+    project_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Compare two manual non-snapshot versions selected by N-back indices within one simulation run id."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare simulation-linked manual saved versions.")
+
+    simulation_run_id_norm = _normalize_simulation_run_id(simulation_run_id)
+    baseline_manual_saved_index_norm = _normalize_manual_saved_index(baseline_manual_saved_index)
+    candidate_manual_saved_index_norm = _normalize_manual_saved_index(candidate_manual_saved_index)
+
+    if baseline_manual_saved_index_norm == candidate_manual_saved_index_norm:
+        raise ValueError("baseline_manual_saved_index and candidate_manual_saved_index must be different.")
+
+    version_ids = _list_saved_version_ids(pm, project_name_norm)
+    manual_version_ids = _list_saved_non_snapshot_version_ids(pm, project_name_norm)
+
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name_norm, 'versions'))
+    matching_manual_version_ids = [
+        version_id
+        for version_id in manual_version_ids
+        if os.path.isdir(os.path.join(versions_root, version_id, 'sim_runs', simulation_run_id_norm))
+    ]
+
+    if len(matching_manual_version_ids) < 2:
+        raise ValueError(
+            f"Need at least two manually saved non-snapshot versions for project '{project_name_norm}' "
+            f"that contain simulation_run_id '{simulation_run_id_norm}' to compare manual preflight checks."
+        )
+
+    total_matching = len(matching_manual_version_ids)
+    if baseline_manual_saved_index_norm >= total_matching:
+        raise ValueError(
+            f"baseline_manual_saved_index={baseline_manual_saved_index_norm} is out of range for simulation_run_id "
+            f"'{simulation_run_id_norm}' in project '{project_name_norm}' "
+            f"(available matching manual saved versions: {total_matching})."
+        )
+
+    if candidate_manual_saved_index_norm >= total_matching:
+        raise ValueError(
+            f"candidate_manual_saved_index={candidate_manual_saved_index_norm} is out of range for simulation_run_id "
+            f"'{simulation_run_id_norm}' in project '{project_name_norm}' "
+            f"(available matching manual saved versions: {total_matching})."
+        )
+
+    baseline_version_id = matching_manual_version_ids[baseline_manual_saved_index_norm]
+    candidate_version_id = matching_manual_version_ids[candidate_manual_saved_index_norm]
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=baseline_version_id,
+        candidate_version_id=candidate_version_id,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'manual_saved_versions_for_simulation_run_indices',
+        'ordering_basis': 'matching_manual_saved_versions_sorted_desc_lexicographic',
+        'simulation_run_id': simulation_run_id_norm,
+        'baseline_manual_saved_index': baseline_manual_saved_index_norm,
+        'candidate_manual_saved_index': candidate_manual_saved_index_norm,
+        'selected_version_ids': [result['baseline_version_id'], result['candidate_version_id']],
+        'matching_manual_saved_version_ids': matching_manual_version_ids,
+        'ordered_manual_saved_version_ids': manual_version_ids,
+        'total_matching_manual_saved_versions': total_matching,
+        'total_saved_versions': len(version_ids),
+        'total_snapshot_versions': len(version_ids) - len(manual_version_ids),
+        'total_manual_saved_versions': len(manual_version_ids),
+    }
+    return result
+
+
+def compare_autosave_preflight_vs_saved_version(pm: ProjectManager, saved_version_id: Any, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Compare autosave preflight checks against a specific manually saved project version."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare autosave with a saved version.")
+
+    saved_version_id_norm = _normalize_preflight_version_selector_id(
+        saved_version_id,
+        required_error="saved_version_id is required to compare autosave preflight checks.",
+    )
+    if saved_version_id_norm == AUTOSAVE_VERSION_ID:
+        raise ValueError("saved_version_id must refer to a manually saved version, not 'autosave'.")
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=saved_version_id_norm,
+        candidate_version_id=AUTOSAVE_VERSION_ID,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_autosave_vs_selected_saved_version',
+        'ordering_basis': 'explicit_saved_version_id',
+        'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
+        'saved_version_id': result['baseline_version_id'],
+        'total_saved_versions': len(_list_saved_version_ids(pm, project_name_norm)),
+    }
+    return result
+
+
+def _extract_version_timestamp_and_description(version_id: str) -> tuple[str, str]:
+    if '_' in version_id:
+        return version_id.split('_', 1)
+    return version_id, ''
+
+
+def _is_autosave_snapshot_version_id(version_id: str) -> bool:
+    if not version_id or version_id == AUTOSAVE_VERSION_ID:
+        return False
+
+    _, description = _extract_version_timestamp_and_description(version_id)
+    normalized_desc = re.sub(r'[^a-z0-9]+', '_', description.lower()).strip('_')
+    return ('autosave' in normalized_desc and 'snapshot' in normalized_desc)
+
+
+def compare_autosave_preflight_vs_snapshot_version(pm: ProjectManager, autosave_snapshot_version_id: Any, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Compare latest autosave preflight checks against a selected autosave snapshot version."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare autosave with an autosave snapshot version.")
+
+    snapshot_version_id_norm = _normalize_preflight_version_selector_id(
+        autosave_snapshot_version_id,
+        required_error="autosave_snapshot_version_id is required to compare autosave preflight checks.",
+    )
+    if snapshot_version_id_norm == AUTOSAVE_VERSION_ID:
+        raise ValueError("autosave_snapshot_version_id must refer to a saved autosave snapshot, not 'autosave'.")
+    if not _is_autosave_snapshot_version_id(snapshot_version_id_norm):
+        raise ValueError(
+            "autosave_snapshot_version_id must refer to a saved autosave snapshot version (see list_preflight_versions metadata)."
+        )
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=snapshot_version_id_norm,
+        candidate_version_id=AUTOSAVE_VERSION_ID,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_autosave_vs_selected_autosave_snapshot',
+        'ordering_basis': 'explicit_autosave_snapshot_version_id',
+        'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
+        'autosave_snapshot_version_id': result['baseline_version_id'],
+        'total_saved_versions': len(_list_saved_version_ids(pm, project_name_norm)),
+    }
+    return result
+
+
+def _list_autosave_snapshot_version_ids(pm: ProjectManager, project_name: str) -> List[str]:
+    """Return autosave snapshot version ids ordered newest-first (mtime, then version id)."""
+    snapshot_version_ids = [
+        version_id
+        for version_id in _list_saved_version_ids(pm, project_name)
+        if _is_autosave_snapshot_version_id(version_id)
+    ]
+
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name, 'versions'))
+
+    def _snapshot_sort_key(version_id: str) -> tuple[float, str]:
+        version_json_path = os.path.join(versions_root, version_id, 'version.json')
+        try:
+            return (os.path.getmtime(version_json_path), version_id)
+        except OSError:
+            return (0.0, version_id)
+
+    return sorted(snapshot_version_ids, key=_snapshot_sort_key, reverse=True)
+
+
+def compare_autosave_preflight_vs_latest_snapshot(pm: ProjectManager, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Compare latest autosave preflight checks against the most recent saved autosave snapshot version."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare autosave with the latest autosave snapshot version.")
+
+    version_ids = _list_saved_version_ids(pm, project_name_norm)
+    snapshot_version_ids = _list_autosave_snapshot_version_ids(pm, project_name_norm)
+    if len(snapshot_version_ids) < 1:
+        raise ValueError(
+            f"Need at least one saved autosave snapshot version for project '{project_name_norm}' to compare autosave preflight checks."
+        )
+
+    latest_snapshot_version_id = snapshot_version_ids[0]
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=latest_snapshot_version_id,
+        candidate_version_id=AUTOSAVE_VERSION_ID,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_autosave_vs_latest_autosave_snapshot',
+        'ordering_basis': 'autosave_snapshot_versions_sorted_by_mtime_then_version_id_desc',
+        'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
+        'ordered_snapshot_version_ids': snapshot_version_ids,
+        'autosave_snapshot_version_id': result['baseline_version_id'],
+        'total_saved_versions': len(version_ids),
+        'total_snapshot_versions': len(snapshot_version_ids),
+    }
+    return result
+
+
+def compare_autosave_preflight_vs_previous_snapshot(pm: ProjectManager, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Compare latest autosave preflight checks against the previous saved autosave snapshot version."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare autosave with the previous autosave snapshot version.")
+
+    version_ids = _list_saved_version_ids(pm, project_name_norm)
+    snapshot_version_ids = _list_autosave_snapshot_version_ids(pm, project_name_norm)
+    if len(snapshot_version_ids) < 2:
+        raise ValueError(
+            f"Need at least two saved autosave snapshot versions for project '{project_name_norm}' to compare autosave against the previous snapshot."
+        )
+
+    latest_snapshot_version_id = snapshot_version_ids[0]
+    previous_snapshot_version_id = snapshot_version_ids[1]
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=previous_snapshot_version_id,
+        candidate_version_id=AUTOSAVE_VERSION_ID,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_autosave_vs_previous_autosave_snapshot',
+        'ordering_basis': 'autosave_snapshot_versions_sorted_by_mtime_then_version_id_desc',
+        'selected_version_ids': [AUTOSAVE_VERSION_ID, result['baseline_version_id']],
+        'ordered_snapshot_version_ids': snapshot_version_ids,
+        'autosave_snapshot_version_id': result['baseline_version_id'],
+        'previous_snapshot_version_id': result['baseline_version_id'],
+        'latest_snapshot_version_id': latest_snapshot_version_id,
+        'total_saved_versions': len(version_ids),
+        'total_snapshot_versions': len(snapshot_version_ids),
+    }
+    return result
+
+
+def compare_latest_autosave_snapshot_preflight_versions(pm: ProjectManager, project_name: Optional[str] = None) -> Dict[str, Any]:
+    """Compare deterministic preflight checks between the latest two saved autosave snapshot versions."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare latest autosave snapshot versions.")
+
+    snapshot_version_ids = _list_autosave_snapshot_version_ids(pm, project_name_norm)
+    if len(snapshot_version_ids) < 2:
+        raise ValueError(
+            f"Need at least two saved autosave snapshot versions for project '{project_name_norm}' to compare latest snapshot preflight checks."
+        )
+
+    candidate_snapshot_version_id = snapshot_version_ids[0]
+    baseline_snapshot_version_id = snapshot_version_ids[1]
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=baseline_snapshot_version_id,
+        candidate_version_id=candidate_snapshot_version_id,
+        project_name=project_name_norm,
+    )
+
+    result['selection'] = {
+        'strategy': 'latest_two_autosave_snapshot_versions',
+        'ordering_basis': 'autosave_snapshot_versions_sorted_by_mtime_then_version_id_desc',
+        'selected_version_ids': [result['candidate_version_id'], result['baseline_version_id']],
+        'ordered_snapshot_version_ids': snapshot_version_ids,
+        'baseline_snapshot_version_id': result['baseline_version_id'],
+        'candidate_snapshot_version_id': result['candidate_version_id'],
+        'total_snapshot_versions': len(snapshot_version_ids),
+    }
+    return result
+
+
+def compare_autosave_snapshot_preflight_versions(
+    pm: ProjectManager,
+    baseline_snapshot_version_id: Any,
+    candidate_snapshot_version_id: Any,
+    project_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Compare deterministic preflight checks between two saved autosave snapshot versions."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to compare autosave snapshot versions.")
+
+    baseline_snapshot_version_id_norm = _normalize_preflight_version_selector_id(
+        baseline_snapshot_version_id,
+        required_error="baseline_snapshot_version_id is required to compare autosave snapshot versions.",
+    )
+    candidate_snapshot_version_id_norm = _normalize_preflight_version_selector_id(
+        candidate_snapshot_version_id,
+        required_error="candidate_snapshot_version_id is required to compare autosave snapshot versions.",
+    )
+
+    if baseline_snapshot_version_id_norm == candidate_snapshot_version_id_norm:
+        raise ValueError("baseline_snapshot_version_id and candidate_snapshot_version_id must be different snapshot versions.")
+
+    for field_name, version_id in (
+        ("baseline_snapshot_version_id", baseline_snapshot_version_id_norm),
+        ("candidate_snapshot_version_id", candidate_snapshot_version_id_norm),
+    ):
+        if version_id == AUTOSAVE_VERSION_ID:
+            raise ValueError(f"{field_name} must refer to a saved autosave snapshot, not 'autosave'.")
+        if not _is_autosave_snapshot_version_id(version_id):
+            raise ValueError(
+                f"{field_name} must refer to a saved autosave snapshot version (see list_preflight_versions metadata)."
+            )
+
+    result = compare_preflight_versions(
+        pm,
+        baseline_version_id=baseline_snapshot_version_id_norm,
+        candidate_version_id=candidate_snapshot_version_id_norm,
+        project_name=project_name_norm,
+    )
+
+    snapshot_version_ids = [
+        version_id
+        for version_id in _list_saved_version_ids(pm, project_name_norm)
+        if _is_autosave_snapshot_version_id(version_id)
+    ]
+
+    result['selection'] = {
+        'strategy': 'selected_autosave_snapshot_versions',
+        'ordering_basis': 'explicit_autosave_snapshot_version_ids',
+        'selected_version_ids': [result['candidate_version_id'], result['baseline_version_id']],
+        'available_snapshot_version_ids_sorted_desc_lexicographic': sorted(snapshot_version_ids, reverse=True),
+        'baseline_snapshot_version_id': result['baseline_version_id'],
+        'candidate_snapshot_version_id': result['candidate_version_id'],
+        'total_snapshot_versions': len(snapshot_version_ids),
+    }
+    return result
+
+
+def _parse_optional_nonnegative_limit(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("limit must be a non-negative integer.")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("limit must be a non-negative integer.")
+
+    try:
+        limit = int(value)
+    except Exception as exc:
+        raise ValueError("limit must be a non-negative integer.") from exc
+
+    if limit < 0:
+        raise ValueError("limit must be a non-negative integer.")
+    return limit
+
+
+def list_preflight_versions(
+    pm: ProjectManager,
+    project_name: Optional[str] = None,
+    include_autosave: Any = True,
+    limit: Any = None,
+) -> Dict[str, Any]:
+    """List version ids and metadata that can be used for deterministic preflight comparisons."""
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    if not project_name_norm:
+        raise ValueError("project_name is required to list preflight versions.")
+
+    include_autosave_norm = bool(include_autosave)
+    limit_norm = _parse_optional_nonnegative_limit(limit)
+
+    versions_root = os.path.realpath(os.path.join(pm.projects_dir, project_name_norm, 'versions'))
+    if not os.path.isdir(versions_root):
+        return {
+            'project_name': project_name_norm,
+            'ordering_basis': 'autosave_first_then_manual_saved_desc_lexicographic',
+            'manual_saved_ordering_basis': 'manual_saved_versions_sorted_desc_lexicographic',
+            'versions_root': versions_root,
+            'versions_root_exists': False,
+            'total_versions': 0,
+            'returned_versions': 0,
+            'has_autosave': False,
+            'versions': [],
+        }
+
+    version_dirs = [
+        version_id
+        for version_id in os.listdir(versions_root)
+        if os.path.isdir(os.path.join(versions_root, version_id))
+    ]
+
+    manual_version_ids = sorted(
+        [version_id for version_id in version_dirs if version_id != AUTOSAVE_VERSION_ID],
+        reverse=True,
+    )
+
+    versions: List[Dict[str, Any]] = []
+    autosave_exists = False
+
+    if include_autosave_norm and AUTOSAVE_VERSION_ID in version_dirs:
+        autosave_source = _build_version_source_metadata(pm, project_name_norm, AUTOSAVE_VERSION_ID)
+        if autosave_source['version_json_exists']:
+            autosave_exists = True
+            autosave_timestamp = autosave_source['version_json_mtime_utc']
+            versions.append({
+                'version_id': AUTOSAVE_VERSION_ID,
+                'is_autosave': True,
+                'timestamp': datetime.strptime(autosave_timestamp, '%Y-%m-%dT%H:%M:%SZ').strftime('%Y-%m-%dT%H-%M-%S') if autosave_timestamp else None,
+                'timestamp_source': 'version_json_mtime_utc',
+                'description': 'Latest Autosave',
+                'is_autosave_snapshot': False,
+                'has_version_json': True,
+                'version_json_mtime_utc': autosave_timestamp,
+                'source_path_checks': autosave_source['source_path_checks'],
+                'sim_run_count': 0,
+            })
+
+    for version_id in manual_version_ids:
+        source = _build_version_source_metadata(pm, project_name_norm, version_id)
+        sim_runs_path = os.path.join(versions_root, version_id, 'sim_runs')
+
+        versions.append({
+            'version_id': version_id,
+            'is_autosave': False,
+            'timestamp': source['timestamp_from_version_id'],
+            'timestamp_source': 'version_id_prefix',
+            'description': source['description_from_version_id'],
+            'is_autosave_snapshot': source['is_autosave_snapshot'],
+            'has_version_json': source['version_json_exists'],
+            'version_json_mtime_utc': source['version_json_mtime_utc'],
+            'source_path_checks': source['source_path_checks'],
+            'sim_run_count': len(os.listdir(sim_runs_path)) if os.path.isdir(sim_runs_path) else 0,
+        })
+
+    total_versions = len(versions)
+    if limit_norm is not None:
+        versions = versions[:limit_norm]
+
+    return {
+        'project_name': project_name_norm,
+        'ordering_basis': 'autosave_first_then_manual_saved_desc_lexicographic',
+        'manual_saved_ordering_basis': 'manual_saved_versions_sorted_desc_lexicographic',
+        'versions_root': versions_root,
+        'versions_root_exists': True,
+        'total_versions': total_versions,
+        'returned_versions': len(versions),
+        'has_autosave': autosave_exists,
+        'versions': versions,
+    }
+
+
+
+def _resolve_scoped_selector_value(
+    payload_obj: Dict[str, Any],
+    scope_obj: Dict[str, Any],
+    *,
+    canonical_nested_key: str,
+    nested_alias_keys: Tuple[str, ...],
+    canonical_top_level_key: str,
+    top_level_alias_keys: Tuple[str, ...],
+) -> Any:
+    """Resolve one scoped selector value with deterministic precedence.
+
+    Precedence order is strictly key-presence based (not value-based):
+    1) nested canonical key
+    2) nested aliases in listed order
+    3) top-level canonical key
+    4) top-level aliases in listed order
+
+    If a higher-precedence key is present with null/blank data, fallback is blocked.
+    """
+    for key in (canonical_nested_key, *nested_alias_keys):
+        if key in scope_obj:
+            return scope_obj.get(key)
+
+    for key in (canonical_top_level_key, *top_level_alias_keys):
+        if key in payload_obj:
+            return payload_obj.get(key)
+
+    return None
+
+
+
+def _normalize_preflight_scope_input(payload: Any) -> tuple[str, str]:
+    payload_obj = payload if isinstance(payload, dict) else {}
+    scope = payload_obj.get('scope') if isinstance(payload_obj.get('scope'), dict) else {}
+
+    scope_type_raw = _resolve_scoped_selector_value(
+        payload_obj,
+        scope,
+        canonical_nested_key='type',
+        nested_alias_keys=('scope_type', 'scopeType'),
+        canonical_top_level_key='scope_type',
+        top_level_alias_keys=('scopeType',),
+    )
+    scope_name_raw = _resolve_scoped_selector_value(
+        payload_obj,
+        scope,
+        canonical_nested_key='name',
+        nested_alias_keys=('scope_name', 'scopeName'),
+        canonical_top_level_key='scope_name',
+        top_level_alias_keys=('scopeName',),
+    )
+
+    scope_type_norm = str(scope_type_raw or '').strip().lower()
+    scope_name_norm = str(scope_name_raw or '').strip()
+
+    if not scope_type_norm or not scope_name_norm:
+        raise ValueError('Scope type and name are required for scoped preflight.')
+
+    scope_type_aliases = {
+        'logical_volume': 'logical_volume',
+        'logical volume': 'logical_volume',
+        'logical-volume': 'logical_volume',
+        'logicalvolume': 'logical_volume',
+        'lv': 'logical_volume',
+        'assembly': 'assembly',
+        'assemblies': 'assembly',
+        'asm': 'assembly',
+    }
+    scope_type_norm = scope_type_aliases.get(scope_type_norm, scope_type_norm)
+
+    if scope_type_norm not in {'logical_volume', 'assembly'}:
+        raise ValueError(f"Unsupported scope type '{scope_type_raw}'.")
+
+    return scope_type_norm, scope_name_norm
+
+
+
+def _build_scope_summary_delta(full_summary, scoped_summary):
+    def safe(summary, key):
+        if not isinstance(summary, dict):
+            summary = {}
+        value = summary.get(key, 0)
+        try:
+            return int(value)
+        except Exception:
+            return 0
+
+    stats_keys = ['errors', 'warnings', 'infos', 'issue_count']
+    scope_stats = {k: safe(scoped_summary, k) for k in stats_keys}
+    outside_stats = {
+        k: max(0, safe(full_summary, k) - scope_stats[k])
+        for k in stats_keys
+    }
+    return {'scope': scope_stats, 'outside_scope': outside_stats}
+
+
+def _build_scope_issue_family_correlations(full_summary, scoped_summary):
+    def _normalize_counts(summary):
+        if not isinstance(summary, dict):
+            return {}
+        raw_counts = summary.get('counts_by_code')
+        if not isinstance(raw_counts, dict):
+            return {}
+
+        normalized = {}
+        for code, count in raw_counts.items():
+            code_norm = str(code or '').strip()
+            if not code_norm:
+                continue
+            try:
+                count_norm = int(count)
+            except Exception:
+                continue
+            if count_norm <= 0:
+                continue
+            normalized[code_norm] = count_norm
+        return normalized
+
+    full_counts = _normalize_counts(full_summary)
+    scope_counts = _normalize_counts(scoped_summary)
+
+    all_codes = sorted(set(full_counts.keys()) | set(scope_counts.keys()))
+
+    scope_only_issue_codes = []
+    outside_scope_only_issue_codes = []
+    shared_issue_codes = []
+
+    scope_counts_by_code = {}
+    outside_scope_counts_by_code = {}
+    entries = []
+
+    for code in all_codes:
+        scope_count = scope_counts.get(code, 0)
+        outside_scope_count = max(0, full_counts.get(code, 0) - scope_count)
+
+        if scope_count > 0:
+            scope_counts_by_code[code] = scope_count
+        if outside_scope_count > 0:
+            outside_scope_counts_by_code[code] = outside_scope_count
+
+        if scope_count > 0 and outside_scope_count > 0:
+            correlation = 'shared'
+            shared_issue_codes.append(code)
+        elif scope_count > 0:
+            correlation = 'scope'
+            scope_only_issue_codes.append(code)
+        elif outside_scope_count > 0:
+            correlation = 'outside_scope'
+            outside_scope_only_issue_codes.append(code)
+        else:
+            continue
+
+        entries.append({
+            'issue_code': code,
+            'correlation': correlation,
+            'scope_count': scope_count,
+            'outside_scope_count': outside_scope_count,
+        })
+
+    return {
+        'scope': {
+            'issue_count': sum(scope_counts_by_code.values()),
+            'issue_codes': sorted(scope_counts_by_code.keys()),
+            'counts_by_code': scope_counts_by_code,
+        },
+        'outside_scope': {
+            'issue_count': sum(outside_scope_counts_by_code.values()),
+            'issue_codes': sorted(outside_scope_counts_by_code.keys()),
+            'counts_by_code': outside_scope_counts_by_code,
+        },
+        'scope_only_issue_codes': sorted(scope_only_issue_codes),
+        'outside_scope_only_issue_codes': sorted(outside_scope_only_issue_codes),
+        'shared_issue_codes': sorted(shared_issue_codes),
+        'entries': entries,
+    }
+
+
+@app.route('/api/preflight/check_scope', methods=['POST'])
+def preflight_scope_route():
+    data = request.get_json(silent=True) or {}
+
+    try:
+        scope_type, scope_name = _normalize_preflight_scope_input(data)
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+
+    pm = get_project_manager_for_session()
+    full_report = pm.run_preflight_checks()
+    try:
+        scoped_report = pm.build_scoped_preflight_report(full_report, scope_type, scope_name)
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+
+    summary_delta = _build_scope_summary_delta(
+        full_report.get('summary', {}),
+        scoped_report.get('summary', {}),
+    )
+    issue_family_correlations = _build_scope_issue_family_correlations(
+        full_report.get('summary', {}),
+        scoped_report.get('summary', {}),
+    )
+
+    return jsonify({
+        'success': True,
+        'scope': {'type': scope_type, 'name': scope_name},
+        'preflight_report': full_report,
+        'scoped_preflight_report': scoped_report,
+        'summary_delta': summary_delta,
+        'issue_family_correlations': issue_family_correlations,
+    })
+
+@app.route('/api/preflight/check', methods=['POST'])
+def preflight_check_route():
+    pm = get_project_manager_for_session()
+    report = pm.run_preflight_checks()
+    return jsonify({
+        "success": True,
+        "preflight_report": report,
+    })
+
+
+@app.route('/api/preflight/compare_summaries', methods=['POST'])
+def preflight_compare_summaries_route():
+    data = request.get_json(silent=True) or {}
+
+    baseline_input = (
+        data.get('baseline_summary')
+        if data.get('baseline_summary') is not None
+        else data.get('baseline_report')
+    )
+    candidate_input = (
+        data.get('candidate_summary')
+        if data.get('candidate_summary') is not None
+        else data.get('candidate_report')
+    )
+
+    if baseline_input is None or candidate_input is None:
+        return jsonify({
+            "success": False,
+            "error": "Missing required fields: baseline_summary and candidate_summary (or baseline_report/candidate_report).",
+        }), 400
+
+    try:
+        comparison = compare_preflight_summaries(baseline_input, candidate_input)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    return jsonify({
+        "success": True,
+        "comparison": comparison,
+    })
+
+
+@app.route('/api/preflight/compare_versions', methods=['POST'])
+def preflight_compare_versions_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+
+    baseline_version_id = (
+        data.get('baseline_version_id')
+        if data.get('baseline_version_id') is not None
+        else data.get('baseline_version')
+    )
+    candidate_version_id = (
+        data.get('candidate_version_id')
+        if data.get('candidate_version_id') is not None
+        else data.get('candidate_version')
+    )
+    project_name = data.get('project_name') or pm.project_name
+
+    if baseline_version_id is None or candidate_version_id is None:
+        return jsonify({
+            "success": False,
+            "error": "Missing required fields: baseline_version_id and candidate_version_id.",
+        }), 400
+
+    try:
+        result = compare_preflight_versions(
+            pm,
+            baseline_version_id=baseline_version_id,
+            candidate_version_id=candidate_version_id,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_latest_versions', methods=['POST'])
+def preflight_compare_latest_versions_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    try:
+        result = compare_latest_preflight_versions(pm, project_name=project_name)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_autosave_vs_latest_saved', methods=['POST'])
+def preflight_compare_autosave_vs_latest_saved_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    try:
+        result = compare_autosave_preflight_vs_latest_saved(pm, project_name=project_name)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_autosave_vs_previous_manual_saved', methods=['POST'])
+def preflight_compare_autosave_vs_previous_manual_saved_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    try:
+        result = compare_autosave_preflight_vs_previous_manual_saved(
+            pm,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_autosave_vs_manual_saved_index', methods=['POST'])
+def preflight_compare_autosave_vs_manual_saved_index_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    manual_saved_index = (
+        data.get('manual_saved_index')
+        if data.get('manual_saved_index') is not None
+        else data.get('manual_saved_n_back')
+    )
+    if manual_saved_index is None:
+        manual_saved_index = data.get('n_back')
+
+    try:
+        result = compare_autosave_preflight_vs_manual_saved_index(
+            pm,
+            manual_saved_index=manual_saved_index,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_autosave_vs_manual_saved_for_simulation_run', methods=['POST'])
+def preflight_compare_autosave_vs_manual_saved_for_simulation_run_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    simulation_run_id = (
+        data.get('simulation_run_id')
+        if data.get('simulation_run_id') is not None
+        else data.get('run_id')
+    )
+    if simulation_run_id is None:
+        simulation_run_id = data.get('job_id')
+
+    if simulation_run_id is None:
+        return jsonify({
+            "success": False,
+            "error": "Missing required field: simulation_run_id (or run_id/job_id).",
+        }), 400
+
+    try:
+        result = compare_autosave_preflight_vs_manual_saved_for_simulation_run(
+            pm,
+            simulation_run_id=simulation_run_id,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_autosave_vs_manual_saved_for_simulation_run_index', methods=['POST'])
+def preflight_compare_autosave_vs_manual_saved_for_simulation_run_index_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    simulation_run_id = (
+        data.get('simulation_run_id')
+        if data.get('simulation_run_id') is not None
+        else data.get('run_id')
+    )
+    if simulation_run_id is None:
+        simulation_run_id = data.get('job_id')
+
+    if simulation_run_id is None:
+        return jsonify({
+            "success": False,
+            "error": "Missing required field: simulation_run_id (or run_id/job_id).",
+        }), 400
+
+    manual_saved_index = (
+        data.get('manual_saved_index')
+        if data.get('manual_saved_index') is not None
+        else data.get('manual_saved_n_back')
+    )
+    if manual_saved_index is None:
+        manual_saved_index = data.get('n_back')
+
+    try:
+        result = compare_autosave_preflight_vs_manual_saved_for_simulation_run_index(
+            pm,
+            simulation_run_id=simulation_run_id,
+            manual_saved_index=manual_saved_index,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/list_manual_saved_versions_for_simulation_run', methods=['POST'])
+def preflight_list_manual_saved_versions_for_simulation_run_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    simulation_run_id = (
+        data.get('simulation_run_id')
+        if data.get('simulation_run_id') is not None
+        else data.get('run_id')
+    )
+    if simulation_run_id is None:
+        simulation_run_id = data.get('job_id')
+
+    if simulation_run_id is None:
+        return jsonify({
+            "success": False,
+            "error": "Missing required field: simulation_run_id (or run_id/job_id).",
+        }), 400
+
+    limit = data.get('limit')
+    if limit is None:
+        limit = data.get('max_versions')
+    if limit is None:
+        limit = data.get('count')
+
+    try:
+        result = list_manual_saved_versions_for_simulation_run(
+            pm,
+            simulation_run_id=simulation_run_id,
+            project_name=project_name,
+            limit=limit,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_manual_saved_versions_for_simulation_run_indices', methods=['POST'])
+def preflight_compare_manual_saved_versions_for_simulation_run_indices_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    simulation_run_id = (
+        data.get('simulation_run_id')
+        if data.get('simulation_run_id') is not None
+        else data.get('run_id')
+    )
+    if simulation_run_id is None:
+        simulation_run_id = data.get('job_id')
+
+    if simulation_run_id is None:
+        return jsonify({
+            "success": False,
+            "error": "Missing required field: simulation_run_id (or run_id/job_id).",
+        }), 400
+
+    baseline_manual_saved_index = (
+        data.get('baseline_manual_saved_index')
+        if data.get('baseline_manual_saved_index') is not None
+        else data.get('baseline_manual_saved_n_back')
+    )
+    if baseline_manual_saved_index is None:
+        baseline_manual_saved_index = data.get('baseline_n_back')
+    if baseline_manual_saved_index is None:
+        baseline_manual_saved_index = data.get('baseline_index')
+
+    candidate_manual_saved_index = (
+        data.get('candidate_manual_saved_index')
+        if data.get('candidate_manual_saved_index') is not None
+        else data.get('candidate_manual_saved_n_back')
+    )
+    if candidate_manual_saved_index is None:
+        candidate_manual_saved_index = data.get('candidate_n_back')
+    if candidate_manual_saved_index is None:
+        candidate_manual_saved_index = data.get('candidate_index')
+
+    try:
+        result = compare_manual_preflight_versions_for_simulation_run_indices(
+            pm,
+            simulation_run_id=simulation_run_id,
+            baseline_manual_saved_index=baseline_manual_saved_index,
+            candidate_manual_saved_index=candidate_manual_saved_index,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_autosave_vs_saved_version', methods=['POST'])
+def preflight_compare_autosave_vs_saved_version_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    saved_version_id = (
+        data.get('saved_version_id')
+        if data.get('saved_version_id') is not None
+        else data.get('saved_version')
+    )
+    if saved_version_id is None:
+        saved_version_id = data.get('version_id')
+
+    if saved_version_id is None:
+        return jsonify({
+            "success": False,
+            "error": "Missing required field: saved_version_id (or saved_version/version_id).",
+        }), 400
+
+    try:
+        result = compare_autosave_preflight_vs_saved_version(
+            pm,
+            saved_version_id=saved_version_id,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_autosave_vs_snapshot_version', methods=['POST'])
+def preflight_compare_autosave_vs_snapshot_version_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    autosave_snapshot_version_id = (
+        data.get('autosave_snapshot_version_id')
+        if data.get('autosave_snapshot_version_id') is not None
+        else data.get('snapshot_version_id')
+    )
+    if autosave_snapshot_version_id is None:
+        autosave_snapshot_version_id = data.get('snapshot_version')
+    if autosave_snapshot_version_id is None:
+        autosave_snapshot_version_id = data.get('version_id')
+
+    if autosave_snapshot_version_id is None:
+        return jsonify({
+            "success": False,
+            "error": "Missing required field: autosave_snapshot_version_id (or snapshot_version_id/snapshot_version/version_id).",
+        }), 400
+
+    try:
+        result = compare_autosave_preflight_vs_snapshot_version(
+            pm,
+            autosave_snapshot_version_id=autosave_snapshot_version_id,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_autosave_vs_latest_snapshot', methods=['POST'])
+def preflight_compare_autosave_vs_latest_snapshot_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    try:
+        result = compare_autosave_preflight_vs_latest_snapshot(
+            pm,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_autosave_vs_previous_snapshot', methods=['POST'])
+def preflight_compare_autosave_vs_previous_snapshot_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    try:
+        result = compare_autosave_preflight_vs_previous_snapshot(
+            pm,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_snapshot_versions', methods=['POST'])
+def preflight_compare_snapshot_versions_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    baseline_snapshot_version_id = (
+        data.get('baseline_snapshot_version_id')
+        if data.get('baseline_snapshot_version_id') is not None
+        else data.get('baseline_snapshot_version')
+    )
+    if baseline_snapshot_version_id is None:
+        baseline_snapshot_version_id = data.get('baseline_version_id')
+    if baseline_snapshot_version_id is None:
+        baseline_snapshot_version_id = data.get('baseline_version')
+
+    candidate_snapshot_version_id = (
+        data.get('candidate_snapshot_version_id')
+        if data.get('candidate_snapshot_version_id') is not None
+        else data.get('candidate_snapshot_version')
+    )
+    if candidate_snapshot_version_id is None:
+        candidate_snapshot_version_id = data.get('candidate_version_id')
+    if candidate_snapshot_version_id is None:
+        candidate_snapshot_version_id = data.get('candidate_version')
+
+    missing_fields = []
+    if baseline_snapshot_version_id is None:
+        missing_fields.append('baseline_snapshot_version_id (or baseline_snapshot_version/baseline_version_id/baseline_version)')
+    if candidate_snapshot_version_id is None:
+        missing_fields.append('candidate_snapshot_version_id (or candidate_snapshot_version/candidate_version_id/candidate_version)')
+
+    if missing_fields:
+        return jsonify({
+            "success": False,
+            "error": f"Missing required field(s): {', '.join(missing_fields)}.",
+        }), 400
+
+    try:
+        result = compare_autosave_snapshot_preflight_versions(
+            pm,
+            baseline_snapshot_version_id=baseline_snapshot_version_id,
+            candidate_snapshot_version_id=candidate_snapshot_version_id,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/compare_latest_snapshot_versions', methods=['POST'])
+def preflight_compare_latest_snapshot_versions_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    project_name = data.get('project_name') or pm.project_name
+
+    try:
+        result = compare_latest_autosave_snapshot_preflight_versions(
+            pm,
+            project_name=project_name,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except FileNotFoundError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
+@app.route('/api/preflight/list_versions', methods=['POST'])
+def preflight_list_versions_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+
+    project_name = data.get('project_name') or pm.project_name
+
+    if 'include_autosave' in data:
+        include_autosave = data.get('include_autosave')
+    elif 'include_latest_autosave' in data:
+        include_autosave = data.get('include_latest_autosave')
+    else:
+        include_autosave = True
+
+    if 'limit' in data:
+        limit = data.get('limit')
+    elif 'max_versions' in data:
+        limit = data.get('max_versions')
+    elif 'count' in data:
+        limit = data.get('count')
+    else:
+        limit = None
+
+    try:
+        result = list_preflight_versions(
+            pm,
+            project_name=project_name,
+            include_autosave=include_autosave,
+            limit=limit,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    return jsonify({
+        "success": True,
+        **result,
+    })
+
+
 @app.route('/api/simulation/run', methods=['POST'])
 def run_simulation():
     pm = get_project_manager_for_session()
@@ -538,6 +3417,14 @@ def run_simulation():
     sim_params = request.get_json()
     if not sim_params:
         return jsonify({"success": False, "error": "Missing simulation parameters."}), 400
+
+    preflight_report = pm.run_preflight_checks()
+    if not preflight_report.get('summary', {}).get('can_run', False):
+        return jsonify({
+            "success": False,
+            "error": "Preflight checks failed. Resolve errors before running simulation.",
+            "preflight_report": preflight_report,
+        }), 400
 
     job_id = str(uuid.uuid4())
 
@@ -874,37 +3761,317 @@ def run_simulation():
             "success": True,
             "message": "Simulation started.",
             "job_id": job_id,
-            "version_id": version_id
+            "version_id": version_id,
+            "preflight_summary": preflight_report.get('summary', {}),
         })
 
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"1", "true", "yes", "y", "on"}:
+            return True
+        if v in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
+
+
+def _normalize_sim_log_source(value: Any) -> str:
+    log_source = (str(value or "both")).strip().lower()
+    if log_source not in {"stdout", "stderr", "both"}:
+        return "both"
+    return log_source
+
+
+def _normalize_log_contains_term(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _normalize_log_contains_any_terms(raw_terms: Any, *, split_commas: bool = False) -> Optional[List[str]]:
+    if raw_terms is None:
+        return None
+
+    if isinstance(raw_terms, (list, tuple, set)):
+        items = list(raw_terms)
+    else:
+        items = [raw_terms]
+
+    normalized_terms: List[str] = []
+    for term in items:
+        parts = str(term).split(',') if split_commas else [term]
+        for part in parts:
+            normalized = str(part).strip().lower()
+            if normalized and normalized not in normalized_terms:
+                normalized_terms.append(normalized)
+
+    if not normalized_terms:
+        return None
+    return normalized_terms
+
+
+def _parse_nonnegative_int_arg(value: Any, *, arg_name: str) -> tuple[Optional[int], Optional[str]]:
+    if value is None:
+        return None, None
+
+    # Keep validation strict and deterministic across HTTP (string args) and
+    # AI tool calls (native JSON types): bools and non-integral floats should
+    # not silently coerce to integers.
+    if isinstance(value, bool):
+        return None, f"Argument '{arg_name}' must be an integer >= 0."
+
+    if isinstance(value, float) and not value.is_integer():
+        return None, f"Argument '{arg_name}' must be an integer >= 0."
+
+    try:
+        parsed = int(value)
+    except Exception:
+        return None, f"Argument '{arg_name}' must be an integer >= 0."
+
+    if parsed < 0:
+        return None, f"Argument '{arg_name}' must be an integer >= 0."
+
+    return parsed, None
+
+
+def _parse_simulation_status_log_options(
+    *,
+    get_value,
+    has_key,
+    get_list=None,
+    include_log_summary_default: bool,
+    include_log_entries_default: bool,
+    tail_lines_default: Optional[int],
+    apply_legacy_since_default: bool,
+    split_commas_for_contains_any: bool,
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    include_logs = _coerce_bool(get_value('include_logs'), default=True)
+    include_log_summary = _coerce_bool(get_value('include_log_summary'), default=include_log_summary_default)
+    include_log_entries = _coerce_bool(get_value('include_log_entries'), default=include_log_entries_default)
+
+    since = None
+    has_since = bool(has_key('since'))
+    if has_since:
+        since, err = _parse_nonnegative_int_arg(get_value('since'), arg_name='since')
+        if err:
+            return None, err
+
+    has_tail_lines = bool(has_key('tail_lines'))
+    if has_tail_lines:
+        tail_lines, err = _parse_nonnegative_int_arg(get_value('tail_lines'), arg_name='tail_lines')
+        if err:
+            return None, err
+    else:
+        tail_lines = tail_lines_default
+
+    if apply_legacy_since_default and since is None and not has_tail_lines:
+        since = 0
+
+    max_lines = None
+    if get_value('max_lines') is not None:
+        max_lines, err = _parse_nonnegative_int_arg(get_value('max_lines'), arg_name='max_lines')
+        if err:
+            return None, err
+
+    log_source = _normalize_sim_log_source(get_value('log_source', 'both'))
+
+    log_contains = _normalize_log_contains_term(get_value('log_contains'))
+    if log_contains is None:
+        log_contains = _normalize_log_contains_term(get_value('contains'))
+
+    raw_contains_any = None
+    if get_list is not None:
+        raw_contains_any = get_list('log_contains_any')
+        if not raw_contains_any:
+            raw_contains_any = get_list('search_any')
+        if not raw_contains_any:
+            raw_contains_any = get_list('contains_any')
+
+    if raw_contains_any in (None, []):
+        raw_contains_any = get_value('log_contains_any')
+    if raw_contains_any in (None, []):
+        raw_contains_any = get_value('search_any')
+    if raw_contains_any in (None, []):
+        raw_contains_any = get_value('contains_any')
+
+    log_contains_any_terms = _normalize_log_contains_any_terms(
+        raw_contains_any,
+        split_commas=split_commas_for_contains_any,
+    )
+
+    return {
+        'include_logs': include_logs,
+        'include_log_summary': include_log_summary,
+        'include_log_entries': include_log_entries,
+        'since': since,
+        'tail_lines': tail_lines,
+        'max_lines': max_lines,
+        'log_source': log_source,
+        'log_contains': log_contains,
+        'log_contains_any_terms': log_contains_any_terms,
+    }, None
+
+
+def _build_simulation_log_payload(
+    stdout_lines: List[Any],
+    stderr_lines: List[Any],
+    *,
+    include_logs: bool,
+    include_log_summary: bool,
+    include_log_entries: bool,
+    log_source: str,
+    log_contains: Optional[str],
+    log_contains_any_terms: Optional[List[str]],
+    since: Optional[int],
+    tail_lines: Optional[int],
+    max_lines: Optional[int],
+    include_legacy_fields: bool,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+
+    if include_log_summary:
+        payload["log_summary"] = {
+            "stdout_lines": len(stdout_lines),
+            "stderr_lines": len(stderr_lines),
+            "has_errors": len(stderr_lines) > 0,
+            "latest_stdout": stdout_lines[-1] if stdout_lines else None,
+            "latest_stderr": stderr_lines[-1] if stderr_lines else None,
+        }
+
+    if not include_logs:
+        return payload
+
+    selected_entries = []
+
+    def _append_log_line(source: str, line: Any) -> None:
+        text_line = str(line)
+        text_line_lower = text_line.lower()
+        if log_contains is not None and log_contains not in text_line_lower:
+            return
+        if log_contains_any_terms is not None and not any(term in text_line_lower for term in log_contains_any_terms):
+            return
+        selected_entries.append({
+            "cursor": len(selected_entries),
+            "source": source,
+            "line": text_line,
+        })
+
+    if log_source in {"stdout", "both"}:
+        for line in stdout_lines:
+            _append_log_line("stdout", line)
+    if log_source in {"stderr", "both"}:
+        for line in stderr_lines:
+            _append_log_line("stderr", line)
+
+    total_lines = len(selected_entries)
+    cursor = 0
+
+    if since is not None:
+        cursor = min(since, total_lines)
+        log_entries = selected_entries[cursor:]
+    elif tail_lines and tail_lines > 0:
+        log_entries = selected_entries[-tail_lines:]
+    else:
+        log_entries = []
+
+    if max_lines is not None and len(log_entries) > max_lines:
+        if since is not None:
+            log_entries = log_entries[:max_lines]
+        else:
+            log_entries = log_entries[-max_lines:] if max_lines > 0 else []
+
+    log_lines = [
+        entry["line"] if entry["source"] == "stdout" else f"stderr: {entry['line']}"
+        for entry in log_entries
+    ]
+
+    if since is not None:
+        next_since = cursor + len(log_entries)
+        has_more_logs = next_since < total_lines
+    else:
+        next_since = total_lines
+        has_more_logs = total_lines > len(log_entries)
+
+    if include_legacy_fields:
+        payload['new_stdout'] = log_lines
+        payload['total_lines'] = total_lines
+
+    payload['log_total_lines'] = total_lines
+    payload['next_since'] = next_since
+    payload['has_more_logs'] = has_more_logs
+    payload['log_lines'] = log_lines
+    payload['returned_lines'] = len(log_lines)
+    if include_log_entries:
+        payload['log_entries'] = log_entries
+
+    return payload
+
+
 @app.route('/api/simulation/status/<job_id>', methods=['GET'])
 def get_simulation_status(job_id):
+    parsed_opts, err = _parse_simulation_status_log_options(
+        get_value=request.args.get,
+        has_key=lambda key: key in request.args,
+        get_list=request.args.getlist,
+        include_log_summary_default=False,
+        include_log_entries_default=False,
+        tail_lines_default=None,
+        apply_legacy_since_default=True,
+        split_commas_for_contains_any=True,
+    )
+    if err:
+        return jsonify({"success": False, "error": err}), 400
 
-    # Get the line number from which the client wants updates
-    last_line_seen = request.args.get('since', 0, type=int)
+    include_logs = parsed_opts['include_logs']
+    include_log_summary = parsed_opts['include_log_summary']
+    include_log_entries = parsed_opts['include_log_entries']
+    since = parsed_opts['since']
+    tail_lines = parsed_opts['tail_lines']
+    max_lines = parsed_opts['max_lines']
+    log_source = parsed_opts['log_source']
+    log_contains = parsed_opts['log_contains']
+    log_contains_any_terms = parsed_opts['log_contains_any_terms']
 
     with SIMULATION_LOCK:
         status = SIMULATION_STATUS.get(job_id)
         if not status:
             return jsonify({"success": False, "error": "Job ID not found."}), 404
-        
-        # Create a copy to send back to the user
+
+        stdout_lines = list(status.get('stdout') or [])
+        stderr_raw = list(status.get('stderr') or [])
+
         status_copy = {
             "status": status["status"],
             "progress": status["progress"],
-            "total_events": status["total_events"]
+            "total_events": status["total_events"],
         }
-
-        # Get only the new lines from stdout and stderr
-        all_lines = status['stdout'] + [f"stderr: {line}" for line in status['stderr']]
-        new_lines = all_lines[last_line_seen:]
-        
-        status_copy['new_stdout'] = new_lines
-        status_copy['total_lines'] = len(all_lines)
+        status_copy.update(_build_simulation_log_payload(
+            stdout_lines,
+            stderr_raw,
+            include_logs=include_logs,
+            include_log_summary=include_log_summary,
+            include_log_entries=include_log_entries,
+            log_source=log_source,
+            log_contains=log_contains,
+            log_contains_any_terms=log_contains_any_terms,
+            since=since,
+            tail_lines=tail_lines,
+            max_lines=max_lines,
+            include_legacy_fields=True,
+        ))
 
         return jsonify({"success": True, "status": status_copy})
 
@@ -925,6 +4092,612 @@ def get_simulation_metadata(version_id, job_id):
         return jsonify({"success": True, "metadata": metadata})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+def _build_simulation_candidate_evaluator(
+    pm,
+    sim_params,
+    sim_objectives,
+    *,
+    context_static=None,
+    keep_candidate_runs=False,
+    candidate_runs_root=None,
+):
+    static_ctx = dict(context_static or {})
+    keep_runs = bool(keep_candidate_runs)
+    candidate_runs_root = candidate_runs_root or os.path.join(os.getcwd(), "surrogate", "simloop_runs")
+    candidate_runs_root = os.path.abspath(candidate_runs_root)
+    if keep_runs:
+        os.makedirs(candidate_runs_root, exist_ok=True)
+
+    def evaluator(*, run_record, project_manager, study):
+        job_id = str(uuid.uuid4())
+
+        with tempfile.TemporaryDirectory(prefix="simloop_") as tmp:
+            version_dir = os.path.join(tmp, "version")
+            os.makedirs(version_dir, exist_ok=True)
+
+            state_payload = json.dumps(project_manager.current_geometry_state.to_dict(), indent=2)
+            with open(os.path.join(version_dir, "version.json"), "w", encoding="utf-8") as f:
+                f.write(state_payload)
+
+            run_dir = os.path.join(version_dir, "sim_runs", job_id)
+            os.makedirs(run_dir, exist_ok=True)
+
+            try:
+                project_manager.generate_macro_file(
+                    job_id=job_id,
+                    sim_params=sim_params,
+                    build_dir=GEANT4_BUILD_DIR,
+                    run_dir=run_dir,
+                    version_dir=version_dir,
+                )
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Failed to generate macro for candidate: {e}",
+                    "sim_metrics": {},
+                    "simulation": {
+                        "job_id": job_id,
+                    },
+                }
+
+            run_g4_simulation(job_id=job_id, run_dir=run_dir, executable_path=GEANT4_EXECUTABLE, sim_params=sim_params)
+
+            with SIMULATION_LOCK:
+                status = dict(SIMULATION_STATUS.get(job_id, {}))
+                SIMULATION_STATUS.pop(job_id, None)
+                SIMULATION_PROCESSES.pop(job_id, None)
+
+            if status.get("status") != "Completed":
+                err_lines = status.get("stderr", []) if isinstance(status.get("stderr"), list) else []
+                err_msg = err_lines[-1] if err_lines else "Simulation run failed."
+                return {
+                    "success": False,
+                    "error": err_msg,
+                    "sim_metrics": {},
+                    "simulation": {
+                        "job_id": job_id,
+                        "status": status.get("status", "Error"),
+                    },
+                }
+
+            output_path = os.path.join(run_dir, "output.hdf5")
+            if not os.path.exists(output_path):
+                return {
+                    "success": False,
+                    "error": "Simulation completed but output.hdf5 was not found.",
+                    "sim_metrics": {},
+                    "simulation": {
+                        "job_id": job_id,
+                        "status": "CompletedWithoutOutput",
+                    },
+                }
+
+            context = {}
+            context.update(static_ctx)
+            context.update(run_record.get("values", {}) or {})
+            context.update(run_record.get("metrics", {}) or {})
+
+            sim_metrics, warnings, _available = extract_objective_values_from_hdf5(
+                output_path=output_path,
+                objectives=sim_objectives,
+                context=context,
+            )
+
+            simulation_info = {
+                "job_id": job_id,
+                "status": "Completed",
+                "warnings": warnings,
+            }
+
+            if keep_runs:
+                candidate_dir = os.path.join(candidate_runs_root, f"candidate_{run_record.get('run_index', 0):04d}_{job_id}")
+                shutil.copytree(run_dir, candidate_dir, dirs_exist_ok=True)
+                simulation_info["saved_run_dir"] = candidate_dir
+
+            return {
+                "success": True,
+                "sim_metrics": sim_metrics,
+                "simulation": simulation_info,
+            }
+
+    return evaluator
+
+
+def _read_hits_columns_for_objectives(output_path):
+    """Read minimal columns needed for objective extraction."""
+    with h5py.File(output_path, 'r') as f:
+        if 'default_ntuples/Hits' not in f:
+            raise RuntimeError("Hits data not found in output file.")
+
+        hits_group = f['default_ntuples/Hits']
+
+        num_entries = None
+        if 'entries' in hits_group:
+            try:
+                ent_dset = hits_group['entries']
+                if ent_dset.shape == ():
+                    num_entries = int(ent_dset[()])
+                else:
+                    num_entries = int(ent_dset[0])
+            except Exception:
+                num_entries = None
+
+        def get_col(name):
+            if name not in hits_group:
+                return np.array([])
+            dset = hits_group[name]
+            if isinstance(dset, h5py.Group) and 'pages' in dset:
+                data = dset['pages'][:]
+            elif isinstance(dset, h5py.Dataset):
+                data = dset[:]
+            else:
+                return np.array([])
+            if num_entries is not None and len(data) >= num_entries:
+                return data[:num_entries]
+            return data
+
+        return {
+            'Edep': get_col('Edep'),
+            'CopyNo': get_col('CopyNo'),
+            'ParticleName': get_col('ParticleName'),
+        }
+
+
+@app.route('/api/objective_builder/schema', methods=['GET'])
+def objective_builder_schema_route():
+    return jsonify({
+        "success": True,
+        "schema": _objective_builder_schema(),
+    })
+
+
+@app.route('/api/objective_builder/example', methods=['GET'])
+def objective_builder_example_route():
+    pm = get_project_manager_for_session()
+    template_id = (request.args.get('template') or 'weighted_tradeoff').strip()
+
+    schema = _objective_builder_schema()
+    template_ids = [t.get('id') for t in (schema.get('templates') or []) if isinstance(t, dict) and t.get('id')]
+    if template_id and template_ids and template_id not in template_ids:
+        return jsonify({
+            "success": False,
+            "error": f"Unknown template '{template_id}'.",
+            "available_templates": template_ids,
+            "schema_version": schema.get('version'),
+        }), 400
+
+    payload = _objective_builder_example_payload(pm=pm, template_id=template_id or 'weighted_tradeoff')
+    return jsonify({
+        "success": True,
+        "payload": payload,
+        "template_id": payload.get('template_id'),
+        "schema_version": schema.get('version'),
+    })
+
+
+@app.route('/api/objective_builder/validate', methods=['POST'])
+def objective_builder_validate_route():
+    pm = get_project_manager_for_session()
+    payload = request.get_json() or {}
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Payload must be an object/dict."}), 400
+
+    result = _validate_objective_builder_payload(payload, pm=pm)
+    return jsonify({
+        "success": True,
+        "validation": result,
+        "schema_version": _objective_builder_schema().get('version'),
+    })
+
+
+@app.route('/api/objective_builder/build', methods=['POST'])
+def objective_builder_build_route():
+    pm = get_project_manager_for_session()
+    payload = request.get_json() or {}
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Payload must be an object/dict."}), 400
+
+    validation = _validate_objective_builder_payload(payload, pm=pm)
+    if not validation.get('valid'):
+        return jsonify({
+            "success": False,
+            "error": "Objective builder payload is invalid.",
+            "validation": validation,
+            "schema_version": _objective_builder_schema().get('version'),
+        }), 400
+
+    build = _build_objective_builder_payload(payload, validation)
+    return jsonify({
+        "success": True,
+        "build": build,
+        "validation": validation,
+        "schema_version": _objective_builder_schema().get('version'),
+    })
+
+
+@app.route('/api/objective_builder/upsert_study', methods=['POST'])
+def objective_builder_upsert_study_route():
+    pm = get_project_manager_for_session()
+    payload = request.get_json() or {}
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Payload must be an object/dict."}), 400
+
+    dry_run = bool(payload.get('dry_run', False))
+
+    # Accept either full builder payload or direct study_upsert_payload from /build response.
+    source = 'builder_payload'
+    validation = None
+
+    if isinstance(payload.get('study_upsert_payload'), dict):
+        study_payload = dict(payload.get('study_upsert_payload') or {})
+        source = 'study_upsert_payload'
+    else:
+        validation = _validate_objective_builder_payload(payload, pm=pm)
+        if not validation.get('valid'):
+            return jsonify({
+                "success": False,
+                "error": "Objective builder payload is invalid.",
+                "validation": validation,
+                "schema_version": _objective_builder_schema().get('version'),
+            }), 400
+        study_payload = dict((validation.get('normalized') or {}).get('study') or {})
+
+    study_name = study_payload.get('name')
+    if not study_name:
+        return jsonify({"success": False, "error": "Study payload must include field 'name'."}), 400
+
+    if dry_run:
+        ok, err = pm._validate_param_study(study_name, study_payload)
+        if not ok:
+            return jsonify({
+                "success": False,
+                "error": err,
+                "dry_run": True,
+                "source": source,
+            }), 400
+
+        return jsonify({
+            "success": True,
+            "dry_run": True,
+            "source": source,
+            "study_name": study_name,
+            "study_upsert_payload": study_payload,
+            "validation": validation,
+            "schema_version": _objective_builder_schema().get('version'),
+        })
+
+    existed = bool(pm.current_geometry_state and (study_name in (pm.current_geometry_state.param_studies or {})))
+    upserted, err = pm.upsert_param_study(study_name, study_payload)
+    if not upserted:
+        return jsonify({
+            "success": False,
+            "error": err,
+            "source": source,
+            "study_upsert_payload": study_payload,
+        }), 400
+
+    return jsonify({
+        "success": True,
+        "dry_run": False,
+        "source": source,
+        "action": "updated" if existed else "created",
+        "study": upserted,
+        "study_name": study_name,
+        "validation": validation,
+        "schema_version": _objective_builder_schema().get('version'),
+    })
+
+
+@app.route('/api/objective_builder/launch', methods=['POST'])
+def objective_builder_launch_route():
+    pm = get_project_manager_for_session()
+    payload = request.get_json() or {}
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Payload must be an object/dict."}), 400
+
+    dry_run = bool(payload.get('dry_run', False))
+
+    source = 'builder_payload'
+    validation = None
+
+    build_payload = payload.get('build')
+    if isinstance(build_payload, dict):
+        source = 'build_payload'
+        build = dict(build_payload)
+    else:
+        validation = _validate_objective_builder_payload(payload, pm=pm)
+        if not validation.get('valid'):
+            return jsonify({
+                "success": False,
+                "error": "Objective builder payload is invalid.",
+                "validation": validation,
+                "schema_version": _objective_builder_schema().get('version'),
+            }), 400
+        build = _build_objective_builder_payload(payload, validation)
+
+    study_payload = dict(build.get('study_upsert_payload') or {})
+    study_name = study_payload.get('name')
+    if not study_name:
+        return jsonify({"success": False, "error": "Build payload must include study_upsert_payload.name."}), 400
+
+    run_payload = dict(build.get('run_sim_loop_payload') or {})
+    run_overrides = payload.get('run_overrides') or {}
+    if run_overrides:
+        if not isinstance(run_overrides, dict):
+            return jsonify({"success": False, "error": "run_overrides must be an object/dict when provided."}), 400
+        run_payload.update(run_overrides)
+
+    run_payload['study_name'] = study_name
+    if 'sim_objectives' not in run_payload:
+        run_payload['sim_objectives'] = build.get('sim_objectives') or []
+    if 'context' not in run_payload:
+        run_payload['context'] = build.get('sim_context') or {}
+
+    sim_objectives = run_payload.get('sim_objectives') or []
+    if not isinstance(sim_objectives, list) or not sim_objectives:
+        return jsonify({"success": False, "error": "sim_objectives must be a non-empty list."}), 400
+
+    ok, err = pm._validate_param_study(study_name, study_payload)
+    if not ok:
+        return jsonify({
+            "success": False,
+            "error": err,
+            "source": source,
+            "study_upsert_payload": study_payload,
+        }), 400
+
+    existed = bool(pm.current_geometry_state and (study_name in (pm.current_geometry_state.param_studies or {})))
+
+    normalized_run, policy_error = _validate_and_normalize_run_policy(run_payload, head_to_head=False)
+    if policy_error:
+        return jsonify({"success": False, **policy_error}), 400
+    run_payload = normalized_run
+
+    preflight_report = pm.run_preflight_checks()
+    preflight_summary = preflight_report.get('summary', {})
+
+    if dry_run:
+        return jsonify({
+            "success": True,
+            "dry_run": True,
+            "launched": False,
+            "source": source,
+            "study_action": "would_update" if existed else "would_create",
+            "study_name": study_name,
+            "study_upsert_payload": study_payload,
+            "run_payload": run_payload,
+            "preflight_summary": preflight_summary,
+            "validation": validation,
+            "schema_version": _objective_builder_schema().get('version'),
+        })
+
+    if not os.path.exists(GEANT4_EXECUTABLE):
+        return jsonify({
+            "success": False,
+            "error": "Geant4 executable not found. Please compile the application in 'geant4/build'.",
+        }), 500
+
+    if not preflight_summary.get('can_run', False):
+        return jsonify({
+            "success": False,
+            "error": "Preflight checks failed. Resolve errors before launching objective builder run.",
+            "preflight_report": preflight_report,
+        }), 400
+
+    upserted, err = pm.upsert_param_study(study_name, study_payload)
+    if not upserted:
+        return jsonify({
+            "success": False,
+            "error": err,
+            "source": source,
+            "study_upsert_payload": study_payload,
+        }), 400
+
+    method = (run_payload.get('method') or 'surrogate_gp').strip().lower()
+    if method not in {'surrogate_gp', 'random_search', 'cmaes'}:
+        return jsonify({"success": False, "error": f"Unsupported method '{method}'."}), 400
+
+    sim_params = run_payload.get('sim_params') or {}
+
+    evaluator = _build_simulation_candidate_evaluator(
+        pm=pm,
+        sim_params=sim_params,
+        sim_objectives=sim_objectives,
+        context_static=(run_payload.get('context') or {}),
+        keep_candidate_runs=bool(run_payload.get('keep_candidate_runs', False)),
+        candidate_runs_root=run_payload.get('candidate_runs_root'),
+    )
+
+    control, response, status = _start_managed_optimizer_run(
+        pm,
+        run_payload,
+        kind='objective_builder_launch',
+        metadata={'study_name': study_name, 'method': method},
+    )
+    if response is not None:
+        return response, status
+
+    pm.update_managed_run_progress(
+        total_evaluations=run_payload.get('budget', 20),
+        evaluations_completed=0,
+        success_count=0,
+        failure_count=0,
+        phase='starting',
+        message=f"Objective Builder launch started ({method}).",
+    )
+
+    def _run_launch_job():
+        final_status = 'completed'
+        result, err = None, None
+        try:
+            if method == 'surrogate_gp':
+                result, err = pm.run_simulation_in_loop_optimizer(
+                    study_name=study_name,
+                    method='surrogate_gp',
+                    budget=run_payload.get('budget', 20),
+                    seed=run_payload.get('seed', 42),
+                    objective_name=run_payload.get('objective_name'),
+                    direction=run_payload.get('direction'),
+                    surrogate_config=run_payload.get('surrogate') or {},
+                    evaluator=evaluator,
+                )
+            else:
+                result, err = pm.run_simulation_in_loop_optimizer(
+                    study_name=study_name,
+                    method=method,
+                    budget=run_payload.get('budget', 20),
+                    seed=run_payload.get('seed', 42),
+                    objective_name=run_payload.get('objective_name'),
+                    direction=run_payload.get('direction'),
+                    cmaes_config=run_payload.get('cmaes'),
+                    evaluator=evaluator,
+                )
+
+            if err:
+                final_status = 'failed'
+            elif isinstance(result, dict) and result.get('stop_reason') in {'user_requested_stop', 'wall_time_exceeded'}:
+                final_status = 'stopped'
+        except Exception as ex:
+            err = str(ex)
+            final_status = 'failed'
+        finally:
+            details = {
+                'study_name': study_name,
+                'method': method,
+                'stop_reason': (result or {}).get('stop_reason') if isinstance(result, dict) else None,
+                'run_id': (result or {}).get('run_id') if isinstance(result, dict) else None,
+                'evaluations_used': (result or {}).get('evaluations_used') if isinstance(result, dict) else None,
+            }
+            _finish_managed_optimizer_run(pm, status=final_status, details=details)
+
+            with OBJECTIVE_BUILDER_LAUNCH_LOCK:
+                rec = OBJECTIVE_BUILDER_LAUNCH_JOBS.get(control['run_control_id'], {})
+                rec.update({
+                    'job_status': final_status,
+                    'completed_at': datetime.utcnow().isoformat() + 'Z',
+                    'result': {
+                        "success": bool(result),
+                        "dry_run": False,
+                        "launched": True,
+                        "source": source,
+                        "study_action": "updated" if existed else "created",
+                        "study_name": study_name,
+                        "study": upserted,
+                        "optimizer_result": result,
+                        "preflight_summary": preflight_summary,
+                        "run_payload": run_payload,
+                        "run_policy": run_payload.get('_run_policy'),
+                        "validation": validation,
+                        "schema_version": _objective_builder_schema().get('version'),
+                    } if result else None,
+                    'error': err,
+                })
+                OBJECTIVE_BUILDER_LAUNCH_JOBS[control['run_control_id']] = rec
+
+    run_async = bool(payload.get('run_async', True))
+    if run_async:
+        run_control_id = control['run_control_id']
+        with OBJECTIVE_BUILDER_LAUNCH_LOCK:
+            OBJECTIVE_BUILDER_LAUNCH_JOBS[run_control_id] = {
+                'job_status': 'running',
+                'created_at': datetime.utcnow().isoformat() + 'Z',
+                'study_name': study_name,
+                'method': method,
+                'result': None,
+                'error': None,
+            }
+
+        t = threading.Thread(target=_run_launch_job, daemon=True)
+        t.start()
+
+        return jsonify({
+            "success": True,
+            "dry_run": False,
+            "launched": True,
+            "async": True,
+            "run_control_id": run_control_id,
+            "source": source,
+            "study_action": "updated" if existed else "created",
+            "study_name": study_name,
+            "study": upserted,
+            "preflight_summary": preflight_summary,
+            "run_payload": run_payload,
+            "run_policy": run_payload.get('_run_policy'),
+            "validation": validation,
+            "schema_version": _objective_builder_schema().get('version'),
+        })
+
+    _run_launch_job()
+    with OBJECTIVE_BUILDER_LAUNCH_LOCK:
+        rec = OBJECTIVE_BUILDER_LAUNCH_JOBS.get(control['run_control_id'], {})
+    if rec.get('result'):
+        return jsonify(rec['result'])
+    return jsonify({"success": False, "error": rec.get('error') or 'Objective builder launch failed.'}), 400
+
+
+@app.route('/api/objective_builder/launch_status/<run_control_id>', methods=['GET'])
+def objective_builder_launch_status_route(run_control_id):
+    pm = get_project_manager_for_session()
+    managed = pm.get_managed_run_status()
+
+    with OBJECTIVE_BUILDER_LAUNCH_LOCK:
+        rec = OBJECTIVE_BUILDER_LAUNCH_JOBS.get(run_control_id)
+
+    if not rec:
+        return jsonify({"success": False, "error": f"No launch job found for run_control_id '{run_control_id}'."}), 404
+
+    return jsonify({
+        "success": True,
+        "run_control_id": run_control_id,
+        "job_status": rec.get('job_status', 'unknown'),
+        "created_at": rec.get('created_at'),
+        "completed_at": rec.get('completed_at'),
+        "study_name": rec.get('study_name'),
+        "method": rec.get('method'),
+        "error": rec.get('error'),
+        "result": rec.get('result'),
+        "active_run": managed.get('active'),
+        "last_run": managed.get('last'),
+    })
+
+
+@app.route('/api/objectives/extract/<version_id>/<job_id>', methods=['POST'])
+def extract_objectives(version_id, job_id):
+    pm = get_project_manager_for_session()
+    version_dir = pm._get_version_dir(version_id)
+    run_dir = os.path.join(version_dir, "sim_runs", job_id)
+    output_path = os.path.join(run_dir, "output.hdf5")
+
+    if not os.path.exists(output_path):
+        return jsonify({"success": False, "error": "Simulation output not found."}), 404
+
+    payload = request.get_json() or {}
+    objectives = payload.get('objectives', []) or []
+    if not isinstance(objectives, list):
+        return jsonify({"success": False, "error": "objectives must be a list."}), 400
+
+    try:
+        context = payload.get('context', {}) or {}
+        if not isinstance(context, dict):
+            return jsonify({"success": False, "error": "context must be an object/dict when provided."}), 400
+
+        objective_values, warnings, available_metrics = extract_objective_values_from_hdf5(
+            output_path=output_path,
+            objectives=objectives,
+            context=context,
+        )
+
+        return jsonify({
+            "success": True,
+            "objective_values": objective_values,
+            "warnings": warnings,
+            "available_metrics": available_metrics,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 @app.route('/api/simulation/analysis/<version_id>/<job_id>', methods=['GET'])
 def get_simulation_analysis(version_id, job_id):
@@ -2113,7 +5886,7 @@ def load_system_prompt():
         return "You are a helpful assistant." # Fallback prompt
 
 # Function for Consistent API Responses
-def create_success_response(project_manager, message="Success",exclude_unchanged_tessellated=True):
+def create_success_response(project_manager, message="Success", exclude_unchanged_tessellated=True, extra_payload=None):
     """
     Helper to create a standard success response object, including history state.
     """
@@ -2130,7 +5903,7 @@ def create_success_response(project_manager, message="Success",exclude_unchanged
     # Reset the object change tracking.
     project_manager._clear_change_tracker()
 
-    return jsonify({
+    payload = {
         "success": True,
         "message": message,
         "project_name": project_name,
@@ -2142,7 +5915,12 @@ def create_success_response(project_manager, message="Success",exclude_unchanged
             "can_undo": project_manager.history_index > 0,
             "can_redo": project_manager.history_index < len(project_manager.history) - 1
         }
-    })
+    }
+
+    if isinstance(extra_payload, dict):
+        payload.update(extra_payload)
+
+    return jsonify(payload)
 
 def create_shallow_response(project_manager, message, scene_patch=None, project_state_patch=None, full_scene=None):
     """Creates a lightweight response with a patch and possibly the full scene update."""
@@ -2536,24 +6314,85 @@ def update_object_transform_route():
     else:
         return jsonify({"success": False, "error": error_msg or "Could not update transform."}), 404
     
+UPDATE_PROPERTY_ALLOWED_OBJECT_TYPES = {
+    "define",
+    "material",
+    "solid",
+    "logical_volume",
+    "physical_volume",
+}
+
+
+def _normalize_update_property_payload(data):
+    if not isinstance(data, dict):
+        return None, "Invalid JSON payload for property update"
+
+    normalized = {
+        "object_type": data.get("object_type"),
+        "object_id": data.get("object_id"),
+        "property_path": data.get("property_path"),
+        "new_value": data.get("new_value"),
+    }
+
+    for field in ("object_type", "object_id", "property_path"):
+        raw_value = normalized[field]
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            return None, f"Missing or invalid '{field}' for property update"
+        normalized[field] = raw_value.strip()
+
+    if normalized["object_type"] not in UPDATE_PROPERTY_ALLOWED_OBJECT_TYPES:
+        return None, f"Unsupported object_type '{normalized['object_type']}' for property update"
+
+    path_parts = normalized["property_path"].split(".")
+    if any(not part for part in path_parts):
+        return None, f"Invalid property_path '{normalized['property_path']}'"
+
+    return normalized, None
+
+
+def _status_code_for_update_property_failure(update_error):
+    if not update_error:
+        return 500
+
+    error_text = str(update_error).strip().lower()
+    if error_text.startswith("invalid property path"):
+        return 400
+    if error_text.startswith("could not find object"):
+        return 404
+
+    return 500
+
+
 @app.route('/update_property', methods=['POST'])
 def update_property_route():
+    data = request.get_json(silent=True)
+    normalized, validation_error = _normalize_update_property_payload(data)
+    if validation_error:
+        return jsonify({"success": False, "error": validation_error}), 400
+
     pm = get_project_manager_for_session()
 
-    data = request.get_json()
-    obj_type = data.get('object_type')
-    obj_id = data.get('object_id')
-    prop_path = data.get('property_path')
-    new_value = data.get('new_value')
+    obj_type = normalized["object_type"]
+    obj_id = normalized["object_id"]
+    prop_path = normalized["property_path"]
+    new_value = normalized["new_value"]
 
-    if not all([obj_type, obj_id, prop_path]):
-        return jsonify({"error": "Missing data for property update"}), 400
+    update_result = pm.update_object_property(obj_type, obj_id, prop_path, new_value)
+    update_error = None
 
-    success = pm.update_object_property(obj_type, obj_id, prop_path, new_value)
+    # Compatibility: older codepaths may still return a bare bool while
+    # ProjectManager currently returns (success, error_message).
+    if isinstance(update_result, tuple):
+        success = bool(update_result[0])
+        if len(update_result) > 1:
+            update_error = update_result[1]
+    else:
+        success = bool(update_result)
+
     if success:
         return create_success_response(pm, "Property updated.")
-    else:
-        return jsonify({"success": False, "error": "Failed to update property"}), 500
+
+    return jsonify({"success": False, "error": update_error or "Failed to update property"}), _status_code_for_update_property_failure(update_error)
 
 @app.route('/add_material', methods=['POST'])
 def add_material_route():
@@ -2686,6 +6525,999 @@ def update_define_route():
         return create_success_response(pm, f"Define '{define_name}' updated.")
     else:
         return jsonify({"success": False, "error": error_msg}), 500
+
+@app.route('/api/parameter_registry/list', methods=['GET'])
+def parameter_registry_list_route():
+    pm = get_project_manager_for_session()
+    registry = pm.list_parameter_registry()
+    return jsonify({"success": True, "parameter_registry": registry})
+
+
+@app.route('/api/parameter_registry/upsert', methods=['POST'])
+def parameter_registry_upsert_route():
+    pm = get_project_manager_for_session()
+
+    data = request.get_json() or {}
+    name = data.get('name')
+    if not name:
+        return jsonify({"success": False, "error": "Parameter name is required."}), 400
+
+    entry, err = pm.upsert_parameter_registry_entry(name, data)
+    if entry:
+        return create_success_response(pm, f"Parameter '{name}' saved.")
+    return jsonify({"success": False, "error": err}), 400
+
+
+@app.route('/api/parameter_registry/delete', methods=['POST'])
+def parameter_registry_delete_route():
+    pm = get_project_manager_for_session()
+
+    data = request.get_json() or {}
+    name = data.get('name')
+    if not name:
+        return jsonify({"success": False, "error": "Parameter name is required."}), 400
+
+    ok, err = pm.delete_parameter_registry_entry(name)
+    if ok:
+        return create_success_response(pm, f"Parameter '{name}' deleted.")
+    return jsonify({"success": False, "error": err}), 404
+
+
+@app.route('/api/param_study/list', methods=['GET'])
+def param_study_list_route():
+    pm = get_project_manager_for_session()
+    studies = pm.list_param_studies()
+    return jsonify({"success": True, "param_studies": studies})
+
+
+@app.route('/api/param_study/simulation_metrics', methods=['GET'])
+def param_study_simulation_metrics_route():
+    """
+    Lists available simulation metrics from HDF5 files for use in optimization objectives.
+    Scans common simulation output directories and extracts dataset paths.
+    """
+    import os
+    import h5py
+    
+    metrics = []
+    
+    # Common simulation output directories
+    search_dirs = [
+        'simulation_output',
+        'simulation_output/default',
+        'ntuples',
+        'default_ntuples',
+        '.'  # Current directory
+    ]
+    
+    seen_paths = set()
+    
+    for search_dir in search_dirs:
+        if not os.path.exists(search_dir):
+            continue
+        
+        # Walk through directory looking for HDF5 files
+        for root, dirs, files in os.walk(search_dir):
+            for filename in files:
+                if filename.endswith(('.h5', '.hdf5')):
+                    filepath = os.path.join(root, filename)
+                    try:
+                        with h5py.File(filepath, 'r') as f:
+                            # Collect all dataset paths
+                            dataset_paths = []
+                            f.visititems(lambda name, obj: dataset_paths.append(name) if isinstance(obj, h5py.Dataset) else None)
+                            
+                            for ds_path in dataset_paths:
+                                full_path = f"{search_dir}/{filename}:{ds_path}" if search_dir != '.' else f"{filename}:{ds_path}"
+                                
+                                if full_path not in seen_paths:
+                                    seen_paths.add(full_path)
+                                    
+                                    # Try to get some metadata about the dataset
+                                    try:
+                                        ds = f[ds_path]
+                                        metrics.append({
+                                            'path': ds_path,
+                                            'label': ds_path.split('/')[-1],  # Use dataset name as label
+                                            'file': filepath,
+                                            'shape': list(ds.shape) if ds.ndim > 0 else [],
+                                            'dtype': str(ds.dtype),
+                                            # Try to infer what this metric represents
+                                            'category': _infer_metric_category(ds_path)
+                                        })
+                                    except Exception:
+                                        metrics.append({
+                                            'path': ds_path,
+                                            'label': ds_path.split('/')[-1],
+                                            'file': filepath,
+                                            'category': 'unknown'
+                                        })
+                    except Exception as e:
+                        print(f"Warning: Could not read HDF5 file {filepath}: {e}")
+                        continue
+    
+    # Sort by category and label
+    metrics.sort(key=lambda m: (m.get('category', 'unknown'), m.get('label', '')))
+    
+    return jsonify({"success": True, "metrics": metrics})
+
+
+def _infer_metric_category(ds_path):
+    """Infer the category of a metric based on its path/name."""
+    path_lower = ds_path.lower()
+    
+    if 'edep' in path_lower or 'energy' in path_lower:
+        return 'energy'
+    elif 'hit' in path_lower or 'count' in path_lower:
+        return 'hits'
+    elif 'track' in path_lower or 'length' in path_lower:
+        return 'tracks'
+    elif 'position' in path_lower or 'x' in path_lower or 'y' in path_lower or 'z' in path_lower:
+        return 'position'
+    elif 'time' in path_lower:
+        return 'time'
+    elif 'momentum' in path_lower or 'p' in path_lower:
+        return 'momentum'
+    else:
+        return 'other'
+
+
+@app.route('/api/param_study/upsert', methods=['POST'])
+def param_study_upsert_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+    name = data.get('name')
+    if not name:
+        return jsonify({"success": False, "error": "Study name is required."}), 400
+
+    study, err = pm.upsert_param_study(name, data)
+    if study:
+        return create_success_response(pm, f"Param study '{name}' saved.")
+    return jsonify({"success": False, "error": err}), 400
+
+
+@app.route('/api/param_study/delete', methods=['POST'])
+def param_study_delete_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+    name = data.get('name')
+    if not name:
+        return jsonify({"success": False, "error": "Study name is required."}), 400
+
+    ok, err = pm.delete_param_study(name)
+    if ok:
+        return create_success_response(pm, f"Param study '{name}' deleted.")
+    return jsonify({"success": False, "error": err}), 404
+
+
+@app.route('/api/param_study/run', methods=['POST'])
+def param_study_run_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+    name = data.get('name')
+    if not name:
+        return jsonify({"success": False, "error": "Study name is required."}), 400
+
+    normalized, policy_error = _validate_and_normalize_run_policy(data, head_to_head=False)
+    if policy_error:
+        return jsonify({"success": False, **policy_error}), 400
+    data = normalized
+
+    _, response, status = _start_managed_optimizer_run(
+        pm,
+        data,
+        kind='param_study',
+        metadata={'study_name': name},
+    )
+    if response is not None:
+        return response, status
+
+    max_runs = data.get('max_runs')
+    final_status = 'completed'
+    result, err = None, None
+    try:
+        result, err = pm.run_param_study(name, max_runs=max_runs)
+        if err:
+            final_status = 'failed'
+        elif isinstance(result, dict) and result.get('stop_reason') in {'user_requested_stop', 'wall_time_exceeded'}:
+            final_status = 'stopped'
+    finally:
+        details = {
+            'study_name': name,
+            'stop_reason': (result or {}).get('stop_reason') if isinstance(result, dict) else None,
+            'evaluations_used': (result or {}).get('evaluations_used') if isinstance(result, dict) else None,
+        }
+        _finish_managed_optimizer_run(pm, status=final_status, details=details)
+
+    if result:
+        return jsonify({"success": True, "study_result": result, "run_policy": data.get('_run_policy')})
+    return jsonify({"success": False, "error": err}), 400
+
+
+@app.route('/api/param_study/apply_candidate', methods=['POST'])
+def param_study_apply_candidate_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+
+    study_name = data.get('study_name') or data.get('name')
+    values = data.get('values')
+
+    if not study_name:
+        return jsonify({"success": False, "error": "study_name is required."}), 400
+    if not isinstance(values, dict) or not values:
+        return jsonify({"success": False, "error": "values must be a non-empty object/dict."}), 400
+
+    applied, err = pm.apply_study_candidate_values(study_name, values)
+    if not applied:
+        return jsonify({"success": False, "error": err}), 400
+
+    response = create_success_response(pm, f"Applied candidate values to study '{study_name}'.")
+    payload = response.get_json() or {}
+    payload['applied_candidate'] = applied
+    return jsonify(payload)
+
+
+@app.route('/api/param_optimizer/list', methods=['GET'])
+def param_optimizer_list_route():
+    pm = get_project_manager_for_session()
+    study_name = request.args.get('study_name')
+    limit = request.args.get('limit', default=50, type=int)
+    runs = pm.list_optimizer_runs(study_name=study_name, limit=limit)
+    return jsonify({"success": True, "optimizer_runs": runs})
+
+
+@app.route('/api/param_optimizer/active_run_status', methods=['GET'])
+def param_optimizer_active_run_status_route():
+    pm = get_project_manager_for_session()
+    status = pm.get_managed_run_status()
+    return jsonify({"success": True, **status})
+
+
+@app.route('/api/param_optimizer/stop_active_run', methods=['POST'])
+def param_optimizer_stop_active_run_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    reason = data.get('reason') if isinstance(data, dict) else None
+    stop_result = pm.request_stop_managed_run(reason=reason or 'user_requested_stop')
+    return jsonify({"success": True, **stop_result})
+
+
+@app.route('/api/param_optimizer/run', methods=['POST'])
+def param_optimizer_run_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+
+    study_name = data.get('study_name') or data.get('name')
+    if not study_name:
+        return jsonify({"success": False, "error": "study_name is required."}), 400
+
+    normalized, policy_error = _validate_and_normalize_run_policy(data, head_to_head=False)
+    if policy_error:
+        return jsonify({"success": False, **policy_error}), 400
+    data = normalized
+
+    method = data.get('method', 'random_search')
+    budget = data.get('budget', 20)
+    seed = data.get('seed', 42)
+    objective_name = data.get('objective_name')
+    direction = data.get('direction')
+
+    _, response, status = _start_managed_optimizer_run(
+        pm,
+        data,
+        kind='optimizer',
+        metadata={'study_name': study_name, 'method': method},
+    )
+    if response is not None:
+        return response, status
+
+    final_status = 'completed'
+    result, err = None, None
+    try:
+        result, err = pm.run_param_optimizer(
+            study_name=study_name,
+            method=method,
+            budget=budget,
+            seed=seed,
+            objective_name=objective_name,
+            direction=direction,
+            cmaes_config=data.get('cmaes'),
+        )
+        if err:
+            final_status = 'failed'
+        elif isinstance(result, dict) and result.get('stop_reason') in {'user_requested_stop', 'wall_time_exceeded'}:
+            final_status = 'stopped'
+    finally:
+        details = {
+            'study_name': study_name,
+            'method': method,
+            'stop_reason': (result or {}).get('stop_reason') if isinstance(result, dict) else None,
+            'evaluations_used': (result or {}).get('evaluations_used') if isinstance(result, dict) else None,
+            'run_id': (result or {}).get('run_id') if isinstance(result, dict) else None,
+        }
+        _finish_managed_optimizer_run(pm, status=final_status, details=details)
+
+    if result:
+        return jsonify({"success": True, "optimizer_result": result, "run_policy": data.get('_run_policy')})
+    return jsonify({"success": False, "error": err}), 400
+
+
+@app.route('/api/param_optimizer/run_surrogate', methods=['POST'])
+def param_optimizer_run_surrogate_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+
+    study_name = data.get('study_name') or data.get('name')
+    if not study_name:
+        return jsonify({"success": False, "error": "study_name is required."}), 400
+
+    normalized, policy_error = _validate_and_normalize_run_policy(data, head_to_head=False)
+    if policy_error:
+        return jsonify({"success": False, **policy_error}), 400
+    data = normalized
+
+    _, response, status = _start_managed_optimizer_run(
+        pm,
+        data,
+        kind='surrogate_optimizer',
+        metadata={'study_name': study_name, 'method': 'surrogate_gp'},
+    )
+    if response is not None:
+        return response, status
+
+    final_status = 'completed'
+    result, err = None, None
+    try:
+        result, err = pm.run_surrogate_param_optimizer(
+            study_name=study_name,
+            budget=data.get('budget', 40),
+            seed=data.get('seed', 42),
+            objective_name=data.get('objective_name'),
+            direction=data.get('direction'),
+            warmup_runs=(data.get('surrogate') or {}).get('warmup_runs', 10),
+            candidate_pool_size=(data.get('surrogate') or {}).get('candidate_pool_size', 256),
+            exploration_beta=(data.get('surrogate') or {}).get('exploration_beta', data.get('exploration_beta', 1.0)),
+            gp_noise=(data.get('surrogate') or {}).get('gp_noise', data.get('gp_noise', 1e-6)),
+        )
+        if err:
+            final_status = 'failed'
+        elif isinstance(result, dict) and result.get('stop_reason') in {'user_requested_stop', 'wall_time_exceeded'}:
+            final_status = 'stopped'
+    finally:
+        details = {
+            'study_name': study_name,
+            'method': 'surrogate_gp',
+            'stop_reason': (result or {}).get('stop_reason') if isinstance(result, dict) else None,
+            'evaluations_used': (result or {}).get('evaluations_used') if isinstance(result, dict) else None,
+            'run_id': (result or {}).get('run_id') if isinstance(result, dict) else None,
+        }
+        _finish_managed_optimizer_run(pm, status=final_status, details=details)
+
+    if result:
+        return jsonify({"success": True, "optimizer_result": result, "run_policy": data.get('_run_policy')})
+    return jsonify({"success": False, "error": err}), 400
+
+
+@app.route('/api/param_optimizer/head_to_head', methods=['POST'])
+def param_optimizer_head_to_head_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+
+    study_name = data.get('study_name') or data.get('name')
+    if not study_name:
+        return jsonify({"success": False, "error": "study_name is required."}), 400
+
+    normalized, policy_error = _validate_and_normalize_run_policy(data, head_to_head=True)
+    if policy_error:
+        return jsonify({"success": False, **policy_error}), 400
+    data = normalized
+
+    _, response, status = _start_managed_optimizer_run(
+        pm,
+        data,
+        kind='head_to_head',
+        metadata={'study_name': study_name, 'method': data.get('classical_method', 'cmaes')},
+    )
+    if response is not None:
+        return response, status
+
+    final_status = 'completed'
+    result, err = None, None
+    try:
+        result, err = pm.run_optimizer_head_to_head(
+            study_name=study_name,
+            budget=data.get('budget', 40),
+            seed=data.get('seed', 42),
+            objective_name=data.get('objective_name'),
+            direction=data.get('direction'),
+            classical_method=data.get('classical_method', 'cmaes'),
+            cmaes_config=data.get('cmaes'),
+            surrogate_config=data.get('surrogate') or {},
+        )
+        if err:
+            final_status = 'failed'
+        else:
+            stop_reasons = {
+                ((result.get('classical') or {}).get('stop_reason')),
+                ((result.get('surrogate') or {}).get('stop_reason')),
+            }
+            if 'user_requested_stop' in stop_reasons or 'wall_time_exceeded' in stop_reasons:
+                final_status = 'stopped'
+    finally:
+        details = {
+            'study_name': study_name,
+            'method': 'head_to_head',
+            'run_ids': (result or {}).get('run_ids') if isinstance(result, dict) else None,
+        }
+        _finish_managed_optimizer_run(pm, status=final_status, details=details)
+
+    if result:
+        return jsonify({"success": True, "comparison": result, "run_policy": data.get('_run_policy')})
+    return jsonify({"success": False, "error": err}), 400
+
+
+@app.route('/api/param_optimizer/run_simulation_in_loop', methods=['POST'])
+def param_optimizer_run_simulation_in_loop_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+
+    study_name = data.get('study_name') or data.get('name')
+    if not study_name:
+        return jsonify({"success": False, "error": "study_name is required."}), 400
+
+    if not os.path.exists(GEANT4_EXECUTABLE):
+        return jsonify({
+            "success": False,
+            "error": "Geant4 executable not found. Please compile the application in 'geant4/build'.",
+        }), 500
+
+    sim_objectives = data.get('sim_objectives') or []
+    if not isinstance(sim_objectives, list) or not sim_objectives:
+        return jsonify({"success": False, "error": "sim_objectives must be a non-empty list."}), 400
+
+    normalized, policy_error = _validate_and_normalize_run_policy(data, head_to_head=False)
+    if policy_error:
+        return jsonify({"success": False, **policy_error}), 400
+    data = normalized
+    sim_params = data['sim_params']
+
+    preflight_report = pm.run_preflight_checks()
+    if not preflight_report.get('summary', {}).get('can_run', False):
+        return jsonify({
+            "success": False,
+            "error": "Preflight checks failed. Resolve errors before running simulation-in-loop optimization.",
+            "preflight_report": preflight_report,
+        }), 400
+
+    method = (data.get('method') or 'surrogate_gp').strip().lower()
+
+    evaluator = _build_simulation_candidate_evaluator(
+        pm=pm,
+        sim_params=sim_params,
+        sim_objectives=sim_objectives,
+        context_static=(data.get('context') or {}),
+        keep_candidate_runs=bool(data.get('keep_candidate_runs', False)),
+        candidate_runs_root=data.get('candidate_runs_root'),
+    )
+
+    _, response, status = _start_managed_optimizer_run(
+        pm,
+        data,
+        kind='simulation_in_loop',
+        metadata={'study_name': study_name, 'method': method},
+    )
+    if response is not None:
+        return response, status
+
+    final_status = 'completed'
+    result, err = None, None
+    try:
+        if method == 'surrogate_gp':
+            result, err = pm.run_simulation_in_loop_optimizer(
+                study_name=study_name,
+                method='surrogate_gp',
+                budget=data.get('budget', 20),
+                seed=data.get('seed', 42),
+                objective_name=data.get('objective_name'),
+                direction=data.get('direction'),
+                surrogate_config=data.get('surrogate') or {},
+                evaluator=evaluator,
+            )
+        elif method in {'random_search', 'cmaes'}:
+            result, err = pm.run_simulation_in_loop_optimizer(
+                study_name=study_name,
+                method=method,
+                budget=data.get('budget', 20),
+                seed=data.get('seed', 42),
+                objective_name=data.get('objective_name'),
+                direction=data.get('direction'),
+                cmaes_config=data.get('cmaes'),
+                evaluator=evaluator,
+            )
+        else:
+            final_status = 'failed'
+            return jsonify({"success": False, "error": f"Unsupported method '{method}'."}), 400
+
+        if err:
+            final_status = 'failed'
+        elif isinstance(result, dict) and result.get('stop_reason') in {'user_requested_stop', 'wall_time_exceeded'}:
+            final_status = 'stopped'
+    finally:
+        details = {
+            'study_name': study_name,
+            'method': method,
+            'stop_reason': (result or {}).get('stop_reason') if isinstance(result, dict) else None,
+            'evaluations_used': (result or {}).get('evaluations_used') if isinstance(result, dict) else None,
+            'run_id': (result or {}).get('run_id') if isinstance(result, dict) else None,
+        }
+        _finish_managed_optimizer_run(pm, status=final_status, details=details)
+
+    if result:
+        return jsonify({
+            "success": True,
+            "optimizer_result": result,
+            "preflight_summary": preflight_report.get('summary', {}),
+            "run_policy": data.get('_run_policy'),
+        })
+    return jsonify({"success": False, "error": err}), 400
+
+
+@app.route('/api/param_optimizer/head_to_head_simulation_in_loop', methods=['POST'])
+def param_optimizer_head_to_head_simulation_in_loop_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+
+    study_name = data.get('study_name') or data.get('name')
+    if not study_name:
+        return jsonify({"success": False, "error": "study_name is required."}), 400
+
+    if not os.path.exists(GEANT4_EXECUTABLE):
+        return jsonify({"success": False, "error": "Geant4 executable not found."}), 500
+
+    sim_objectives = data.get('sim_objectives') or []
+    if not isinstance(sim_objectives, list) or not sim_objectives:
+        return jsonify({"success": False, "error": "sim_objectives must be a non-empty list."}), 400
+
+    normalized, policy_error = _validate_and_normalize_run_policy(data, head_to_head=True)
+    if policy_error:
+        return jsonify({"success": False, **policy_error}), 400
+    data = normalized
+    sim_params = data['sim_params']
+
+    preflight_report = pm.run_preflight_checks()
+    if not preflight_report.get('summary', {}).get('can_run', False):
+        return jsonify({
+            "success": False,
+            "error": "Preflight checks failed. Resolve errors before running simulation-in-loop optimization.",
+            "preflight_report": preflight_report,
+        }), 400
+
+    evaluator = _build_simulation_candidate_evaluator(
+        pm=pm,
+        sim_params=sim_params,
+        sim_objectives=sim_objectives,
+        context_static=(data.get('context') or {}),
+        keep_candidate_runs=bool(data.get('keep_candidate_runs', False)),
+        candidate_runs_root=data.get('candidate_runs_root'),
+    )
+
+    _, response, status = _start_managed_optimizer_run(
+        pm,
+        data,
+        kind='head_to_head_simulation_in_loop',
+        metadata={'study_name': study_name, 'method': data.get('classical_method', 'cmaes')},
+    )
+    if response is not None:
+        return response, status
+
+    final_status = 'completed'
+    result, err = None, None
+    try:
+        result, err = pm.run_optimizer_head_to_head(
+            study_name=study_name,
+            budget=data.get('budget', 20),
+            seed=data.get('seed', 42),
+            objective_name=data.get('objective_name'),
+            direction=data.get('direction'),
+            classical_method=data.get('classical_method', 'cmaes'),
+            cmaes_config=data.get('cmaes'),
+            surrogate_config=data.get('surrogate') or {},
+            evaluator=evaluator,
+        )
+
+        if err:
+            final_status = 'failed'
+        elif isinstance(result, dict):
+            stop_reasons = {
+                ((result.get('classical') or {}).get('stop_reason')),
+                ((result.get('surrogate') or {}).get('stop_reason')),
+            }
+            if 'user_requested_stop' in stop_reasons or 'wall_time_exceeded' in stop_reasons:
+                final_status = 'stopped'
+    finally:
+        details = {
+            'study_name': study_name,
+            'method': 'head_to_head_simulation_in_loop',
+            'run_ids': (result or {}).get('run_ids') if isinstance(result, dict) else None,
+        }
+        _finish_managed_optimizer_run(pm, status=final_status, details=details)
+
+    if result:
+        result['simulation_in_loop'] = True
+        return jsonify({
+            "success": True,
+            "comparison": result,
+            "preflight_summary": preflight_report.get('summary', {}),
+            "run_policy": data.get('_run_policy'),
+        })
+    return jsonify({"success": False, "error": err}), 400
+
+
+@app.route('/api/param_optimizer/apply_audit_history', methods=['GET'])
+def param_optimizer_apply_audit_history_route():
+    pm = get_project_manager_for_session()
+    user_id = _current_user_id_for_policy()
+    scope_id = _project_scope_id_for_policy(pm)
+
+    limit_raw = request.args.get('limit', 20)
+    try:
+        limit = int(limit_raw)
+    except Exception:
+        limit = 20
+
+    audits = _list_apply_audit_records(user_id, scope_id, limit=limit)
+    return jsonify({
+        "success": True,
+        "audits": audits,
+        "count": len(audits),
+        "project_scope_id": scope_id,
+    })
+
+
+@app.route('/api/param_optimizer/apply_audit_diagnostics', methods=['GET'])
+def param_optimizer_apply_audit_diagnostics_route():
+    pm = get_project_manager_for_session()
+    user_id = _current_user_id_for_policy()
+    scope_id = _project_scope_id_for_policy(pm)
+
+    user_key = str(user_id or 'local_user')
+    scope_key = str(scope_id or 'default-scope')
+
+    with APPLY_AUDIT_LOCK:
+        user_scopes = APPLY_AUDIT_LOGS.get(user_key, {})
+        if isinstance(user_scopes, dict):
+            scope_entries = user_scopes.get(scope_key, [])
+            default_entries = user_scopes.get('default-scope', [])
+            scope_count = len(scope_entries) if isinstance(scope_entries, list) else 0
+            legacy_default_count = len(default_entries) if isinstance(default_entries, list) else 0
+            user_scope_count = len(user_scopes)
+            total_user_entries = sum(len(v) for v in user_scopes.values() if isinstance(v, list))
+        else:
+            scope_count = 0
+            legacy_default_count = 0
+            user_scope_count = 0
+            total_user_entries = 0
+
+    storage_path = APPLY_AUDIT_STORAGE_FILE
+    storage_exists = bool(storage_path and os.path.exists(storage_path))
+    storage_size_bytes = os.path.getsize(storage_path) if storage_exists else 0
+
+    return jsonify({
+        "success": True,
+        "project_scope_id": scope_key,
+        "project_name": pm.project_name,
+        "user_id": user_key,
+        "scope_entry_count": scope_count,
+        "legacy_default_scope_entry_count": legacy_default_count,
+        "user_scope_count": user_scope_count,
+        "user_total_entries": total_user_entries,
+        "storage": {
+            "path": storage_path,
+            "exists": storage_exists,
+            "size_bytes": storage_size_bytes,
+            "max_entries_per_scope": APPLY_AUDIT_MAX_ENTRIES,
+        },
+    })
+
+
+@app.route('/api/param_optimizer/rollback_last_apply', methods=['POST'])
+def param_optimizer_rollback_last_apply_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+
+    user_id = _current_user_id_for_policy()
+    scope_id = _project_scope_id_for_policy(pm)
+    audits = _list_apply_audit_records(user_id, scope_id, limit=200)
+    if not audits:
+        return jsonify({"success": False, "error": "No apply audit entries found."}), 400
+
+    audit_id = data.get('audit_id')
+    latest_unrolled = next((a for a in audits if not a.get('rolled_back')), None)
+    if latest_unrolled is None:
+        return jsonify({"success": False, "error": "No unapplied rollback entries found."}), 400
+
+    target = latest_unrolled
+    if audit_id:
+        match = next((a for a in audits if a.get('audit_id') == audit_id), None)
+        if not match:
+            return jsonify({"success": False, "error": "audit_id not found."}), 400
+        target = match
+
+    # Safety: only rollback the latest unapplied apply action.
+    if target.get('audit_id') != latest_unrolled.get('audit_id'):
+        return jsonify({
+            "success": False,
+            "error": "Only the latest unapplied apply action can be rolled back safely.",
+            "latest_unrolled_audit_id": latest_unrolled.get('audit_id'),
+        }), 400
+
+    if not pm.current_geometry_state:
+        return jsonify({"success": False, "error": "No active geometry state available to rollback."}), 400
+
+    if pm.history_index < 0 or len(pm.history or []) == 0:
+        return jsonify({"success": False, "error": "No history state available to rollback."}), 400
+
+    # Constrained safety: rollback endpoint only supports undoing the current top-of-history
+    # apply action recorded in audit. If history moved forward since apply, require manual undo.
+    expected_top_index = target.get('history_post_apply_index')
+    if expected_top_index is not None and pm.history_index != expected_top_index:
+        return jsonify({
+            "success": False,
+            "error": "Rollback blocked: current history tip does not match selected apply action. Use manual Undo to reach that state.",
+            "current_history_index": pm.history_index,
+            "expected_history_index": expected_top_index,
+        }), 400
+
+    if pm.history_index <= 0:
+        return jsonify({
+            "success": False,
+            "error": "Rollback blocked: cannot undo past initial history state.",
+            "current_history_index": pm.history_index,
+        }), 400
+
+    undo_result, err = pm.undo()
+    if not undo_result:
+        return jsonify({"success": False, "error": err or "Rollback failed."}), 400
+
+    rolled = _mark_apply_audit_rolled_back(user_id, scope_id, target.get('audit_id'))
+
+    return create_success_response(
+        pm,
+        "Rolled back last applied optimizer candidate.",
+        extra_payload={
+            "rollback_result": undo_result,
+            "rolled_back_audit": rolled,
+            "apply_audits": _list_apply_audit_records(user_id, scope_id, limit=20),
+            "project_scope_id": scope_id,
+        }
+    )
+
+
+@app.route('/api/param_optimizer/replay_best', methods=['POST'])
+def param_optimizer_replay_best_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+    run_id = data.get('run_id')
+    if not run_id:
+        return jsonify({"success": False, "error": "run_id is required."}), 400
+
+    apply_policy, policy_error = _validate_apply_policy(data)
+    if policy_error:
+        return jsonify({"success": False, **policy_error}), 400
+
+    apply_to_project = bool(apply_policy.get('apply_to_project', False))
+
+    token_record = None
+    if apply_to_project and RUN_POLICY_REQUIRE_VERIFY_TOKEN:
+        user_id = _current_user_id_for_policy()
+        token_record, token_err = _consume_verify_token(
+            user_id=user_id,
+            run_id=run_id,
+            token=apply_policy.get('verification_token'),
+        )
+        if token_err:
+            return jsonify({
+                "success": False,
+                "error": "Apply policy validation failed.",
+                "details": [token_err],
+                "policy": {
+                    "require_verify_token": RUN_POLICY_REQUIRE_VERIFY_TOKEN,
+                    "verify_token_ttl_seconds": RUN_POLICY_VERIFY_TOKEN_TTL_SECONDS,
+                },
+            }), 400
+
+    pre_apply_history_index = pm.history_index
+    pre_apply_history_size = len(pm.history or [])
+
+    result, err = pm.replay_optimizer_best_candidate(run_id=run_id, apply_to_project=apply_to_project)
+    if not result:
+        return jsonify({"success": False, "error": err}), 400
+
+    if apply_to_project:
+        user_id = _current_user_id_for_policy()
+        scope_id = _project_scope_id_for_policy(pm)
+        replay_result = result.get('replay_result', {}) if isinstance(result, dict) else {}
+        run_record = replay_result.get('run_record', {}) if isinstance(replay_result, dict) else {}
+
+        audit_record = _append_apply_audit_record(user_id, scope_id, {
+            'run_id': run_id,
+            'project_name': pm.project_name,
+            'project_scope_id': scope_id,
+            'study_name': replay_result.get('study_name'),
+            'candidate_run_index': run_record.get('run_index'),
+            'candidate_success': bool(run_record.get('success', False)),
+            'candidate_error': run_record.get('error'),
+            'candidate_values': run_record.get('values', {}),
+            'candidate_objectives': run_record.get('objectives', {}),
+            'verification': token_record.get('verification_record') if token_record else None,
+            'verification_token': {
+                'run_id': token_record.get('run_id') if token_record else None,
+                'issued_at': token_record.get('issued_at') if token_record else None,
+                'used_at': token_record.get('used_at') if token_record else None,
+                'expires_at': token_record.get('expires_at') if token_record else None,
+            } if token_record else None,
+            'history_pre_apply_index': pre_apply_history_index,
+            'history_pre_apply_size': pre_apply_history_size,
+            'history_post_apply_index': pm.history_index,
+            'history_post_apply_size': len(pm.history or []),
+        })
+
+        return create_success_response(
+            pm,
+            f"Replayed best candidate from optimizer run '{run_id}'.",
+            extra_payload={
+                "replay_result": result,
+                "apply_policy": apply_policy,
+                "verification_token_record": {
+                    "run_id": token_record.get('run_id') if token_record else None,
+                    "issued_at": token_record.get('issued_at') if token_record else None,
+                    "used_at": token_record.get('used_at') if token_record else None,
+                    "expires_at": token_record.get('expires_at') if token_record else None,
+                } if token_record else None,
+                "apply_audit": audit_record,
+                "apply_audits": _list_apply_audit_records(user_id, scope_id, limit=20),
+                "project_scope_id": scope_id,
+            }
+        )
+
+    return jsonify({"success": True, "replay_result": result, "apply_policy": apply_policy})
+
+
+@app.route('/api/param_optimizer/verify_best', methods=['POST'])
+def param_optimizer_verify_best_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+    run_id = data.get('run_id')
+    if not run_id:
+        return jsonify({"success": False, "error": "run_id is required."}), 400
+
+    repeats = data.get('repeats', RUN_POLICY_VERIFY_MIN_REPEATS)
+    result, err = pm.verify_optimizer_best_candidate(run_id=run_id, repeats=repeats)
+    if not result:
+        return jsonify({"success": False, "error": err}), 400
+
+    gate = _evaluate_verification_gate(result, data)
+
+    apply_token = None
+    apply_token_record = None
+    if gate.get('passed'):
+        user_id = _current_user_id_for_policy()
+        _cleanup_expired_verify_tokens(user_id)
+        rec = _issue_verify_token(user_id=user_id, run_id=run_id, verification_record=result.get('verification_record'))
+        apply_token = rec.get('token')
+        apply_token_record = {
+            'run_id': rec.get('run_id'),
+            'issued_at': rec.get('issued_at'),
+            'expires_at': rec.get('expires_at'),
+        }
+
+    return jsonify({
+        "success": True,
+        "verification_result": result,
+        "verification_gate": gate,
+        "apply_token": apply_token,
+        "apply_token_record": apply_token_record,
+    })
+
+
+@app.route('/api/surrogate/dataset/export', methods=['POST'])
+def surrogate_dataset_export_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+
+    output_root = data.get('output_root', 'surrogate/datasets')
+    dataset_name = data.get('dataset_name')
+    target_objective = data.get('target_objective')
+    val_ratio = data.get('val_ratio', 0.2)
+    split_seed = data.get('split_seed', 42)
+    only_success = bool(data.get('only_success', False))
+
+    payloads = []
+
+    include_current_optimizer_runs = bool(data.get('include_current_optimizer_runs', True))
+    if include_current_optimizer_runs:
+        optimizer_runs = {}
+        if pm.current_geometry_state:
+            optimizer_runs = pm.current_geometry_state.optimizer_runs or {}
+        payloads.append(("current_session.optimizer_runs", {"optimizer_runs": optimizer_runs}))
+
+    if isinstance(data.get('study_result'), dict):
+        payloads.append(("request.study_result", {"study_result": data.get('study_result')}))
+
+    req_optimizer_runs = data.get('optimizer_runs')
+    if isinstance(req_optimizer_runs, (dict, list)):
+        payloads.append(("request.optimizer_runs", {"optimizer_runs": req_optimizer_runs}))
+
+    if not payloads:
+        return jsonify({"success": False, "error": "No data sources provided for dataset export."}), 400
+
+    try:
+        manifest = build_surrogate_dataset_from_payloads(
+            payloads=payloads,
+            output_root=output_root,
+            dataset_name=dataset_name,
+            target_objective=target_objective,
+            val_ratio=val_ratio,
+            split_seed=split_seed,
+            only_success=only_success,
+        )
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    return jsonify({"success": True, "manifest": manifest})
+
+
+@app.route('/api/surrogate/experiment/run', methods=['POST'])
+def surrogate_experiment_run_route():
+    data = request.get_json() or {}
+
+    config_path = data.get('config_path')
+    config = data.get('config')
+
+    try:
+        if config_path:
+            report = run_surrogate_experiment_from_path(config_path)
+        else:
+            if not isinstance(config, dict):
+                return jsonify({"success": False, "error": "Provide either 'config_path' or inline 'config' object."}), 400
+            report = run_surrogate_experiment(config=config, config_dir=Path(os.getcwd()))
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    return jsonify({"success": True, "report": report})
+
+
+@app.route('/api/surrogate/synthetic/generate', methods=['POST'])
+def surrogate_synthetic_generate_route():
+    data = request.get_json() or {}
+
+    try:
+        report = generate_synthetic_surrogate_benchmark(
+            preset=data.get('preset', 'nonlinear_3d'),
+            n_runs=data.get('runs', 300),
+            seed=data.get('seed', 42),
+            noise_sigma=data.get('noise_sigma', 0.05),
+            failure_probability=data.get('failure_probability', 0.08),
+            dataset_output_root=data.get('dataset_output_root', 'surrogate/datasets'),
+            artifacts_root=data.get('artifacts_root', 'surrogate/benchmarks'),
+            dataset_name=data.get('dataset_name'),
+            target_objective=data.get('target_objective', 'score'),
+            val_ratio=data.get('val_ratio', 0.2),
+            split_seed=data.get('split_seed', 42),
+            only_success=bool(data.get('only_success', False)),
+            write_example_configs=not bool(data.get('no_example_configs', False)),
+        )
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    return jsonify({"success": True, "benchmark": report})
+
 
 @app.route('/add_solid_and_place', methods=['POST'])
 def add_solid_and_place_route():
@@ -2831,8 +7663,9 @@ def add_physical_volume_route():
     position = data.get('position')
     rotation = data.get('rotation')
     scale = data.get('scale')
+    copy_number_expr = data.get('copy_number_expr', '0')
     
-    new_pv, error_msg = pm.add_physical_volume(parent_lv_name, name, volume_ref, position, rotation, scale)
+    new_pv, error_msg = pm.add_physical_volume(parent_lv_name, name, volume_ref, position, rotation, scale, copy_number_expr)
     
     if new_pv:
         return create_success_response(pm, "Physical Volume placed.")
@@ -3031,32 +7864,594 @@ def get_defines_by_type_route():
     
     return jsonify(filtered_defines)
 
+LOCAL_BACKEND_DIAGNOSTICS_SCHEMA_VERSION = "2026-03-15.local-backend-diagnostics.checkpoint3"
+LOCAL_BACKEND_STATUS_VALUES = ("healthy", "timeout", "unreachable", "misconfigured")
+LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY = "airpet_local_backend_runtime_config"
+LOCAL_BACKEND_RUNTIME_PROFILE_SOURCE_VALUES = (
+    "built_in_defaults",
+    "session_profile",
+    "request_overrides",
+    "session_profile_plus_request_overrides",
+)
+LOCAL_BACKEND_RUNTIME_PROFILE_BACKEND_IDS = ("llama_cpp", "lm_studio")
+
+
+def _normalize_runtime_config_payload(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    try:
+        # Keep session payload JSON-serializable and detached from mutable callers.
+        return json.loads(json.dumps(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_runtime_config_dicts(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    merged = deepcopy(base)
+    for key, override_value in overrides.items():
+        base_value = merged.get(key)
+        if isinstance(base_value, dict) and isinstance(override_value, dict):
+            merged[key] = _merge_runtime_config_dicts(base_value, override_value)
+        else:
+            merged[key] = deepcopy(override_value)
+    return merged
+
+
+def _get_session_local_backend_runtime_config() -> Optional[Dict[str, Any]]:
+    return _normalize_runtime_config_payload(session.get(LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY))
+
+
+def _set_session_local_backend_runtime_config(runtime_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    normalized = _normalize_runtime_config_payload(runtime_config)
+    if normalized is None:
+        session.pop(LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY, None)
+        session.modified = True
+        return {}
+
+    session[LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY] = normalized
+    session.modified = True
+    return deepcopy(normalized)
+
+
+def _resolve_effective_runtime_config(runtime_config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    session_cfg = _get_session_local_backend_runtime_config()
+    request_cfg = _normalize_runtime_config_payload(runtime_config)
+
+    if isinstance(session_cfg, dict) and isinstance(request_cfg, dict):
+        return _merge_runtime_config_dicts(session_cfg, request_cfg)
+    if isinstance(request_cfg, dict):
+        return request_cfg
+    if isinstance(session_cfg, dict):
+        return session_cfg
+    return None
+
+
+def _runtime_backend_config(runtime_config: Optional[Dict[str, Any]], backend_id: str) -> Dict[str, Any]:
+    if not isinstance(runtime_config, dict):
+        return {}
+
+    backends_map = runtime_config.get("backends")
+    if isinstance(backends_map, dict):
+        cfg = backends_map.get(backend_id)
+        if isinstance(cfg, dict):
+            return cfg
+
+    legacy_cfg = runtime_config.get(backend_id)
+    if isinstance(legacy_cfg, dict):
+        return legacy_cfg
+
+    return {}
+
+
+def _backend_has_runtime_overrides(runtime_config: Optional[Dict[str, Any]], backend_id: str) -> bool:
+    return bool(_runtime_backend_config(runtime_config, backend_id))
+
+
+def _build_backend_runtime_profile_usage(
+    backend_id: str,
+    *,
+    session_runtime_config: Optional[Dict[str, Any]] = None,
+    request_runtime_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    using_session_profile = _backend_has_runtime_overrides(session_runtime_config, backend_id)
+    using_request_overrides = _backend_has_runtime_overrides(request_runtime_config, backend_id)
+
+    if using_session_profile and using_request_overrides:
+        source = "session_profile_plus_request_overrides"
+        label = "using saved profile + request overrides"
+        message = (
+            "Saved session defaults are active, with request-level runtime overrides taking precedence for this check."
+        )
+    elif using_request_overrides:
+        source = "request_overrides"
+        label = "using request overrides"
+        message = "Request-level runtime overrides are active for this diagnostics check."
+    elif using_session_profile:
+        source = "session_profile"
+        label = "using saved profile"
+        message = "Using saved session runtime profile defaults for this backend."
+    else:
+        source = "built_in_defaults"
+        label = "using built-in defaults"
+        message = "No saved session runtime profile overrides found; built-in defaults are active."
+
+    return {
+        "source": source,
+        "uses_session_profile": using_session_profile,
+        "uses_request_overrides": using_request_overrides,
+        "label": label,
+        "message": message,
+    }
+
+
+def _build_runtime_profile_summary(
+    *,
+    session_runtime_config: Optional[Dict[str, Any]] = None,
+    request_runtime_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    session_profile_active = any(
+        _backend_has_runtime_overrides(session_runtime_config, backend_id)
+        for backend_id in LOCAL_BACKEND_RUNTIME_PROFILE_BACKEND_IDS
+    )
+    request_overrides_active = any(
+        _backend_has_runtime_overrides(request_runtime_config, backend_id)
+        for backend_id in LOCAL_BACKEND_RUNTIME_PROFILE_BACKEND_IDS
+    )
+
+    if session_profile_active and request_overrides_active:
+        source = "session_profile_plus_request_overrides"
+    elif request_overrides_active:
+        source = "request_overrides"
+    elif session_profile_active:
+        source = "session_profile"
+    else:
+        source = "built_in_defaults"
+
+    return {
+        "source": source,
+        "session_profile_active": session_profile_active,
+        "request_overrides_active": request_overrides_active,
+        "merge_precedence": "request_overrides_win_over_session_profile",
+        "supported_sources": list(LOCAL_BACKEND_RUNTIME_PROFILE_SOURCE_VALUES),
+    }
+
+
+def _resolve_effective_local_capability_overrides(
+    backend_id: Optional[str],
+    *,
+    runtime_config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, bool]]:
+    if backend_id not in {"llama_cpp", "lm_studio"}:
+        return None
+
+    resolved = effective_runtime_capability_overrides_for_backend(
+        backend_id,
+        runtime_config=runtime_config,
+    )
+    if not isinstance(resolved, dict):
+        return None
+
+    # Deterministic flag ordering in diagnostics output.
+    return {
+        "supports_tools": bool(resolved.get("supports_tools", False)),
+        "supports_json_mode": bool(resolved.get("supports_json_mode", False)),
+        "supports_vision": bool(resolved.get("supports_vision", False)),
+        "supports_streaming": bool(resolved.get("supports_streaming", False)),
+    }
+
+
+def _normalize_model_names(raw_names: List[Any]) -> List[str]:
+    normalized: List[str] = []
+    seen = set()
+    for raw_name in raw_names:
+        if raw_name is None:
+            continue
+        name = str(raw_name).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        normalized.append(name)
+    return normalized
+
+
+def _resolve_local_backend_probe_config(
+    backend_id: str,
+    runtime_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if backend_id == "llama_cpp":
+        cfg = LlamaCppAdapterConfig.from_runtime_config(runtime_config)
+        return {
+            "backend_id": backend_id,
+            "provider_family": "llama.cpp",
+            "base_url": cfg.base_url,
+            "timeout_seconds": min(max(float(cfg.timeout_seconds), 0.1), 5.0),
+        }
+
+    if backend_id == "lm_studio":
+        cfg = LMStudioAdapterConfig.from_runtime_config(runtime_config)
+        return {
+            "backend_id": backend_id,
+            "provider_family": "lm_studio",
+            "base_url": cfg.base_url,
+            "timeout_seconds": min(max(float(cfg.timeout_seconds), 0.1), 5.0),
+        }
+
+    raise ValueError(f"Unsupported local backend for readiness probe: {backend_id}")
+
+
+def _classify_backend_probe_exception(exc: Exception) -> Dict[str, str]:
+    if isinstance(exc, (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.Timeout)):
+        return {
+            "status": "timeout",
+            "readiness_code": "backend_timeout",
+            "message": "Timed out while connecting to backend models endpoint.",
+        }
+
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return {
+            "status": "unreachable",
+            "readiness_code": "backend_unreachable",
+            "message": "Backend service is unreachable.",
+        }
+
+    if isinstance(exc, (requests.exceptions.InvalidURL, requests.exceptions.InvalidSchema, requests.exceptions.MissingSchema, requests.exceptions.SSLError)):
+        return {
+            "status": "misconfigured",
+            "readiness_code": "backend_misconfigured",
+            "message": "Backend endpoint appears misconfigured.",
+        }
+
+    return {
+        "status": "unreachable",
+        "readiness_code": "backend_request_error",
+        "message": "Backend readiness probe failed.",
+    }
+
+
+def _probe_openai_compatible_models_endpoint(
+    backend_id: str,
+    *,
+    provider_family: str,
+    base_url: str,
+    timeout_seconds: float,
+    requests_get=None,
+) -> Dict[str, Any]:
+    requests_get = requests_get or requests.get
+    models_url = f"{str(base_url).rstrip('/')}/v1/models"
+
+    base_payload = {
+        "backend_id": backend_id,
+        "provider_family": provider_family,
+        "adapter_kind": "local",
+        "checked_via": "v1_models_probe",
+        "models_endpoint": models_url,
+        "status": "unreachable",
+        "readiness_code": "backend_request_error",
+        "ready": False,
+        "message": "Backend readiness probe did not run.",
+        "http_status": None,
+        "model_count": 0,
+        "models": [],
+    }
+
+    try:
+        response = requests_get(models_url, timeout=timeout_seconds)
+    except requests.exceptions.RequestException as exc:
+        failure = _classify_backend_probe_exception(exc)
+        return {
+            **base_payload,
+            "status": failure["status"],
+            "readiness_code": failure["readiness_code"],
+            "message": failure["message"],
+        }
+    except Exception as exc:
+        return {
+            **base_payload,
+            "status": "misconfigured",
+            "readiness_code": "backend_probe_exception",
+            "message": f"Backend readiness probe raised an unexpected error: {exc}",
+        }
+
+    http_status = getattr(response, "status_code", None)
+    response_ok = getattr(response, "ok", None)
+    if response_ok is None:
+        if isinstance(http_status, int):
+            response_ok = 200 <= http_status < 300
+        else:
+            response_ok = True
+
+    if not response_ok:
+        if http_status in (408, 504):
+            status = "timeout"
+            readiness_code = "backend_timeout"
+            message = f"Backend models endpoint timed out (HTTP {http_status})."
+        elif isinstance(http_status, int) and http_status >= 500:
+            status = "unreachable"
+            readiness_code = "backend_http_error"
+            message = f"Backend models endpoint returned upstream error HTTP {http_status}."
+        elif http_status in (401, 403):
+            status = "misconfigured"
+            readiness_code = "backend_auth_required"
+            message = f"Backend models endpoint rejected the request (HTTP {http_status})."
+        elif http_status == 404:
+            status = "misconfigured"
+            readiness_code = "backend_models_endpoint_not_found"
+            message = "Backend models endpoint was not found (HTTP 404)."
+        else:
+            status = "misconfigured"
+            readiness_code = "backend_http_error"
+            message = f"Backend models endpoint returned HTTP {http_status}."
+
+        return {
+            **base_payload,
+            "status": status,
+            "readiness_code": readiness_code,
+            "message": message,
+            "http_status": http_status,
+        }
+
+    try:
+        payload = response.json() or {}
+    except Exception:
+        return {
+            **base_payload,
+            "status": "misconfigured",
+            "readiness_code": "invalid_models_payload",
+            "message": "Backend models endpoint returned invalid JSON payload.",
+            "http_status": http_status,
+        }
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return {
+            **base_payload,
+            "status": "misconfigured",
+            "readiness_code": "invalid_models_payload",
+            "message": "Backend models endpoint payload is missing list field 'data'.",
+            "http_status": http_status,
+        }
+
+    model_ids: List[Any] = []
+    for item in data:
+        if isinstance(item, dict):
+            model_ids.append(item.get("id"))
+
+    models = _normalize_model_names(model_ids)
+    return {
+        **base_payload,
+        "status": "healthy",
+        "readiness_code": "ok",
+        "ready": True,
+        "message": "Backend models endpoint is reachable.",
+        "http_status": http_status,
+        "model_count": len(models),
+        "models": models,
+    }
+
+
+def build_local_backend_readiness_diagnostic(
+    backend_id: str,
+    *,
+    runtime_config: Optional[Dict[str, Any]] = None,
+    session_runtime_config: Optional[Dict[str, Any]] = None,
+    request_runtime_config: Optional[Dict[str, Any]] = None,
+    requests_get=None,
+) -> Dict[str, Any]:
+    probe_cfg = _resolve_local_backend_probe_config(backend_id, runtime_config=runtime_config)
+    diagnostic = _probe_openai_compatible_models_endpoint(
+        backend_id=backend_id,
+        provider_family=probe_cfg["provider_family"],
+        base_url=probe_cfg["base_url"],
+        timeout_seconds=probe_cfg["timeout_seconds"],
+        requests_get=requests_get,
+    )
+    diagnostic["schema_version"] = LOCAL_BACKEND_DIAGNOSTICS_SCHEMA_VERSION
+
+    effective_capability_overrides = _resolve_effective_local_capability_overrides(
+        backend_id,
+        runtime_config=runtime_config,
+    )
+    if effective_capability_overrides is not None:
+        diagnostic["effective_capability_overrides"] = effective_capability_overrides
+
+    diagnostic["runtime_profile"] = _build_backend_runtime_profile_usage(
+        backend_id,
+        session_runtime_config=session_runtime_config,
+        request_runtime_config=request_runtime_config,
+    )
+
+    return diagnostic
+
+
+def _build_local_backend_diagnostics_payload(
+    *,
+    backend_ids: Optional[List[str]] = None,
+    runtime_config: Optional[Dict[str, Any]] = None,
+    session_runtime_config: Optional[Dict[str, Any]] = None,
+    request_runtime_config: Optional[Dict[str, Any]] = None,
+    requests_get=None,
+) -> Dict[str, Any]:
+    normalized_backend_ids = backend_ids or ["llama_cpp", "lm_studio"]
+    diagnostics: List[Dict[str, Any]] = []
+
+    for backend_id in normalized_backend_ids:
+        if backend_id not in {"llama_cpp", "lm_studio"}:
+            raise ValueError(f"Unsupported backend id: {backend_id}")
+        diagnostics.append(
+            build_local_backend_readiness_diagnostic(
+                backend_id,
+                runtime_config=runtime_config,
+                session_runtime_config=session_runtime_config,
+                request_runtime_config=request_runtime_config,
+                requests_get=requests_get,
+            )
+        )
+
+    summary = {
+        "checked_backend_count": len(diagnostics),
+        "status_counts": {status: 0 for status in LOCAL_BACKEND_STATUS_VALUES},
+        "ready_backend_count": 0,
+    }
+
+    for diagnostic in diagnostics:
+        status = str(diagnostic.get("status") or "").strip()
+        if status in summary["status_counts"]:
+            summary["status_counts"][status] += 1
+        if diagnostic.get("ready") is True:
+            summary["ready_backend_count"] += 1
+
+    return {
+        "schema_version": LOCAL_BACKEND_DIAGNOSTICS_SCHEMA_VERSION,
+        "diagnostics": diagnostics,
+        "summary": summary,
+        "runtime_profile": _build_runtime_profile_summary(
+            session_runtime_config=session_runtime_config,
+            request_runtime_config=request_runtime_config,
+        ),
+    }
+
+
+@app.route('/api/ai/backends/runtime_config', methods=['GET', 'POST', 'DELETE'])
+def ai_backend_runtime_config_route():
+    if request.method == 'GET':
+        return jsonify({
+            "success": True,
+            "runtime_config": _get_session_local_backend_runtime_config() or {},
+        })
+
+    if request.method == 'DELETE':
+        cleared = _set_session_local_backend_runtime_config(None)
+        return jsonify({"success": True, "runtime_config": cleared})
+
+    payload = request.get_json(silent=True) or {}
+    if "runtime_config" not in payload:
+        return jsonify({
+            "success": False,
+            "error": "Missing required field: runtime_config.",
+        }), 400
+
+    runtime_config = payload.get("runtime_config")
+    if runtime_config is None:
+        stored = _set_session_local_backend_runtime_config(None)
+        return jsonify({"success": True, "runtime_config": stored})
+
+    normalized = _normalize_runtime_config_payload(runtime_config)
+    if normalized is None:
+        return jsonify({
+            "success": False,
+            "error": "runtime_config must be a JSON object.",
+        }), 400
+
+    stored = _set_session_local_backend_runtime_config(normalized)
+    return jsonify({"success": True, "runtime_config": stored})
+
+
+@app.route('/api/ai/backends/diagnostics', methods=['GET', 'POST'])
+def ai_backend_diagnostics_route():
+    payload = request.get_json(silent=True) if request.method == 'POST' else request.args
+    payload = payload or {}
+
+    raw_backends = payload.get('backends')
+    backend_ids: Optional[List[str]] = None
+    if raw_backends is not None:
+        if isinstance(raw_backends, str):
+            backend_ids = [raw_backends]
+        elif isinstance(raw_backends, list):
+            backend_ids = [str(item).strip() for item in raw_backends if str(item).strip()]
+        else:
+            return jsonify({"success": False, "error": "backends must be a string or list of strings."}), 400
+
+    runtime_config_raw = payload.get('runtime_config')
+    if runtime_config_raw is not None and not isinstance(runtime_config_raw, dict):
+        return jsonify({"success": False, "error": "runtime_config must be an object when provided."}), 400
+
+    request_runtime_config = _normalize_runtime_config_payload(runtime_config_raw) if runtime_config_raw is not None else None
+    session_runtime_config = _get_session_local_backend_runtime_config()
+    runtime_config = _resolve_effective_runtime_config(request_runtime_config)
+
+    try:
+        diagnostics_payload = _build_local_backend_diagnostics_payload(
+            backend_ids=backend_ids,
+            runtime_config=runtime_config,
+            session_runtime_config=session_runtime_config,
+            request_runtime_config=request_runtime_config,
+        )
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    return jsonify({
+        "success": True,
+        **diagnostics_payload,
+    })
+
+
 @app.route('/ai_health_check', methods=['GET'])
 def ai_health_check_route():
-    response_data = {"success": True, "models": {"ollama": [], "gemini": []}}
-    
+    response_data = {
+        "success": True,
+        "models": {
+            "ollama": [],
+            "gemini": [],
+            "llama_cpp": [],
+            "lm_studio": [],
+        },
+    }
+
     # 1. Check for Ollama models
     try:
         ollama_response = requests.get('http://localhost:11434/api/tags', timeout=3)
         if ollama_response.ok:
-            ollama_data = ollama_response.json()
-            response_data["models"]["ollama"] = [m['name'] for m in ollama_data.get('models', [])]
+            ollama_data = ollama_response.json() or {}
+            model_rows = ollama_data.get('models')
+            discovered_names: List[Any] = []
+            if isinstance(model_rows, list):
+                for row in model_rows:
+                    if isinstance(row, dict):
+                        discovered_names.append(row.get('name'))
+            response_data["models"]["ollama"] = _normalize_model_names(discovered_names)
     except requests.exceptions.RequestException:
         print("Ollama service is unreachable.")
         # We don't fail the whole request, just show no Ollama models
+    except Exception as e:
+        print(f"Error fetching Ollama models: {e}")
+        response_data["error_ollama"] = str(e)
 
-    # 2. Check for Gemini models if the client was initialized
+    # 2. Check local OpenAI-compatible model servers (llama.cpp + LM Studio)
+    session_runtime_config = _get_session_local_backend_runtime_config()
+    local_diag_payload = _build_local_backend_diagnostics_payload(
+        runtime_config=_resolve_effective_runtime_config(),
+        session_runtime_config=session_runtime_config,
+    )
+    diagnostics_by_id = {
+        item["backend_id"]: item
+        for item in local_diag_payload.get("diagnostics", [])
+        if isinstance(item, dict)
+    }
+
+    llama_diag = diagnostics_by_id.get("llama_cpp", {})
+    lm_diag = diagnostics_by_id.get("lm_studio", {})
+
+    response_data["models"]["llama_cpp"] = list(llama_diag.get("models", [])) if isinstance(llama_diag.get("models"), list) else []
+    response_data["models"]["lm_studio"] = list(lm_diag.get("models", [])) if isinstance(lm_diag.get("models"), list) else []
+    response_data["local_backend_diagnostics"] = diagnostics_by_id
+
+    # 3. Check for Gemini models if the client was initialized
     gemini_client = get_gemini_client_for_session()
     if gemini_client:
         try:
-            gemini_models = []
+            allowed_model_names = {
+                "models/gemini-3-flash-preview",
+                "models/gemini-2.5-flash",
+                "models/gemini-2.5-pro",
+            }
+            gemini_models: List[Any] = []
             # Use the initialized client to list models
             for model in gemini_client.models.list():
-                if 'generateContent' in model.supported_actions:
-                    # Filter for certain Gemini models only
-                    if(model.name == "models/gemini-3-flash-preview" or model.name == "models/gemini-2.5-flash" or model.name == "models/gemini-2.5-pro"):
-                        gemini_models.append(model.name)
-            response_data["models"]["gemini"] = gemini_models
+                supported_actions = getattr(model, "supported_actions", []) or []
+                model_name = getattr(model, "name", None)
+                if 'generateContent' in supported_actions and model_name in allowed_model_names:
+                    gemini_models.append(model_name)
+            response_data["models"]["gemini"] = _normalize_model_names(gemini_models)
         except Exception as e:
             print(f"Error fetching Gemini models: {e}")
             response_data["error_gemini"] = str(e)
@@ -3074,6 +8469,17 @@ def ai_process_prompt_route():
     # Ensure we have a prompt and model name
     if not all([user_prompt, model_name]):
         return jsonify({"success": False, "error": "Prompt or model name missing."}), 400
+
+    if isinstance(model_name, str) and (
+        model_name.startswith("llama_cpp::") or model_name.startswith("lm_studio::")
+    ):
+        return jsonify({
+            "success": False,
+            "error": (
+                "One-shot AI generate currently supports Gemini/Ollama model ids only. "
+                "Use /api/ai/chat for llama.cpp/LM Studio local models."
+            ),
+        }), 400
 
     try:
         # Step 1: Construct the full prompt
@@ -3211,6 +8617,142 @@ AI_TOOL_ARG_ALIASES = {
         "num_threads": "threads",
         "n_threads": "threads"
     },
+    "get_simulation_status": {
+        "since_line": "since",
+        "from_line": "since",
+        "tail": "tail_lines",
+        "include_output": "include_logs",
+        "summary": "include_log_summary",
+        "include_summary": "include_log_summary",
+        "logs": "log_source",
+        "log_stream": "log_source",
+        "stream": "log_source",
+        "include_entries": "include_log_entries",
+        "with_entries": "include_log_entries",
+        "structured_logs": "include_log_entries",
+        "max_logs": "max_lines",
+        "line_limit": "max_lines",
+        "limit": "max_lines",
+        "contains": "log_contains",
+        "filter": "log_contains",
+        "search": "log_contains",
+        "contains_any": "log_contains_any",
+        "search_any": "log_contains_any",
+        "filter_any": "log_contains_any"
+    },
+    "compare_preflight_summaries": {
+        "baseline": "baseline_summary",
+        "before_summary": "baseline_summary",
+        "base_summary": "baseline_summary",
+        "candidate": "candidate_summary",
+        "after_summary": "candidate_summary",
+        "new_summary": "candidate_summary"
+    },
+    "compare_preflight_versions": {
+        "baseline": "baseline_version_id",
+        "baseline_version": "baseline_version_id",
+        "before_version": "baseline_version_id",
+        "base_version": "baseline_version_id",
+        "candidate": "candidate_version_id",
+        "candidate_version": "candidate_version_id",
+        "after_version": "candidate_version_id",
+        "new_version": "candidate_version_id",
+        "project": "project_name"
+    },
+    "compare_latest_preflight_versions": {
+        "project": "project_name"
+    },
+    "compare_autosave_preflight_vs_latest_saved": {
+        "project": "project_name"
+    },
+    "compare_autosave_preflight_vs_previous_manual_saved": {
+        "project": "project_name"
+    },
+    "compare_autosave_preflight_vs_manual_saved_index": {
+        "project": "project_name",
+        "manual_saved_n_back": "manual_saved_index",
+        "n_back": "manual_saved_index",
+        "index": "manual_saved_index",
+        "previous_manual_saved_index": "manual_saved_index"
+    },
+    "compare_autosave_preflight_vs_manual_saved_for_simulation_run": {
+        "project": "project_name",
+        "run_id": "simulation_run_id",
+        "job_id": "simulation_run_id",
+        "simulation_job_id": "simulation_run_id"
+    },
+    "compare_autosave_preflight_vs_manual_saved_for_simulation_run_index": {
+        "project": "project_name",
+        "run_id": "simulation_run_id",
+        "job_id": "simulation_run_id",
+        "simulation_job_id": "simulation_run_id",
+        "manual_saved_n_back": "manual_saved_index",
+        "n_back": "manual_saved_index",
+        "index": "manual_saved_index",
+        "previous_manual_saved_index": "manual_saved_index"
+    },
+    "list_manual_saved_versions_for_simulation_run": {
+        "project": "project_name",
+        "run_id": "simulation_run_id",
+        "job_id": "simulation_run_id",
+        "simulation_job_id": "simulation_run_id",
+        "max_versions": "limit",
+        "count": "limit"
+    },
+    "compare_manual_preflight_versions_for_simulation_run_indices": {
+        "project": "project_name",
+        "run_id": "simulation_run_id",
+        "job_id": "simulation_run_id",
+        "simulation_job_id": "simulation_run_id",
+        "baseline_manual_saved_n_back": "baseline_manual_saved_index",
+        "baseline_n_back": "baseline_manual_saved_index",
+        "baseline_index": "baseline_manual_saved_index",
+        "candidate_manual_saved_n_back": "candidate_manual_saved_index",
+        "candidate_n_back": "candidate_manual_saved_index",
+        "candidate_index": "candidate_manual_saved_index"
+    },
+    "compare_autosave_preflight_vs_saved_version": {
+        "project": "project_name",
+        "saved_version": "saved_version_id",
+        "version": "saved_version_id",
+        "version_id": "saved_version_id",
+        "baseline_version": "saved_version_id"
+    },
+    "compare_autosave_preflight_vs_snapshot_version": {
+        "project": "project_name",
+        "autosave_snapshot_version": "autosave_snapshot_version_id",
+        "snapshot_version": "autosave_snapshot_version_id",
+        "snapshot_version_id": "autosave_snapshot_version_id",
+        "version": "autosave_snapshot_version_id",
+        "version_id": "autosave_snapshot_version_id",
+        "baseline_version": "autosave_snapshot_version_id"
+    },
+    "compare_autosave_preflight_vs_latest_snapshot": {
+        "project": "project_name"
+    },
+    "compare_autosave_preflight_vs_previous_snapshot": {
+        "project": "project_name"
+    },
+    "compare_autosave_snapshot_preflight_versions": {
+        "project": "project_name",
+        "baseline": "baseline_snapshot_version_id",
+        "baseline_version": "baseline_snapshot_version_id",
+        "baseline_version_id": "baseline_snapshot_version_id",
+        "baseline_snapshot_version": "baseline_snapshot_version_id",
+        "candidate": "candidate_snapshot_version_id",
+        "candidate_version": "candidate_snapshot_version_id",
+        "candidate_version_id": "candidate_snapshot_version_id",
+        "candidate_snapshot_version": "candidate_snapshot_version_id"
+    },
+    "compare_latest_autosave_snapshot_preflight_versions": {
+        "project": "project_name"
+    },
+    "list_preflight_versions": {
+        "project": "project_name",
+        "max_versions": "limit",
+        "count": "limit",
+        "include_latest_autosave": "include_autosave"
+    },
     "manage_particle_source": {
         "id": "source_id",
         "source": "source_id",
@@ -3253,6 +8795,12 @@ AI_TOOL_ARG_ALIASES = {
 # Defaults used to keep tool calls resilient when small/fast models omit fields.
 AI_TOOL_DEFAULTS = {
     "manage_define": {"define_type": "constant"},
+    "create_primitive_solid": {
+        "solid_type_defaults": {
+            "cone": {"startphi": "0*deg", "deltaphi": "360*deg"},
+            "tube": {"startphi": "0*deg", "deltaphi": "360*deg"}
+        }
+    },
     "create_detector_ring": {
         "parent_lv_name": "World",
         "num_detectors": "10",
@@ -3265,6 +8813,7 @@ AI_TOOL_DEFAULTS = {
         "ring_spacing": "0"
     },
     "run_simulation": {"events": 1000, "threads": 1},
+    "get_simulation_status": {"include_logs": True, "include_log_summary": True, "include_log_entries": False, "tail_lines": 20, "log_source": "both"},
     "manage_ui_group": {"item_ids": []},
     "manage_particle_source": {
         "name": "gps_source",
@@ -3311,6 +8860,7 @@ PRIMITIVE_SOLID_PARAM_ALIASES = {
         "outerradius": "rmax",
         "halfz": "z",
         "halflength": "z",
+        "zlen": "z",
         "startangle": "startphi",
         "spanangle": "deltaphi"
     },
@@ -3319,8 +8869,14 @@ PRIMITIVE_SOLID_PARAM_ALIASES = {
         "outerradius1": "rmax1",
         "innerradius2": "rmin2",
         "outerradius2": "rmax2",
+        "rmin": "rmin1",
+        "rmax": "rmax1",
+        "dz": "z",
         "halfz": "z",
         "halflength": "z",
+        "zlen": "z",
+        "sphi": "startphi",
+        "dphi": "deltaphi",
         "startangle": "startphi",
         "spanangle": "deltaphi"
     },
@@ -3402,6 +8958,83 @@ def normalize_primitive_solid_params(solid_type: Any, raw_params: Any) -> Any:
         mapped[k] = _coerce_unit_expr_if_bare_number(mapped[k])
         if _normalize_param_alias_key(k) in ANGLE_PARAM_NAMES:
             mapped[k] = _coerce_angle_expr_if_bare_number(mapped[k])
+
+    # 4) Apply solid-type specific defaults
+    if st == "cone":
+        if "startphi" not in mapped:
+            mapped["startphi"] = "0*deg"
+        if "deltaphi" not in mapped:
+            mapped["deltaphi"] = "360*deg"
+    
+    if st == "trap":
+        # Make angle parameters optional with defaults (Geant4 G4Trap defaults)
+        if "theta" not in mapped:
+            mapped["theta"] = "0*deg"
+        if "phi" not in mapped:
+            mapped["phi"] = "0*deg"
+        if "alpha1" not in mapped:
+            mapped["alpha1"] = "0*deg"
+        if "alpha2" not in mapped:
+            mapped["alpha2"] = "0*deg"
+        
+        # Auto-populate missing required parameters with sensible defaults
+        # This helps when AI provides incomplete parameters
+        if "z" not in mapped:
+            mapped["z"] = "100"
+            print(f"[VALIDATE] Auto-populated default z=100 for trap", flush=True, file=sys.stderr)
+        if "y1" not in mapped:
+            mapped["y1"] = "20"
+            print(f"[VALIDATE] Auto-populated default y1=20 for trap", flush=True, file=sys.stderr)
+        if "x1" not in mapped:
+            mapped["x1"] = "10"
+            print(f"[VALIDATE] Auto-populated default x1=10 for trap", flush=True, file=sys.stderr)
+        if "x2" not in mapped:
+            mapped["x2"] = "10"
+            print(f"[VALIDATE] Auto-populated default x2=10 for trap", flush=True, file=sys.stderr)
+        if "y2" not in mapped:
+            mapped["y2"] = "20"
+            print(f"[VALIDATE] Auto-populated default y2=20 for trap", flush=True, file=sys.stderr)
+        if "x3" not in mapped:
+            mapped["x3"] = "10"
+            print(f"[VALIDATE] Auto-populated default x3=10 for trap", flush=True, file=sys.stderr)
+        if "x4" not in mapped:
+            mapped["x4"] = "10"
+            print(f"[VALIDATE] Auto-populated default x4=10 for trap", flush=True, file=sys.stderr)
+
+    # 5) Auto-convert common AI mistakes: xtru-style sections -> rzpoints for genericPolyhedra/genericPolycone
+    # AI often confuses these solid types and provides sections (for xtru) instead of rzpoints
+    if st in ("genericPolyhedra", "genericPolycone") and "sections" in mapped and "rzpoints" not in mapped:
+        # Convert xtru-style sections to rzpoints format
+        # sections: [{zOrder, zPosition, xOffset, yOffset, scalingFactor}, ...]
+        # rzpoints: [{r, z}, ...]
+        sections = mapped.get("sections", [])
+        if isinstance(sections, list) and len(sections) > 0:
+            rzpoints = []
+            for sec in sections:
+                if isinstance(sec, dict):
+                    # Use zPosition as z, and calculate r from scalingFactor (assuming base radius from context)
+                    z_val = sec.get("zPosition", "0")
+                    # For genericPolyhedra/Polycone, we need r values. If scalingFactor is provided, use it as r
+                    # Otherwise, we can't properly convert - but we try our best
+                    r_val = sec.get("scalingFactor", sec.get("xOffset", "0"))
+                    rzpoints.append({"r": r_val, "z": z_val})
+            if rzpoints:
+                mapped["rzpoints"] = rzpoints
+                print(f"[VALIDATE] Auto-converted sections->rzpoints for {st}: {rzpoints}", flush=True, file=sys.stderr)
+        elif isinstance(sections, list) and len(sections) == 0:
+            # AI provided empty sections - provide sensible defaults
+            # This is a common AI mistake when it doesn't know what values to use
+            if st == "genericPolyhedra":
+                # Default: tapered cylinder (small radius at -z, large at +z)
+                mapped["rzpoints"] = [{"r": "10", "z": "-50"}, {"r": "50", "z": "50"}]
+                print(f"[VALIDATE] Auto-populated default rzpoints for {st} (AI provided empty sections)", flush=True, file=sys.stderr)
+            elif st == "genericPolycone":
+                # Default: cone (zero radius at -z, expanding to +z)
+                mapped["rzpoints"] = [{"r": "0", "z": "-50"}, {"r": "50", "z": "50"}]
+                print(f"[VALIDATE] Auto-populated default rzpoints for {st} (AI provided empty sections)", flush=True, file=sys.stderr)
+        # Remove the useless empty sections key
+        if "sections" in mapped and not mapped["sections"]:
+            del mapped["sections"]
 
     return mapped
 
@@ -3500,10 +9133,20 @@ def _normalize_tool_args(tool_name: str, args: Any) -> tuple[Optional[Dict[str, 
         return None, f"Tool '{tool_name}' arguments must be an object/dict, got {type(args).__name__}."
 
     # Normalize top-level keys (camelCase -> snake_case).
+    # Preserve canonical-key precedence when both canonical and camelCase
+    # variants are supplied in the same payload.
     normalized: Dict[str, Any] = {}
     for key, value in args.items():
         key_str = str(key)
-        normalized[_camel_to_snake(key_str)] = _parse_json_like(value)
+        canonical_key = _camel_to_snake(key_str)
+        parsed_value = _parse_json_like(value)
+
+        if canonical_key in normalized and key_str != canonical_key:
+            # Do not let a camelCase variant overwrite an already-present
+            # canonical snake_case key.
+            continue
+
+        normalized[canonical_key] = parsed_value
 
     # Apply per-tool aliases.
     for old_key, canonical_key in AI_TOOL_ARG_ALIASES.get(tool_name, {}).items():
@@ -3523,12 +9166,26 @@ def _normalize_tool_args(tool_name: str, args: Any) -> tuple[Optional[Dict[str, 
         if normalized.get(key) is None:
             normalized[key] = value
 
+    # Apply solid_type_defaults for create_primitive_solid tool.
+    if tool_name == "create_primitive_solid":
+        solid_type = normalized.get("solid_type")
+        params = normalized.get("params", {})
+        if solid_type and isinstance(params, dict):
+            solid_defaults = AI_TOOL_DEFAULTS.get("create_primitive_solid", {}).get("solid_type_defaults", {}).get(solid_type, {})
+            for key, value in solid_defaults.items():
+                if params.get(key) is None:
+                    params[key] = value
+            normalized["params"] = params
+
     return normalized, None
 
 
 def _validate_create_primitive_solid_args(args: Dict[str, Any]) -> Optional[str]:
+    import sys
     solid_type = args.get('solid_type')
     params = args.get('params')
+
+    print(f"[VALIDATE] solid_type={solid_type}, params keys={list(params.keys()) if isinstance(params, dict) else 'not dict'}", flush=True, file=sys.stderr)
 
     if not isinstance(params, dict):
         return "Tool 'create_primitive_solid' expects 'params' to be an object."
@@ -3543,11 +9200,14 @@ def _validate_create_primitive_solid_args(args: Dict[str, Any]) -> Optional[str]
     normalized_params = normalize_primitive_solid_params(solid_type, params)
     args['params'] = normalized_params
 
+    print(f"[VALIDATE] normalized params={normalized_params}", flush=True, file=sys.stderr)
+
     required_params = spec.get('required', [])
     missing = [
         key for key in required_params
         if key not in normalized_params or normalized_params.get(key) in (None, "")
     ]
+    print(f"[VALIDATE] required={required_params}, missing={missing}", flush=True, file=sys.stderr)
     if not missing:
         return None
 
@@ -3561,11 +9221,20 @@ def _validate_create_primitive_solid_args(args: Dict[str, Any]) -> Optional[str]
         alias_hint = f" Common aliases accepted: {rendered}."
 
     provided_keys = sorted(params.keys()) if isinstance(params, dict) else []
-
+    
+    # Detect common confusion: AI providing wrong solid type's parameters
+    wrong_param_hint = ""
+    if solid_type == "genericPolyhedra" and "sections" in params:
+        wrong_param_hint = " NOTE: 'sections' is for 'xtru' solids, not 'genericPolyhedra'. For genericPolyhedra, use 'rzpoints' as array of {r, z} objects like [{r: '10', z: '-50'}, {r: '50', z: '50'}]."
+    elif solid_type == "genericPolycone" and "sections" in params:
+        wrong_param_hint = " NOTE: 'sections' is for 'xtru' solids, not 'genericPolycone'. For genericPolycone, use 'rzpoints' as array of {r, z} objects."
+    elif solid_type == "trap" and ("rzpoints" in params or "sections" in params or "numsides" in params):
+        wrong_param_hint = " NOTE: 'trap' does NOT use 'rzpoints', 'sections', or 'numsides'. Those are for other solid types. trap requires: z, theta, phi, y1, x1, x2, alpha1, y2, x3, x4, alpha2."
+    
     return (
         f"Tool 'create_primitive_solid' for solid_type='{solid_type}' is missing required param(s): {missing}. "
         f"Use canonical params: {canonical_names}. "
-        f"Provided keys: {provided_keys}.{alias_hint}"
+        f"Provided keys: {provided_keys}.{alias_hint}{wrong_param_hint}"
     )
 
 
@@ -3665,7 +9334,29 @@ def _validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
         if req not in args or args[req] is None or args[req] == ""
     ]
     if missing:
-        return f"Tool '{tool_name}' missing required argument(s): {', '.join(missing)}."
+        # Keep explicit preflight compare selector missing-field behavior aligned
+        # with route contracts. These tools provide route-matched required-field
+        # diagnostics (including alias-aware wording) in dispatch.
+        route_aligned_required_fields = {
+            "run_preflight_scope": {"scope"},
+            "compare_preflight_versions": {"baseline_version_id", "candidate_version_id"},
+            "compare_autosave_preflight_vs_manual_saved_for_simulation_run": {"simulation_run_id"},
+            "compare_autosave_preflight_vs_manual_saved_for_simulation_run_index": {"simulation_run_id"},
+            "list_manual_saved_versions_for_simulation_run": {"simulation_run_id"},
+            "compare_manual_preflight_versions_for_simulation_run_indices": {"simulation_run_id"},
+            "compare_autosave_preflight_vs_saved_version": {"saved_version_id"},
+            "compare_autosave_preflight_vs_snapshot_version": {"autosave_snapshot_version_id"},
+            "compare_autosave_snapshot_preflight_versions": {
+                "baseline_snapshot_version_id",
+                "candidate_snapshot_version_id",
+            },
+        }
+
+        if not (
+            tool_name in route_aligned_required_fields
+            and set(missing).issubset(route_aligned_required_fields[tool_name])
+        ):
+            return f"Tool '{tool_name}' missing required argument(s): {', '.join(missing)}."
 
     properties = schema.get("properties", {})
     for key, prop_schema in properties.items():
@@ -3690,6 +9381,8 @@ def _validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
 
 def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Dispatches a tool call from the AI to the appropriate ProjectManager method."""
+    import sys
+    print(f"[DISPATCH] tool_name={tool_name}", flush=True, file=sys.stderr)
 
     # Helper to convert list [x,y,z] to dict {'x':x,'y':y,'z':z}
     def to_vec_dict(val, default_val='0'):
@@ -3755,6 +9448,18 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
 
         return status_code, body
 
+    def _resolve_simulation_run_id_with_aliases(raw_args: Dict[str, Any]) -> Any:
+        simulation_run_id = (
+            raw_args.get("simulation_run_id")
+            if raw_args.get("simulation_run_id") is not None
+            else raw_args.get("run_id")
+        )
+        if simulation_run_id is None:
+            simulation_run_id = raw_args.get("job_id")
+        if simulation_run_id is None:
+            simulation_run_id = raw_args.get("simulation_job_id")
+        return simulation_run_id
+
 
     args, normalize_error = _normalize_tool_args(tool_name, args)
     if normalize_error:
@@ -3796,6 +9501,7 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 "density_expr": args.get('density'),
                 "Z_expr": args.get('z') if args.get('z') is not None else args.get('Z'),
                 "A_expr": args.get('a') if args.get('a') is not None else args.get('A'),
+                "state": args.get('state'),
                 "components": args.get('components')
             }
             props = {k: v for k, v in props.items() if v is not None}
@@ -3812,19 +9518,53 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 return {"success": False, "error": error}
 
         elif tool_name == "create_primitive_solid":
-            stype = args.get('solid_type')
-            p = args.get('params')
+            import sys
+            try:
+                print(">>> CREATE_PRIMITIVE_SOLID CALLED <<<", flush=True, file=sys.stderr)
+                stype = args.get('solid_type')
+                p = args.get('params')
 
-            if isinstance(p, list) and len(p) == 3:
-                p = {'x': str(p[0]), 'y': str(p[1]), 'z': str(p[2])}
+                print(f"  [create_primitive_solid] solid_type={stype}, params={p}", flush=True, file=sys.stderr)
 
-            p = normalize_primitive_solid_params(stype, p)
+                if isinstance(p, list) and len(p) == 3:
+                    p = {'x': str(p[0]), 'y': str(p[1]), 'z': str(p[2])}
 
-            res, error = pm.add_solid(args.get('name', 'AI_Solid'), stype, p)
-            if res:
-                pm.recalculate_geometry_state()
-                return {"success": True, "message": f"Solid '{res['name']}' created."}
-            return {"success": False, "error": error}
+                # Validate parameters against the solid type spec
+                if isinstance(p, dict):
+                    spec = PRIMITIVE_SOLID_PARAM_SPECS.get(stype, {})
+                    valid_params = set(spec.get('properties', {}).keys())
+                    required_params = set(spec.get('required', []))
+                    
+                    # Filter out invalid parameters and warn
+                    invalid_params = set(p.keys()) - valid_params
+                    if invalid_params:
+                        print(f"  [create_primitive_solid] WARNING: Ignoring invalid params for {stype}: {invalid_params}", flush=True, file=sys.stderr)
+                        p = {k: v for k, v in p.items() if k in valid_params}
+                    
+                    # Check required parameters
+                    missing_params = required_params - set(p.keys())
+                    if missing_params:
+                        error_msg = f"Missing required parameters for {stype}: {missing_params}. Required: {required_params}"
+                        print(f"  [create_primitive_solid] ERROR: {error_msg}", flush=True, file=sys.stderr)
+                        return {"success": False, "error": error_msg}
+
+                p = normalize_primitive_solid_params(stype, p)
+
+                print(f"  [create_primitive_solid] normalized params={p}", flush=True, file=sys.stderr)
+
+                res, error = pm.add_solid(args.get('name', 'AI_Solid'), stype, p)
+                if res:
+                    pm.recalculate_geometry_state()
+                    print(f"  [create_primitive_solid] SUCCESS: {res['name']}", flush=True, file=sys.stderr)
+                    return {"success": True, "message": f"Solid '{res['name']}' created."}
+                print(f"  [create_primitive_solid] ERROR: {error}", flush=True, file=sys.stderr)
+                return {"success": False, "error": error}
+                
+            except Exception as e:
+                import traceback
+                print(f"  [create_primitive_solid] EXCEPTION: {e}", flush=True, file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                return {"success": False, "error": str(e)}
 
         elif tool_name == "modify_solid":
             success, error = pm.update_solid(args['name'], args['params'])
@@ -3886,7 +9626,8 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 parent, args.get('name'), placed,
                 to_vec_dict(args.get('position', {'x': '0', 'y': '0', 'z': '0'})),
                 to_vec_dict(args.get('rotation', {'x': '0', 'y': '0', 'z': '0'})),
-                to_vec_dict(args.get('scale', {'x': '1', 'y': '1', 'z': '1'}))
+                to_vec_dict(args.get('scale', {'x': '1', 'y': '1', 'z': '1'})),
+                args.get('copy_number_expr', "0")
             )
             if res:
                 return {"success": True, "message": f"Volume placed as '{res['name']}'."}
@@ -4043,6 +9784,434 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 return {"success": True, "message": f"All {len(to_delete)} instances of ring '{ring_name}' deleted."}
             return {"success": False, "error": res}
 
+        elif tool_name == "run_preflight_checks":
+            report = pm.run_preflight_checks()
+            return {
+                "success": True,
+                "preflight_report": report,
+                "preflight_summary": report.get("summary", {}),
+            }
+
+
+        elif tool_name == "run_preflight_scope":
+            try:
+                scope_type, scope_name = _normalize_preflight_scope_input(args)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+
+            full_report = pm.run_preflight_checks()
+            try:
+                scoped_report = pm.build_scoped_preflight_report(full_report, scope_type, scope_name)
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+
+            summary_delta = _build_scope_summary_delta(
+                full_report.get("summary", {}),
+                scoped_report.get("summary", {}),
+            )
+            issue_family_correlations = _build_scope_issue_family_correlations(
+                full_report.get("summary", {}),
+                scoped_report.get("summary", {}),
+            )
+
+            return {
+                "success": True,
+                "scope": {"type": scope_type, "name": scope_name},
+                "preflight_report": full_report,
+                "scoped_preflight_report": scoped_report,
+                "summary_delta": summary_delta,
+                "issue_family_correlations": issue_family_correlations,
+            }
+
+        elif tool_name == "compare_preflight_summaries":
+            try:
+                comparison = compare_preflight_summaries(
+                    args.get("baseline_summary"),
+                    args.get("candidate_summary"),
+                )
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                "comparison": comparison,
+            }
+
+        elif tool_name == "compare_preflight_versions":
+            baseline_version_id = (
+                args.get("baseline_version_id")
+                if args.get("baseline_version_id") is not None
+                else args.get("baseline_version")
+            )
+            if baseline_version_id is None:
+                baseline_version_id = args.get("baseline")
+            if baseline_version_id is None:
+                baseline_version_id = args.get("before_version")
+            if baseline_version_id is None:
+                baseline_version_id = args.get("base_version")
+
+            candidate_version_id = (
+                args.get("candidate_version_id")
+                if args.get("candidate_version_id") is not None
+                else args.get("candidate_version")
+            )
+            if candidate_version_id is None:
+                candidate_version_id = args.get("candidate")
+            if candidate_version_id is None:
+                candidate_version_id = args.get("after_version")
+            if candidate_version_id is None:
+                candidate_version_id = args.get("new_version")
+
+            if baseline_version_id is None or candidate_version_id is None:
+                return {
+                    "success": False,
+                    "error": "Missing required fields: baseline_version_id and candidate_version_id.",
+                }
+
+            try:
+                result = compare_preflight_versions(
+                    pm,
+                    baseline_version_id=baseline_version_id,
+                    candidate_version_id=candidate_version_id,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_latest_preflight_versions":
+            try:
+                result = compare_latest_preflight_versions(
+                    pm,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_preflight_vs_latest_saved":
+            try:
+                result = compare_autosave_preflight_vs_latest_saved(
+                    pm,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_preflight_vs_previous_manual_saved":
+            try:
+                result = compare_autosave_preflight_vs_previous_manual_saved(
+                    pm,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_preflight_vs_manual_saved_index":
+            try:
+                result = compare_autosave_preflight_vs_manual_saved_index(
+                    pm,
+                    manual_saved_index=args.get("manual_saved_index"),
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_preflight_vs_manual_saved_for_simulation_run":
+            simulation_run_id = _resolve_simulation_run_id_with_aliases(args)
+            if simulation_run_id is None:
+                return {
+                    "success": False,
+                    "error": "Missing required field: simulation_run_id (or run_id/job_id).",
+                }
+
+            try:
+                result = compare_autosave_preflight_vs_manual_saved_for_simulation_run(
+                    pm,
+                    simulation_run_id=simulation_run_id,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_preflight_vs_manual_saved_for_simulation_run_index":
+            simulation_run_id = _resolve_simulation_run_id_with_aliases(args)
+            if simulation_run_id is None:
+                return {
+                    "success": False,
+                    "error": "Missing required field: simulation_run_id (or run_id/job_id).",
+                }
+
+            try:
+                result = compare_autosave_preflight_vs_manual_saved_for_simulation_run_index(
+                    pm,
+                    simulation_run_id=simulation_run_id,
+                    manual_saved_index=args.get("manual_saved_index"),
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "list_manual_saved_versions_for_simulation_run":
+            simulation_run_id = _resolve_simulation_run_id_with_aliases(args)
+            if simulation_run_id is None:
+                return {
+                    "success": False,
+                    "error": "Missing required field: simulation_run_id (or run_id/job_id).",
+                }
+
+            try:
+                result = list_manual_saved_versions_for_simulation_run(
+                    pm,
+                    simulation_run_id=simulation_run_id,
+                    project_name=args.get("project_name"),
+                    limit=args.get("limit"),
+                )
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_manual_preflight_versions_for_simulation_run_indices":
+            simulation_run_id = _resolve_simulation_run_id_with_aliases(args)
+            if simulation_run_id is None:
+                return {
+                    "success": False,
+                    "error": "Missing required field: simulation_run_id (or run_id/job_id).",
+                }
+
+            try:
+                result = compare_manual_preflight_versions_for_simulation_run_indices(
+                    pm,
+                    simulation_run_id=simulation_run_id,
+                    baseline_manual_saved_index=args.get("baseline_manual_saved_index"),
+                    candidate_manual_saved_index=args.get("candidate_manual_saved_index"),
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_preflight_vs_saved_version":
+            saved_version_id = (
+                args.get("saved_version_id")
+                if args.get("saved_version_id") is not None
+                else args.get("saved_version")
+            )
+            if saved_version_id is None:
+                saved_version_id = args.get("version_id")
+            if saved_version_id is None:
+                saved_version_id = args.get("version")
+            if saved_version_id is None:
+                saved_version_id = args.get("baseline_version")
+
+            if saved_version_id is None:
+                return {
+                    "success": False,
+                    "error": "Missing required field: saved_version_id (or saved_version/version_id).",
+                }
+
+            try:
+                result = compare_autosave_preflight_vs_saved_version(
+                    pm,
+                    saved_version_id=saved_version_id,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_preflight_vs_snapshot_version":
+            autosave_snapshot_version_id = (
+                args.get("autosave_snapshot_version_id")
+                if args.get("autosave_snapshot_version_id") is not None
+                else args.get("snapshot_version_id")
+            )
+            if autosave_snapshot_version_id is None:
+                autosave_snapshot_version_id = args.get("snapshot_version")
+            if autosave_snapshot_version_id is None:
+                autosave_snapshot_version_id = args.get("version_id")
+            if autosave_snapshot_version_id is None:
+                autosave_snapshot_version_id = args.get("version")
+            if autosave_snapshot_version_id is None:
+                autosave_snapshot_version_id = args.get("baseline_version")
+            if autosave_snapshot_version_id is None:
+                autosave_snapshot_version_id = args.get("autosave_snapshot_version")
+
+            if autosave_snapshot_version_id is None:
+                return {
+                    "success": False,
+                    "error": "Missing required field: autosave_snapshot_version_id (or snapshot_version_id/snapshot_version/version_id).",
+                }
+
+            try:
+                result = compare_autosave_preflight_vs_snapshot_version(
+                    pm,
+                    autosave_snapshot_version_id=autosave_snapshot_version_id,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_preflight_vs_latest_snapshot":
+            try:
+                result = compare_autosave_preflight_vs_latest_snapshot(
+                    pm,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_preflight_vs_previous_snapshot":
+            try:
+                result = compare_autosave_preflight_vs_previous_snapshot(
+                    pm,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_autosave_snapshot_preflight_versions":
+            baseline_snapshot_version_id = (
+                args.get("baseline_snapshot_version_id")
+                if args.get("baseline_snapshot_version_id") is not None
+                else args.get("baseline_snapshot_version")
+            )
+            if baseline_snapshot_version_id is None:
+                baseline_snapshot_version_id = args.get("baseline_version_id")
+            if baseline_snapshot_version_id is None:
+                baseline_snapshot_version_id = args.get("baseline_version")
+            if baseline_snapshot_version_id is None:
+                baseline_snapshot_version_id = args.get("baseline")
+
+            candidate_snapshot_version_id = (
+                args.get("candidate_snapshot_version_id")
+                if args.get("candidate_snapshot_version_id") is not None
+                else args.get("candidate_snapshot_version")
+            )
+            if candidate_snapshot_version_id is None:
+                candidate_snapshot_version_id = args.get("candidate_version_id")
+            if candidate_snapshot_version_id is None:
+                candidate_snapshot_version_id = args.get("candidate_version")
+            if candidate_snapshot_version_id is None:
+                candidate_snapshot_version_id = args.get("candidate")
+
+            missing_fields = []
+            if baseline_snapshot_version_id is None:
+                missing_fields.append('baseline_snapshot_version_id (or baseline_snapshot_version/baseline_version_id/baseline_version)')
+            if candidate_snapshot_version_id is None:
+                missing_fields.append('candidate_snapshot_version_id (or candidate_snapshot_version/candidate_version_id/candidate_version)')
+
+            if missing_fields:
+                return {
+                    "success": False,
+                    "error": f"Missing required field(s): {', '.join(missing_fields)}.",
+                }
+
+            try:
+                result = compare_autosave_snapshot_preflight_versions(
+                    pm,
+                    baseline_snapshot_version_id=baseline_snapshot_version_id,
+                    candidate_snapshot_version_id=candidate_snapshot_version_id,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "compare_latest_autosave_snapshot_preflight_versions":
+            try:
+                result = compare_latest_autosave_snapshot_preflight_versions(
+                    pm,
+                    project_name=args.get("project_name"),
+                )
+            except (ValueError, FileNotFoundError) as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
+        elif tool_name == "list_preflight_versions":
+            try:
+                result = list_preflight_versions(
+                    pm,
+                    project_name=args.get("project_name"),
+                    include_autosave=args.get("include_autosave", True),
+                    limit=args.get("limit"),
+                )
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
+
+            return {
+                "success": True,
+                **result,
+            }
+
         elif tool_name == "run_simulation":
             job_id = str(uuid.uuid4())
             try:
@@ -4077,16 +10246,59 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
 
         elif tool_name == "get_simulation_status":
             job_id = args['job_id']
+
+            parsed_opts, err = _parse_simulation_status_log_options(
+                get_value=args.get,
+                has_key=lambda key: key in args,
+                include_log_summary_default=True,
+                include_log_entries_default=False,
+                tail_lines_default=20,
+                apply_legacy_since_default=False,
+                split_commas_for_contains_any=True,
+            )
+            if err:
+                return {"success": False, "error": err}
+
+            include_logs = parsed_opts['include_logs']
+            include_log_summary = parsed_opts['include_log_summary']
+            include_log_entries = parsed_opts['include_log_entries']
+            since = parsed_opts['since']
+            tail_lines = parsed_opts['tail_lines']
+            max_lines = parsed_opts['max_lines']
+            log_source = parsed_opts['log_source']
+            log_contains = parsed_opts['log_contains']
+            log_contains_any_terms = parsed_opts['log_contains_any_terms']
+
             with SIMULATION_LOCK:
                 status = SIMULATION_STATUS.get(job_id)
                 if not status:
                     return {"success": False, "error": "Job ID not found."}
-                return {
+
+                stdout_lines = list(status.get("stdout") or [])
+                stderr_raw = list(status.get("stderr") or [])
+
+                response = {
                     "success": True,
                     "status": status["status"],
                     "progress": status["progress"],
                     "total": status["total_events"]
                 }
+                response.update(_build_simulation_log_payload(
+                    stdout_lines,
+                    stderr_raw,
+                    include_logs=include_logs,
+                    include_log_summary=include_log_summary,
+                    include_log_entries=include_log_entries,
+                    log_source=log_source,
+                    log_contains=log_contains,
+                    log_contains_any_terms=log_contains_any_terms,
+                    since=since,
+                    tail_lines=tail_lines,
+                    max_lines=max_lines,
+                    include_legacy_fields=False,
+                ))
+
+                return response
 
         elif tool_name == "insert_physics_template":
             template_name = args['template_name']
@@ -4267,21 +10479,68 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             return {"success": False, "error": f"Invalid link_type '{ltype}'. Expected 'skin' or 'border'."}
 
         elif tool_name == "manage_assembly":
-            name = args['name']
-            pls = args['placements']
-            for p in pls:
-                if 'position' in p:
-                    p['position'] = to_vec_dict(p['position'])
-                if 'rotation' in p:
-                    p['rotation'] = to_vec_dict(p['rotation'])
+            name = args.get('name')
+            raw_placements = args.get('placements')
+
+            if not isinstance(name, str) or not name.strip():
+                return {"success": False, "error": "'name' is required for manage_assembly."}
+            if not isinstance(raw_placements, list):
+                return {"success": False, "error": "'placements' must be an array for manage_assembly."}
+
+            normalized_placements = []
+            for idx, raw_p in enumerate(raw_placements):
+                if not isinstance(raw_p, dict):
+                    return {"success": False, "error": f"placements[{idx}] must be an object."}
+
+                placement = dict(raw_p)
+                volume_ref = (
+                    placement.get('volume_ref')
+                    or placement.get('logical_volume_ref')
+                    or placement.get('volume')
+                    or placement.get('lv_name')
+                )
+                if not volume_ref:
+                    return {
+                        "success": False,
+                        "error": f"placements[{idx}] is missing required field 'volume_ref'."
+                    }
+
+                placement_name = (
+                    placement.get('name')
+                    or placement.get('placement_name')
+                    or placement.get('id')
+                    or f"{name}_placement_{idx + 1}"
+                )
+
+                normalized = {
+                    'name': str(placement_name),
+                    'volume_ref': str(volume_ref),
+                }
+
+                if placement.get('id') is not None:
+                    normalized['id'] = str(placement.get('id'))
+                if placement.get('parent_lv_name') is not None:
+                    normalized['parent_lv_name'] = str(placement.get('parent_lv_name'))
+                if placement.get('copy_number_expr') is not None:
+                    normalized['copy_number_expr'] = str(placement.get('copy_number_expr'))
+                elif placement.get('copy_number') is not None:
+                    normalized['copy_number'] = placement.get('copy_number')
+                if placement.get('position') is not None:
+                    normalized['position'] = to_vec_dict(placement.get('position'))
+                if placement.get('rotation') is not None:
+                    normalized['rotation'] = to_vec_dict(placement.get('rotation'))
+                if placement.get('scale') is not None:
+                    normalized['scale'] = to_vec_dict(placement.get('scale'))
+
+                normalized_placements.append(normalized)
 
             if name in pm.current_geometry_state.assemblies:
-                success, error = pm.update_assembly(name, pls)
+                success, error = pm.update_assembly(name, normalized_placements)
                 if success:
                     return {"success": True, "message": f"Assembly '{name}' updated."}
                 return {"success": False, "error": error}
             else:
-                res, error = pm.add_assembly(name, pls)
+                res, error = pm.add_assembly(name, normalized_placements)
                 if res:
                     return {"success": True, "message": f"Assembly '{res['name']}' created."}
                 return {"success": False, "error": error}
@@ -4513,24 +10772,2934 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 return {"success": False, "error": body.get('error', f"Could not fetch simulation analysis (status {status_code}).")}
             return {"success": True, "analysis": body.get('analysis', {})}
 
+        elif tool_name == "create_parameter_registry":
+            param_name = args.get('param_name')
+            target_type = args.get('target_type')
+            target_ref = args.get('target_ref')
+            bounds = args.get('bounds')
+            default = args.get('default')
+
+            if not param_name or not target_type or not isinstance(target_ref, dict) or not isinstance(bounds, dict):
+                return {"success": False, "error": "Missing/invalid required fields: param_name, target_type, target_ref(object), bounds(object)."}
+
+            # PM validation requires numeric default; if absent, default to midpoint.
+            if default is None:
+                try:
+                    min_v = float(bounds.get('min'))
+                    max_v = float(bounds.get('max'))
+                    default = 0.5 * (min_v + max_v)
+                except Exception:
+                    return {"success": False, "error": "bounds.min and bounds.max must be numeric when default is omitted."}
+
+            entry = {
+                'target_type': target_type,
+                'target_ref': target_ref,
+                'bounds': bounds,
+                'default': default,
+                'units': args.get('units', ''),
+                'enabled': args.get('enabled', True),
+                'constraint_group': args.get('constraint_group'),
+            }
+
+            result, err = pm.upsert_parameter_registry_entry(param_name, entry)
+            if err:
+                return {"success": False, "error": err}
+            return {"success": True, "parameter": result}
+
+        elif tool_name == "setup_param_study":
+            study_name = args.get('study_name')
+            parameters = args.get('parameters')
+            objectives = args.get('objectives')
+            mode = (args.get('mode') or ('random' if args.get('random') else 'grid')).strip().lower() if isinstance(args.get('mode') or ('random' if args.get('random') else 'grid'), str) else 'grid'
+
+            if not study_name or not isinstance(parameters, list) or not parameters or not isinstance(objectives, list) or not objectives:
+                return {"success": False, "error": "Missing/invalid required fields: study_name, parameters(non-empty list), objectives(non-empty list)."}
+
+            config = {
+                'mode': mode,
+                'parameters': parameters,
+                'objectives': objectives,
+                'grid': args.get('grid') if isinstance(args.get('grid'), dict) else {},
+                'random': args.get('random') if isinstance(args.get('random'), dict) else {},
+            }
+
+            result, err = pm.upsert_param_study(study_name, config)
+            if err:
+                return {"success": False, "error": err}
+            return {"success": True, "study": result}
+
+        elif tool_name == "run_optimization":
+            study_name = args.get('study_name')
+            method = (args.get('method') or '').strip().lower()
+
+            if not study_name or not method:
+                return {"success": False, "error": "Missing required fields: study_name, method."}
+
+            try:
+                budget = int(args.get('budget', 20))
+            except Exception:
+                return {"success": False, "error": "budget must be an integer."}
+
+            payload = {
+                'study_name': study_name,
+                'method': method,
+                'budget': budget,
+                'seed': args.get('seed', 42),
+                'objective_name': args.get('objective_name'),
+                'direction': args.get('direction'),
+            }
+
+            cmaes_config = args.get('cmaes_config')
+            if isinstance(cmaes_config, dict):
+                payload['cmaes'] = cmaes_config
+
+            surrogate_config = args.get('surrogate_config')
+            if isinstance(surrogate_config, dict):
+                payload['surrogate'] = surrogate_config
+
+            sim_params = args.get('sim_params') if isinstance(args.get('sim_params'), dict) else {}
+            if not sim_params and (args.get('sim_events') is not None or args.get('sim_threads') is not None):
+                sim_params = {
+                    'events': args.get('sim_events', 1),
+                    'threads': args.get('sim_threads', 1),
+                }
+            if sim_params:
+                payload['sim_params'] = sim_params
+
+            if args.get('max_wall_time_seconds') is not None:
+                payload['max_wall_time_seconds'] = args.get('max_wall_time_seconds')
+
+            if isinstance(args.get('context'), dict):
+                payload['context'] = args.get('context')
+            if isinstance(args.get('candidate_runs_root'), str):
+                payload['candidate_runs_root'] = args.get('candidate_runs_root')
+            if args.get('keep_candidate_runs') is not None:
+                payload['keep_candidate_runs'] = bool(args.get('keep_candidate_runs'))
+
+            simulation_in_loop = bool(args.get('simulation_in_loop', False) or args.get('sim_objectives') is not None)
+            if simulation_in_loop:
+                sim_objectives = args.get('sim_objectives')
+                if not isinstance(sim_objectives, list) or not sim_objectives:
+                    return {"success": False, "error": "simulation_in_loop=true requires sim_objectives as a non-empty list."}
+                payload['sim_objectives'] = sim_objectives
+
+                status_code, body = call_route_json(param_optimizer_run_simulation_in_loop_route, payload=payload)
+            else:
+                if method == 'surrogate_gp':
+                    status_code, body = call_route_json(param_optimizer_run_surrogate_route, payload=payload)
+                else:
+                    status_code, body = call_route_json(param_optimizer_run_route, payload=payload)
+
+            if status_code >= 400 or body.get('success') is False:
+                return {
+                    "success": False,
+                    "error": body.get('error', f"Optimization failed (status {status_code})."),
+                    "details": body.get('details'),
+                }
+
+            response = {
+                "success": True,
+                "optimization_result": body.get('optimizer_result'),
+            }
+            if body.get('preflight_summary') is not None:
+                response['preflight_summary'] = body.get('preflight_summary')
+            if body.get('run_policy') is not None:
+                response['run_policy'] = body.get('run_policy')
+            return response
+
+        elif tool_name == "apply_best_result":
+            run_id = args.get('run_id')
+            apply_to_project = args.get('apply_to_project', True)
+
+            if not run_id:
+                return {"success": False, "error": "Missing required field: run_id"}
+
+            result, err = pm.replay_optimizer_best_candidate(run_id, apply_to_project=apply_to_project)
+            if err:
+                return {"success": False, "error": err}
+            return {"success": True, "result": result}
+
+        elif tool_name == "list_optimizer_runs":
+            study_name = args.get('study_name')
+            limit = args.get('limit', 50)
+
+            try:
+                runs = pm.list_optimizer_runs(study_name=study_name, limit=limit)
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+            return {"success": True, "runs": runs}
+
+        elif tool_name == "verify_best_candidate":
+            run_id = args.get('run_id')
+            repeats = args.get('repeats', 3)
+
+            if not run_id:
+                return {"success": False, "error": "Missing required field: run_id"}
+
+            result, err = pm.verify_optimizer_best_candidate(run_id, repeats=repeats)
+            if err:
+                return {"success": False, "error": err}
+            return {"success": True, "verification": result}
+
         return {"success": False, "error": f"Unknown tool: {tool_name}"}
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        parsed = int(value)
+        return parsed if parsed >= 0 else None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = int(stripped)
+            return parsed if parsed >= 0 else None
+        except ValueError:
+            return None
+    return None
+
+
+def _build_openai_tool_schema_from_ai_tools() -> List[Dict[str, Any]]:
+    tool_schemas: List[Dict[str, Any]] = []
+    for tool in AI_GEOMETRY_TOOLS:
+        tool_schemas.append({
+            "type": "function",
+            "function": {
+                "name": tool["name"],
+                "description": tool["description"],
+                "parameters": tool["parameters"],
+            },
+        })
+    return tool_schemas
+
+
+def _coerce_tool_arguments(arguments: Any) -> Dict[str, Any]:
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str):
+        stripped = arguments.strip()
+        if not stripped:
+            return {}
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _normalize_tool_calls_payload(raw_tool_calls: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw_tool_calls, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for call in raw_tool_calls:
+        if not isinstance(call, dict):
+            continue
+
+        call_id = call.get("id")
+        function_obj = call.get("function") if isinstance(call.get("function"), dict) else None
+
+        tool_name = None
+        arguments: Any = {}
+
+        if function_obj:
+            tool_name = function_obj.get("name")
+            arguments = function_obj.get("arguments", {})
+        else:
+            fallback_name = call.get("name")
+            tool_name = call.get("tool") or call.get("tool_name")
+            fallback_used_as_tool_name = False
+            if tool_name is None and isinstance(fallback_name, str):
+                tool_name = fallback_name
+                fallback_used_as_tool_name = True
+
+            if "arguments" in call:
+                arguments = call.get("arguments")
+            elif "params" in call:
+                arguments = call.get("params")
+            else:
+                exclude_fields = {"id", "tool", "tool_name", "function", "tool_call_id"}
+                if fallback_used_as_tool_name:
+                    exclude_fields.add("name")
+                arguments = {
+                    k: v for k, v in call.items()
+                    if k not in exclude_fields
+                }
+
+        if not tool_name or not isinstance(tool_name, str):
+            continue
+
+        normalized.append({
+            "id": call_id,
+            "name": tool_name,
+            "arguments": _coerce_tool_arguments(arguments),
+        })
+
+    return normalized
+
+
+def _extract_tool_calls_from_json_text(content: str) -> List[Dict[str, Any]]:
+    if not isinstance(content, str) or not content.strip():
+        return []
+
+    candidates: List[str] = []
+    stripped = content.strip()
+    candidates.append(stripped)
+
+    fenced_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)```", content, flags=re.IGNORECASE)
+    candidates.extend(block.strip() for block in fenced_blocks if isinstance(block, str) and block.strip())
+
+    if "tool_calls" in content:
+        first_brace = content.find("{")
+        last_brace = content.rfind("}")
+        if first_brace != -1 and last_brace > first_brace:
+            candidates.append(content[first_brace:last_brace + 1].strip())
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+
+        raw_tool_calls = None
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("tool_calls"), list):
+                raw_tool_calls = parsed.get("tool_calls")
+            elif isinstance(parsed.get("calls"), list):
+                raw_tool_calls = parsed.get("calls")
+        elif isinstance(parsed, list):
+            raw_tool_calls = parsed
+
+        normalized = _normalize_tool_calls_payload(raw_tool_calls)
+        if normalized:
+            return normalized
+
+    return []
+
+
+def _extract_openai_assistant_payload(raw_response: Dict[str, Any], fallback_text: str = "") -> Dict[str, Any]:
+    content = fallback_text or ""
+    tool_calls: List[Dict[str, Any]] = []
+
+    if isinstance(raw_response, dict):
+        choices = raw_response.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                message = first.get("message")
+                if isinstance(message, dict):
+                    raw_content = message.get("content")
+                    if isinstance(raw_content, str):
+                        content = raw_content.strip()
+                    elif isinstance(raw_content, list):
+                        text_parts: List[str] = []
+                        for part in raw_content:
+                            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                                text_parts.append(part["text"])
+                        content = "\n".join(p.strip() for p in text_parts if p and p.strip())
+
+                    tool_calls = _normalize_tool_calls_payload(message.get("tool_calls"))
+
+    if not tool_calls:
+        tool_calls = _extract_tool_calls_from_json_text(content or fallback_text or "")
+
+    return {
+        "content": content,
+        "tool_calls": tool_calls,
+    }
+
+
+def _to_openai_tool_calls(raw_tool_calls: Any, *, id_prefix: str = "call") -> List[Dict[str, Any]]:
+    normalized_calls = _normalize_tool_calls_payload(raw_tool_calls)
+    openai_calls: List[Dict[str, Any]] = []
+
+    for idx, call in enumerate(normalized_calls):
+        tool_name = call.get("name")
+        if not isinstance(tool_name, str) or not tool_name:
+            continue
+
+        arguments = call.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = _coerce_tool_arguments(arguments)
+
+        call_id = str(call.get("id") or f"{id_prefix}_{idx}_{tool_name}")
+        openai_calls.append({
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "arguments": json.dumps(arguments, ensure_ascii=False),
+            },
+        })
+
+    return openai_calls
+
+
+def _build_local_adapter_message_history(chat_history: List[Dict[str, Any]]) -> List[TextMessage]:
+    messages: List[TextMessage] = []
+
+    for msg in chat_history:
+        if not isinstance(msg, dict):
+            continue
+
+        role = str(msg.get("role") or "").strip().lower()
+        if role == "model":
+            role = "assistant"
+        if role not in {"system", "user", "assistant", "tool"}:
+            continue
+
+        content = msg.get("content")
+        if not isinstance(content, str):
+            parts = msg.get("parts")
+            if isinstance(parts, list) and parts:
+                first_part = parts[0]
+                if isinstance(first_part, dict) and isinstance(first_part.get("text"), str):
+                    content = first_part.get("text")
+        if not isinstance(content, str):
+            content = ""
+
+        kwargs: Dict[str, Any] = {}
+
+        if role == "assistant" and isinstance(msg.get("tool_calls"), list):
+            openai_tool_calls = _to_openai_tool_calls(msg.get("tool_calls"), id_prefix="hist")
+            if openai_tool_calls:
+                kwargs["tool_calls"] = tuple(openai_tool_calls)
+
+        if role == "tool":
+            tool_call_id = msg.get("tool_call_id")
+            if tool_call_id is not None and str(tool_call_id).strip():
+                kwargs["tool_call_id"] = str(tool_call_id).strip()
+            tool_name = msg.get("name")
+            if isinstance(tool_name, str) and tool_name.strip():
+                kwargs["name"] = tool_name.strip()
+
+        messages.append(TextMessage(role=role, content=content, **kwargs))
+
+    return messages
+
+
+def _build_executable_tool_calls(parsed_tool_calls: List[Dict[str, Any]], turn: int) -> List[Dict[str, Any]]:
+    executable_calls: List[Dict[str, Any]] = []
+
+    for idx, tool_call in enumerate(parsed_tool_calls):
+        if not isinstance(tool_call, dict):
+            continue
+
+        tool_name = tool_call.get("name")
+        if not isinstance(tool_name, str) or not tool_name:
+            continue
+
+        arguments = tool_call.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = _coerce_tool_arguments(arguments)
+
+        call_id = str(tool_call.get("id") or f"call_{turn}_{idx}_{tool_name}")
+        executable_calls.append({
+            "id": call_id,
+            "name": tool_name,
+            "arguments": arguments,
+        })
+
+    return executable_calls
+
+
+def _infer_local_backend_selector_from_model_id(model_id: Any) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    if not isinstance(model_id, str):
+        return None, None
+
+    normalized_model_id = model_id.strip()
+    prefix_to_backend = {
+        "llama_cpp::": "llama_cpp",
+        "lm_studio::": "lm_studio",
+    }
+
+    for prefix, backend_id in prefix_to_backend.items():
+        if not normalized_model_id.startswith(prefix):
+            continue
+
+        local_model_name = normalized_model_id[len(prefix):].strip()
+        if not local_model_name:
+            return None, (
+                f"Invalid local model selector '{model_id}'. "
+                f"Expected '{backend_id}::<model_name>' with a non-empty model name."
+            )
+
+        inferred_require_tools = backend_id == "llama_cpp"
+
+        return {
+            "preferred_backend_id": backend_id,
+            "allow_fallback": False,
+            "runtime_config": {
+                "backends": {
+                    backend_id: {
+                        "enabled": True,
+                        "model": local_model_name,
+                    }
+                }
+            },
+            "requirements": {
+                "require_tools": inferred_require_tools,
+                "require_json_mode": True,
+                "require_streaming": False,
+            },
+        }, None
+
+    return None, None
+
+
+def _get_ai_artifact_store_for_session(pm: Optional[ProjectManager] = None) -> AIArtifactStore:
+    pm = pm or get_project_manager_for_session()
+    return AIArtifactStore(
+        base_dir=Path(pm.projects_dir) / ".airpet_ai_artifacts",
+        workspace_root=Path(os.getcwd()),
+    )
+
+
+@app.route('/api/ai/artifacts/upload', methods=['POST'])
+def upload_ai_artifact_route():
+    pm = get_project_manager_for_session()
+    file = request.files.get('artifact') or request.files.get('file')
+    if file is None:
+        return jsonify({"success": False, "error": "Missing artifact file upload (field: artifact)."}), 400
+
+    source_path = request.form.get('source_path')
+    source_label = request.form.get('source_label')
+    store = _get_ai_artifact_store_for_session(pm)
+
+    try:
+        artifact = store.ingest_upload(file, source_path=source_path, source_label=source_label)
+        return jsonify({
+            "success": True,
+            "schema_version": ARTIFACT_STORE_SCHEMA_VERSION,
+            "artifact": artifact,
+        })
+    except AIArtifactValidationError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"Failed to ingest AI artifact: {exc}"}), 500
+
+
+@app.route('/api/ai/artifacts/list', methods=['GET', 'POST'])
+def list_ai_artifacts_route():
+    pm = get_project_manager_for_session()
+    store = _get_ai_artifact_store_for_session(pm)
+
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+    else:
+        payload = request.args or {}
+
+    raw_limit = payload.get('limit', 50)
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "limit must be a non-negative integer."}), 400
+
+    include_missing_files = _coerce_bool(payload.get('include_missing_files'), False)
+
+    try:
+        artifacts = store.list_metadata(limit=limit, include_missing_files=include_missing_files)
+        return jsonify({
+            "success": True,
+            "schema_version": ARTIFACT_STORE_SCHEMA_VERSION,
+            "count": len(artifacts),
+            "artifacts": artifacts,
+        })
+    except AIArtifactValidationError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"Failed to list AI artifacts: {exc}"}), 500
+
+
+@app.route('/api/ai/artifacts/<artifact_id>', methods=['GET'])
+def get_ai_artifact_metadata_route(artifact_id):
+    pm = get_project_manager_for_session()
+    store = _get_ai_artifact_store_for_session(pm)
+
+    try:
+        artifact = store.get_metadata(artifact_id)
+    except AIArtifactValidationError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"Failed to read AI artifact metadata: {exc}"}), 500
+
+    if artifact is None:
+        return jsonify({"success": False, "error": f"Artifact not found: {artifact_id}"}), 404
+
+    return jsonify({
+        "success": True,
+        "schema_version": ARTIFACT_STORE_SCHEMA_VERSION,
+        "artifact": artifact,
+    })
+
+
+MULTIMODAL_EXTRACTION_ROUTE_SCHEMA_VERSION = "2026-03-14.multimodal-intake.checkpoint3"
+MULTIMODAL_PLANNING_ROUTE_SCHEMA_VERSION = "2026-03-14.multimodal-intake.checkpoint4"
+MULTIMODAL_PLANNING_EXECUTION_ROUTE_SCHEMA_VERSION = "2026-03-15.multimodal-intake.checkpoint9"
+
+
+def _classify_multimodal_execution_failure_code(tool_name: str, error_text: str) -> str:
+    normalized_tool = str(tool_name or "").strip().lower()
+    normalized_error = str(error_text or "").strip().lower()
+
+    if not normalized_error:
+        return "operation_failed"
+
+    if "not found" in normalized_error:
+        if "logical volume" in normalized_error:
+            return "invalid_target_logical_volume"
+        if "material" in normalized_error:
+            return "invalid_material_ref"
+        if "define" in normalized_error:
+            return "invalid_target_define"
+
+    if normalized_tool == "manage_logical_volume" and "material" in normalized_error:
+        return "invalid_material_ref"
+
+    return "operation_failed"
+
+
+def _detect_multimodal_execution_postcondition_failure(
+    pm: ProjectManager,
+    *,
+    tool_name: str,
+    arguments: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    normalized_tool = str(tool_name or "").strip().lower()
+    geometry_state = getattr(pm, "current_geometry_state", None)
+
+    if normalized_tool == "manage_logical_volume" and geometry_state is not None:
+        lv_name = str(arguments.get("name") or "").strip()
+        requested_material_ref = arguments.get("material_ref")
+        requested_material_ref = str(requested_material_ref or "").strip()
+
+        if lv_name:
+            target_lv = geometry_state.logical_volumes.get(lv_name)
+            if target_lv is None:
+                return {
+                    "status": "failed",
+                    "status_code": "invalid_target_logical_volume",
+                    "message": f"Logical volume '{lv_name}' was not found during execution.",
+                    "details": {"logical_volume_name": lv_name},
+                }
+
+            if requested_material_ref:
+                applied_material_ref = str(getattr(target_lv, "material_ref", "") or "").strip()
+                if applied_material_ref != requested_material_ref:
+                    return {
+                        "status": "failed",
+                        "status_code": "invalid_material_ref",
+                        "message": "Requested material_ref was not applied to the target logical volume.",
+                        "details": {
+                            "logical_volume_name": lv_name,
+                            "requested_material_ref": requested_material_ref,
+                            "applied_material_ref": applied_material_ref,
+                        },
+                    }
+
+    return None
+
+
+def _build_multimodal_execution_outcome(
+    pm: ProjectManager,
+    *,
+    execution_plan: Dict[str, Any],
+    batch_result: Optional[Dict[str, Any]],
+    execute_requested: bool,
+) -> Dict[str, Any]:
+    geometry_operations_raw = execution_plan.get("geometry_operations") if isinstance(execution_plan, dict) else []
+    geometry_operations = geometry_operations_raw if isinstance(geometry_operations_raw, list) else []
+
+    batch_results_raw = batch_result.get("batch_results") if isinstance(batch_result, dict) else []
+    batch_results = batch_results_raw if isinstance(batch_results_raw, list) else []
+
+    operation_results: List[Dict[str, Any]] = []
+
+    if not execute_requested:
+        for idx, operation in enumerate(geometry_operations):
+            op = operation if isinstance(operation, dict) else {}
+            op_args = op.get("arguments", {}) if isinstance(op.get("arguments"), dict) else {}
+            operation_results.append(
+                {
+                    "operation_index": idx,
+                    "source_operation_id": op.get("source_operation_id"),
+                    "source_operation_type": op.get("source_operation_type"),
+                    "target_region_id": op.get("target_region_id"),
+                    "tool_name": op.get("tool_name"),
+                    "status": "not_executed",
+                    "status_code": "execution_not_requested",
+                    "message": "Execution was not requested for this operation.",
+                    "arguments": op_args,
+                    "raw_result": None,
+                }
+            )
+
+        return {
+            "status": "not_requested",
+            "summary": {
+                "candidate_operation_count": len(geometry_operations),
+                "attempted_operation_count": 0,
+                "applied_operation_count": 0,
+                "failed_operation_count": 0,
+                "not_executed_operation_count": len(geometry_operations),
+                "batch_result_count": 0,
+                "unexpected_batch_result_count": 0,
+            },
+            "operation_results": operation_results,
+            "diagnostics": [],
+        }
+
+    for idx, operation in enumerate(geometry_operations):
+        op = operation if isinstance(operation, dict) else {}
+        tool_name = op.get("tool_name")
+        op_args = op.get("arguments", {}) if isinstance(op.get("arguments"), dict) else {}
+
+        raw_result = batch_results[idx] if idx < len(batch_results) and isinstance(batch_results[idx], dict) else None
+        status = "failed"
+        status_code = "missing_batch_result"
+        message = "No batch result entry was returned for this operation."
+        details = None
+
+        if raw_result is not None:
+            if raw_result.get("success") is True:
+                postcondition_failure = _detect_multimodal_execution_postcondition_failure(
+                    pm,
+                    tool_name=str(tool_name or ""),
+                    arguments=op_args,
+                )
+                if postcondition_failure is None:
+                    status = "applied"
+                    status_code = "applied"
+                    message = str(raw_result.get("message") or "Operation applied.")
+                else:
+                    status = str(postcondition_failure.get("status") or "failed")
+                    status_code = str(postcondition_failure.get("status_code") or "operation_failed")
+                    message = str(postcondition_failure.get("message") or "Operation postcondition check failed.")
+                    details = postcondition_failure.get("details")
+            else:
+                postcondition_failure = _detect_multimodal_execution_postcondition_failure(
+                    pm,
+                    tool_name=str(tool_name or ""),
+                    arguments=op_args,
+                )
+                if postcondition_failure is not None:
+                    status_code = str(postcondition_failure.get("status_code") or "operation_failed")
+                    message = str(postcondition_failure.get("message") or "Operation failed.")
+                    details = postcondition_failure.get("details")
+                else:
+                    error_text = str(raw_result.get("error") or "")
+                    status_code = _classify_multimodal_execution_failure_code(str(tool_name or ""), error_text)
+                    message = error_text or "Operation failed."
+
+        operation_results.append(
+            {
+                "operation_index": idx,
+                "source_operation_id": op.get("source_operation_id"),
+                "source_operation_type": op.get("source_operation_type"),
+                "target_region_id": op.get("target_region_id"),
+                "tool_name": tool_name,
+                "status": status,
+                "status_code": status_code,
+                "message": message,
+                "details": details,
+                "arguments": op_args,
+                "raw_result": raw_result,
+            }
+        )
+
+    unexpected_batch_result_count = max(0, len(batch_results) - len(geometry_operations))
+    diagnostics: List[Dict[str, Any]] = []
+    if unexpected_batch_result_count > 0:
+        diagnostics.append(
+            {
+                "code": "unexpected_batch_result_entries",
+                "severity": "warning",
+                "message": "batch_geometry_update returned more result entries than requested operations.",
+                "details": {
+                    "batch_result_count": len(batch_results),
+                    "operation_count": len(geometry_operations),
+                    "unexpected_batch_result_count": unexpected_batch_result_count,
+                },
+            }
+        )
+
+    attempted_operation_count = len(operation_results)
+    applied_operation_count = sum(1 for item in operation_results if item.get("status") == "applied")
+    failed_operation_count = sum(1 for item in operation_results if item.get("status") == "failed")
+
+    if attempted_operation_count == 0:
+        outcome_status = "no_operations"
+    elif failed_operation_count == 0:
+        outcome_status = "success"
+    elif applied_operation_count == 0:
+        outcome_status = "failed"
+    else:
+        outcome_status = "partial_failure"
+
+    return {
+        "status": outcome_status,
+        "summary": {
+            "candidate_operation_count": len(geometry_operations),
+            "attempted_operation_count": attempted_operation_count,
+            "applied_operation_count": applied_operation_count,
+            "failed_operation_count": failed_operation_count,
+            "not_executed_operation_count": 0,
+            "batch_result_count": len(batch_results),
+            "unexpected_batch_result_count": unexpected_batch_result_count,
+        },
+        "operation_results": operation_results,
+        "diagnostics": diagnostics,
+    }
+
+
+def _build_multimodal_execution_preflight_crosscheck(
+    *,
+    execution_outcome: Dict[str, Any],
+    baseline_preflight_report: Optional[Dict[str, Any]],
+    candidate_preflight_report: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    execution_summary = execution_outcome.get("summary") if isinstance(execution_outcome, dict) else {}
+    if not isinstance(execution_summary, dict):
+        execution_summary = {}
+
+    def _as_non_negative_int(value: Any) -> int:
+        if isinstance(value, bool):
+            parsed = int(value)
+        elif isinstance(value, (int, float)):
+            parsed = int(value)
+        elif isinstance(value, str):
+            try:
+                parsed = int(float(value.strip()))
+            except Exception:
+                parsed = 0
+        else:
+            parsed = 0
+        return max(0, parsed)
+
+    execution_status = str(execution_outcome.get("status") or "").strip() if isinstance(execution_outcome, dict) else ""
+    attempted_operation_count = _as_non_negative_int(execution_summary.get("attempted_operation_count"))
+    applied_operation_count = _as_non_negative_int(execution_summary.get("applied_operation_count"))
+    failed_operation_count = _as_non_negative_int(execution_summary.get("failed_operation_count"))
+
+    baseline_summary = _extract_preflight_summary(baseline_preflight_report)
+    candidate_summary = _extract_preflight_summary(candidate_preflight_report)
+
+    if not isinstance(baseline_summary, dict) or not isinstance(candidate_summary, dict):
+        return {
+            "status": "not_available",
+            "execution_status": execution_status,
+            "invariants": {
+                "attempted_operation_count": attempted_operation_count,
+                "applied_operation_count": applied_operation_count,
+                "failed_operation_count": failed_operation_count,
+            },
+            "mismatch_classes": ["preflight_summary_unavailable"],
+            "diagnostics": [
+                {
+                    "code": "preflight_summary_unavailable",
+                    "severity": "warning",
+                    "message": "Unable to compare multimodal execution against preflight invariants because baseline or candidate summary is missing.",
+                }
+            ],
+            "baseline_preflight_summary": baseline_summary if isinstance(baseline_summary, dict) else None,
+            "candidate_preflight_summary": candidate_summary if isinstance(candidate_summary, dict) else None,
+            "comparison": None,
+        }
+
+    comparison = compare_preflight_summaries(baseline_summary, candidate_summary)
+    comparison_status = comparison.get("status", {}) if isinstance(comparison.get("status"), dict) else {}
+
+    issue_count_delta_raw = comparison.get("issue_count_delta")
+    if isinstance(issue_count_delta_raw, (int, float)):
+        issue_count_delta = int(issue_count_delta_raw)
+    else:
+        issue_count_delta = 0
+
+    regressed_can_run = bool(comparison_status.get("regressed_can_run"))
+    can_run_changed = bool(comparison_status.get("can_run_changed"))
+    fingerprint_changed = bool(comparison_status.get("fingerprint_changed"))
+
+    diagnostics: List[Dict[str, Any]] = []
+
+    if regressed_can_run:
+        diagnostics.append(
+            {
+                "code": "preflight_can_run_regressed",
+                "severity": "error",
+                "message": "Preflight can_run regressed after multimodal execution.",
+                "details": {
+                    "baseline_can_run": comparison.get("baseline", {}).get("can_run"),
+                    "candidate_can_run": comparison.get("candidate", {}).get("can_run"),
+                },
+            }
+        )
+
+    if execution_status == "success":
+        if issue_count_delta > 0:
+            diagnostics.append(
+                {
+                    "code": "preflight_issue_count_regressed_after_success",
+                    "severity": "error",
+                    "message": "Execution reported success but preflight issue count increased.",
+                    "details": {
+                        "issue_count_delta": issue_count_delta,
+                        "added_issue_codes": comparison.get("added_issue_codes", []),
+                        "increased_issue_codes": comparison.get("increased_issue_codes", []),
+                    },
+                }
+            )
+        elif issue_count_delta < 0:
+            diagnostics.append(
+                {
+                    "code": "preflight_issue_count_improved_after_success",
+                    "severity": "info",
+                    "message": "Execution reported success and preflight issue count improved.",
+                    "details": {
+                        "issue_count_delta": issue_count_delta,
+                        "resolved_issue_codes": comparison.get("resolved_issue_codes", []),
+                        "reduced_issue_codes": comparison.get("reduced_issue_codes", []),
+                    },
+                }
+            )
+        elif can_run_changed or fingerprint_changed:
+            diagnostics.append(
+                {
+                    "code": "preflight_fingerprint_changed_after_success",
+                    "severity": "warning",
+                    "message": "Execution reported success but preflight fingerprint/can_run changed with no issue-count delta.",
+                    "details": {
+                        "can_run_changed": can_run_changed,
+                        "fingerprint_changed": fingerprint_changed,
+                    },
+                }
+            )
+        else:
+            diagnostics.append(
+                {
+                    "code": "preflight_invariants_stable_after_success",
+                    "severity": "info",
+                    "message": "Execution reported success and preflight invariants remained stable.",
+                }
+            )
+    elif execution_status == "partial_failure":
+        if issue_count_delta > 0:
+            diagnostics.append(
+                {
+                    "code": "preflight_issue_count_regressed_under_partial_failure",
+                    "severity": "warning",
+                    "message": "Execution reported partial failure and preflight issue count increased.",
+                    "details": {
+                        "issue_count_delta": issue_count_delta,
+                        "added_issue_codes": comparison.get("added_issue_codes", []),
+                        "increased_issue_codes": comparison.get("increased_issue_codes", []),
+                    },
+                }
+            )
+        else:
+            diagnostics.append(
+                {
+                    "code": "preflight_invariants_stable_under_partial_failure",
+                    "severity": "info",
+                    "message": "Execution reported partial failure and preflight invariants remained stable or improved.",
+                    "details": {
+                        "issue_count_delta": issue_count_delta,
+                    },
+                }
+            )
+    elif execution_status == "failed":
+        if applied_operation_count == 0 and (issue_count_delta != 0 or can_run_changed or fingerprint_changed):
+            diagnostics.append(
+                {
+                    "code": "preflight_changed_without_applied_operations",
+                    "severity": "warning",
+                    "message": "Execution failed without applied operations but preflight invariants changed.",
+                    "details": {
+                        "issue_count_delta": issue_count_delta,
+                        "can_run_changed": can_run_changed,
+                        "fingerprint_changed": fingerprint_changed,
+                    },
+                }
+            )
+
+    severity_rank = {"error": 0, "warning": 1, "info": 2}
+    diagnostics.sort(
+        key=lambda item: (
+            severity_rank.get(str(item.get("severity") or "").lower(), 9),
+            str(item.get("code") or ""),
+        )
+    )
+
+    mismatch_classes = sorted(
+        {
+            str(item.get("code") or "")
+            for item in diagnostics
+            if str(item.get("severity") or "").lower() in {"error", "warning"} and str(item.get("code") or "")
+        }
+    )
+
+    if any(str(item.get("severity") or "").lower() == "error" for item in diagnostics):
+        status = "mismatch_error"
+    elif mismatch_classes:
+        status = "mismatch_warning"
+    else:
+        status = "consistent"
+
+    return {
+        "status": status,
+        "execution_status": execution_status,
+        "invariants": {
+            "attempted_operation_count": attempted_operation_count,
+            "applied_operation_count": applied_operation_count,
+            "failed_operation_count": failed_operation_count,
+            "issue_count_delta": issue_count_delta,
+            "can_run_changed": can_run_changed,
+            "regressed_can_run": regressed_can_run,
+            "fingerprint_changed": fingerprint_changed,
+        },
+        "mismatch_classes": mismatch_classes,
+        "diagnostics": diagnostics,
+        "baseline_preflight_summary": baseline_summary,
+        "candidate_preflight_summary": candidate_summary,
+        "comparison": comparison,
+    }
+
+
+def _resolve_multimodal_execution_operation_group(operation_result: Dict[str, Any]) -> Dict[str, str]:
+    source_operation_type = str(operation_result.get("source_operation_type") or "").strip().lower()
+    tool_name = str(operation_result.get("tool_name") or "").strip().lower()
+
+    if source_operation_type == "apply_region_dimension_hint" or tool_name == "manage_define":
+        return {"group_id": "dimension_hints", "label": "Dimension hint mutations"}
+
+    if source_operation_type == "apply_region_material_hint" or tool_name == "manage_logical_volume":
+        return {"group_id": "material_updates", "label": "Material update mutations"}
+
+    return {"group_id": "other_mutations", "label": "Other mutation operations"}
+
+
+def _build_multimodal_execution_operation_groups(execution_outcome: Dict[str, Any]) -> List[Dict[str, Any]]:
+    operation_results_raw = execution_outcome.get("operation_results") if isinstance(execution_outcome, dict) else []
+    operation_results = operation_results_raw if isinstance(operation_results_raw, list) else []
+
+    groups: Dict[str, Dict[str, Any]] = {}
+
+    for operation_result in operation_results:
+        if not isinstance(operation_result, dict):
+            continue
+
+        group_meta = _resolve_multimodal_execution_operation_group(operation_result)
+        group_id = group_meta["group_id"]
+        group_label = group_meta["label"]
+
+        entry = groups.get(group_id)
+        if entry is None:
+            entry = {
+                "group_id": group_id,
+                "label": group_label,
+                "operation_count": 0,
+                "applied_operation_count": 0,
+                "failed_operation_count": 0,
+                "not_executed_operation_count": 0,
+                "operation_indices": [],
+                "_operation_types": set(),
+                "_tool_names": set(),
+                "_status_codes": set(),
+            }
+            groups[group_id] = entry
+
+        entry["operation_count"] += 1
+
+        operation_index = operation_result.get("operation_index")
+        if isinstance(operation_index, int):
+            entry["operation_indices"].append(operation_index)
+
+        source_operation_type = str(operation_result.get("source_operation_type") or "").strip()
+        if source_operation_type:
+            entry["_operation_types"].add(source_operation_type)
+
+        tool_name = str(operation_result.get("tool_name") or "").strip()
+        if tool_name:
+            entry["_tool_names"].add(tool_name)
+
+        status_code = str(operation_result.get("status_code") or "").strip()
+        if status_code:
+            entry["_status_codes"].add(status_code)
+
+        status = str(operation_result.get("status") or "").strip().lower()
+        if status == "applied":
+            entry["applied_operation_count"] += 1
+        elif status == "failed":
+            entry["failed_operation_count"] += 1
+        elif status == "not_executed":
+            entry["not_executed_operation_count"] += 1
+
+    normalized_groups: List[Dict[str, Any]] = []
+    for group_id in sorted(groups.keys()):
+        entry = groups[group_id]
+        normalized_groups.append(
+            {
+                "group_id": entry["group_id"],
+                "label": entry["label"],
+                "operation_count": entry["operation_count"],
+                "applied_operation_count": entry["applied_operation_count"],
+                "failed_operation_count": entry["failed_operation_count"],
+                "not_executed_operation_count": entry["not_executed_operation_count"],
+                "operation_indices": sorted(entry["operation_indices"]),
+                "operation_types": sorted(entry["_operation_types"]),
+                "tool_names": sorted(entry["_tool_names"]),
+                "status_codes": sorted(entry["_status_codes"]),
+            }
+        )
+
+    return normalized_groups
+
+
+_MULTIMODAL_OPERATION_GROUP_LABELS: Dict[str, str] = {
+    "dimension_hints": "Dimension hint mutations",
+    "material_updates": "Material update mutations",
+    "other_mutations": "Other mutation operations",
+}
+
+_MULTIMODAL_ISSUE_CODE_FAMILY_EXACT_HINTS: Dict[str, str] = {
+    "missing_material_reference": "material_updates",
+    "unknown_material_reference": "material_updates",
+    "invalid_replica_instance_count": "dimension_hints",
+    "invalid_replica_width": "dimension_hints",
+    "invalid_replica_direction": "dimension_hints",
+    "invalid_division_axis": "dimension_hints",
+    "invalid_division_partition_bounds": "dimension_hints",
+    "invalid_division_slice_width": "dimension_hints",
+    "invalid_parameterised_ncopies": "dimension_hints",
+    "missing_parameterised_parameters": "dimension_hints",
+    "parameterised_parameter_count_mismatch": "dimension_hints",
+    "non_finite_dimension": "dimension_hints",
+    "non_positive_dimension": "dimension_hints",
+    "tiny_dimension": "dimension_hints",
+    "invalid_radial_bounds": "dimension_hints",
+    "low_facet_count": "dimension_hints",
+    "possible_overlap_aabb": "dimension_hints",
+    "overlap_report_truncated": "dimension_hints",
+    "missing_world_volume_reference": "other_mutations",
+    "unknown_world_volume_reference": "other_mutations",
+    "missing_placement_volume_reference": "other_mutations",
+    "unknown_placement_volume_reference": "other_mutations",
+    "world_volume_referenced_as_child": "other_mutations",
+    "missing_procedural_placement_definition": "other_mutations",
+    "missing_procedural_volume_reference": "other_mutations",
+    "unknown_procedural_volume_reference": "other_mutations",
+    "placement_hierarchy_cycle": "other_mutations",
+    "placement_hierarchy_cycle_report_truncated": "other_mutations",
+    "missing_solid_reference": "other_mutations",
+    "missing_project_state": "other_mutations",
+    "recalculation_failed": "other_mutations",
+}
+
+_MULTIMODAL_ISSUE_CODE_FAMILY_KEYWORD_HINTS: Dict[str, List[str]] = {
+    "material_updates": ["material"],
+    "dimension_hints": [
+        "dimension",
+        "radial",
+        "replica",
+        "division",
+        "parameterised",
+        "facet",
+        "overlap",
+        "slice_width",
+    ],
+    "other_mutations": [
+        "world_volume",
+        "placement",
+        "hierarchy",
+        "cycle",
+        "solid_reference",
+        "procedural",
+        "project_state",
+        "recalculation",
+    ],
+}
+
+
+def _order_multimodal_operation_group_ids(group_ids: List[str]) -> List[str]:
+    ordering = ["dimension_hints", "material_updates", "other_mutations"]
+    rank = {group_id: index for index, group_id in enumerate(ordering)}
+    return sorted(group_ids, key=lambda item: (rank.get(item, 99), item))
+
+
+def _resolve_multimodal_issue_code_family_hints(issue_code: str) -> Dict[str, Any]:
+    normalized_code = str(issue_code or "").strip().lower()
+    if not normalized_code:
+        return {
+            "family_ids": ["other_mutations"],
+            "confidence": "low",
+            "reason_codes": ["missing_issue_code"],
+        }
+
+    exact_match = _MULTIMODAL_ISSUE_CODE_FAMILY_EXACT_HINTS.get(normalized_code)
+    if exact_match:
+        return {
+            "family_ids": [exact_match],
+            "confidence": "high",
+            "reason_codes": ["exact_issue_code_family_match"],
+        }
+
+    matched_families: List[str] = []
+    for family_id, keywords in _MULTIMODAL_ISSUE_CODE_FAMILY_KEYWORD_HINTS.items():
+        if any(keyword in normalized_code for keyword in keywords):
+            matched_families.append(family_id)
+
+    matched_families = _order_multimodal_operation_group_ids(list(dict.fromkeys(matched_families)))
+    if matched_families:
+        return {
+            "family_ids": matched_families,
+            "confidence": "medium",
+            "reason_codes": ["keyword_issue_code_family_match"],
+        }
+
+    return {
+        "family_ids": ["other_mutations"],
+        "confidence": "low",
+        "reason_codes": ["fallback_issue_code_family_other_mutations"],
+    }
+
+
+def _build_multimodal_issue_code_family_correlations(
+    *,
+    issue_code_delta: Dict[str, List[str]],
+    comparison: Dict[str, Any],
+    operation_groups: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not isinstance(issue_code_delta, dict):
+        issue_code_delta = {}
+    if not isinstance(comparison, dict):
+        comparison = {}
+
+    groups_by_id = {
+        str(group.get("group_id") or ""): group
+        for group in operation_groups
+        if isinstance(group, dict) and str(group.get("group_id") or "")
+    }
+
+    executed_group_ids = _order_multimodal_operation_group_ids(
+        [
+            group_id
+            for group_id, group in groups_by_id.items()
+            if int(group.get("operation_count") or 0) > 0
+        ]
+    )
+
+    counts_delta_by_code_raw = comparison.get("counts_delta_by_code")
+    counts_delta_by_code: Dict[str, int] = {}
+    if isinstance(counts_delta_by_code_raw, dict):
+        for issue_code, delta in counts_delta_by_code_raw.items():
+            issue_code_text = str(issue_code or "").strip()
+            if not issue_code_text:
+                continue
+            if isinstance(delta, bool):
+                counts_delta_by_code[issue_code_text] = int(delta)
+            elif isinstance(delta, (int, float)):
+                counts_delta_by_code[issue_code_text] = int(delta)
+            elif isinstance(delta, str):
+                try:
+                    counts_delta_by_code[issue_code_text] = int(float(delta.strip()))
+                except Exception:
+                    continue
+
+    change_kind_specs = [
+        ("added", "added_issue_codes", 1),
+        ("increased", "increased_issue_codes", 1),
+        ("resolved", "resolved_issue_codes", -1),
+        ("reduced", "reduced_issue_codes", -1),
+    ]
+
+    entries: List[Dict[str, Any]] = []
+    confidence_counts = {"high": 0, "medium": 0, "low": 0}
+    with_overlap_count = 0
+
+    for change_kind, delta_key, fallback_delta_sign in change_kind_specs:
+        codes_raw = issue_code_delta.get(delta_key)
+        if not isinstance(codes_raw, list):
+            continue
+
+        codes = sorted({str(item or "").strip() for item in codes_raw if str(item or "").strip()})
+        for issue_code in codes:
+            family_hint = _resolve_multimodal_issue_code_family_hints(issue_code)
+            family_ids = _order_multimodal_operation_group_ids(
+                [
+                    str(group_id or "").strip()
+                    for group_id in family_hint.get("family_ids", [])
+                    if str(group_id or "").strip()
+                ]
+            )
+            if not family_ids:
+                family_ids = ["other_mutations"]
+
+            observed_overlap_ids = [group_id for group_id in family_ids if group_id in executed_group_ids]
+
+            confidence = str(family_hint.get("confidence") or "low").strip().lower()
+            if confidence not in {"high", "medium", "low"}:
+                confidence = "low"
+
+            reason_codes = [
+                str(code or "").strip()
+                for code in family_hint.get("reason_codes", [])
+                if str(code or "").strip()
+            ]
+
+            if observed_overlap_ids:
+                reason_codes.append("overlap_with_executed_operation_groups")
+            elif executed_group_ids:
+                reason_codes.append("no_overlap_with_executed_operation_groups")
+                if confidence == "high":
+                    confidence = "medium"
+                elif confidence == "medium":
+                    confidence = "low"
+            else:
+                reason_codes.append("no_executed_operation_groups_available")
+
+            if confidence in confidence_counts:
+                confidence_counts[confidence] += 1
+
+            if observed_overlap_ids:
+                with_overlap_count += 1
+
+            delta = counts_delta_by_code.get(issue_code)
+            if delta is None:
+                delta = fallback_delta_sign
+
+            likely_families: List[Dict[str, Any]] = []
+            for group_id in family_ids:
+                group = groups_by_id.get(group_id)
+                label = str(
+                    (group or {}).get("label")
+                    or _MULTIMODAL_OPERATION_GROUP_LABELS.get(group_id)
+                    or group_id
+                )
+                likely_families.append(
+                    {
+                        "group_id": group_id,
+                        "label": label,
+                        "observed_in_execution": group_id in executed_group_ids,
+                    }
+                )
+
+            deduped_reason_codes: List[str] = []
+            for code in reason_codes:
+                if code not in deduped_reason_codes:
+                    deduped_reason_codes.append(code)
+
+            entries.append(
+                {
+                    "issue_code": issue_code,
+                    "change_kind": change_kind,
+                    "delta": int(delta),
+                    "confidence": confidence,
+                    "reason_codes": deduped_reason_codes,
+                    "likely_operation_family_ids": [entry["group_id"] for entry in likely_families],
+                    "likely_operation_families": likely_families,
+                    "observed_overlap_operation_family_ids": observed_overlap_ids,
+                }
+            )
+
+    return {
+        "summary": {
+            "changed_issue_code_count": len(entries),
+            "with_observed_overlap_count": with_overlap_count,
+            "without_observed_overlap_count": max(0, len(entries) - with_overlap_count),
+            "confidence_counts": confidence_counts,
+        },
+        "entries": entries,
+    }
+
+
+def _build_multimodal_geant4_parity_report(
+    *,
+    execution_outcome: Dict[str, Any],
+    preflight_crosscheck: Dict[str, Any],
+) -> Dict[str, Any]:
+    operation_groups = _build_multimodal_execution_operation_groups(execution_outcome)
+    operation_groups_by_id = {
+        str(group.get("group_id") or ""): group
+        for group in operation_groups
+        if str(group.get("group_id") or "")
+    }
+
+    execution_status = str(execution_outcome.get("status") or "").strip() if isinstance(execution_outcome, dict) else ""
+    preflight_status = str(preflight_crosscheck.get("status") or "").strip() if isinstance(preflight_crosscheck, dict) else ""
+
+    invariants = preflight_crosscheck.get("invariants") if isinstance(preflight_crosscheck, dict) else {}
+    if not isinstance(invariants, dict):
+        invariants = {}
+
+    issue_count_delta_raw = invariants.get("issue_count_delta")
+    if isinstance(issue_count_delta_raw, bool):
+        issue_count_delta = int(issue_count_delta_raw)
+    elif isinstance(issue_count_delta_raw, (int, float)):
+        issue_count_delta = int(issue_count_delta_raw)
+    elif isinstance(issue_count_delta_raw, str):
+        try:
+            issue_count_delta = int(float(issue_count_delta_raw.strip()))
+        except Exception:
+            issue_count_delta = 0
+    else:
+        issue_count_delta = 0
+
+    regressed_can_run = bool(invariants.get("regressed_can_run"))
+
+    comparison = preflight_crosscheck.get("comparison") if isinstance(preflight_crosscheck, dict) else {}
+    if not isinstance(comparison, dict):
+        comparison = {}
+
+    def _as_sorted_str_list(value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        unique: List[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if text and text not in unique:
+                unique.append(text)
+        return sorted(unique)
+
+    issue_code_delta = {
+        "added_issue_codes": _as_sorted_str_list(comparison.get("added_issue_codes")),
+        "increased_issue_codes": _as_sorted_str_list(comparison.get("increased_issue_codes")),
+        "resolved_issue_codes": _as_sorted_str_list(comparison.get("resolved_issue_codes")),
+        "reduced_issue_codes": _as_sorted_str_list(comparison.get("reduced_issue_codes")),
+    }
+
+    issue_code_family_correlations = _build_multimodal_issue_code_family_correlations(
+        issue_code_delta=issue_code_delta,
+        comparison=comparison,
+        operation_groups=operation_groups,
+    )
+
+    diagnostics_raw = preflight_crosscheck.get("diagnostics") if isinstance(preflight_crosscheck, dict) else []
+    diagnostics = diagnostics_raw if isinstance(diagnostics_raw, list) else []
+
+    high_signal_diagnostics: List[Dict[str, str]] = []
+    seen_mismatch_codes: set[str] = set()
+    for diagnostic in diagnostics:
+        if not isinstance(diagnostic, dict):
+            continue
+        code = str(diagnostic.get("code") or "").strip()
+        severity = str(diagnostic.get("severity") or "").strip().lower()
+        message = str(diagnostic.get("message") or "").strip()
+        if not code or severity not in {"error", "warning"}:
+            continue
+        seen_mismatch_codes.add(code)
+        high_signal_diagnostics.append(
+            {
+                "code": code,
+                "severity": severity,
+                "message": message,
+            }
+        )
+
+    mismatch_classes_raw = preflight_crosscheck.get("mismatch_classes") if isinstance(preflight_crosscheck, dict) else []
+    mismatch_classes = _as_sorted_str_list(mismatch_classes_raw)
+    for mismatch_code in mismatch_classes:
+        if mismatch_code in seen_mismatch_codes:
+            continue
+        inferred_severity = "error" if preflight_status == "mismatch_error" else "warning"
+        high_signal_diagnostics.append(
+            {
+                "code": mismatch_code,
+                "severity": inferred_severity,
+                "message": f"Preflight mismatch class detected: {mismatch_code}.",
+            }
+        )
+
+    def _select_affected_group_ids(mismatch_code: str) -> List[str]:
+        def _sorted_ids_for(predicate) -> List[str]:
+            return sorted(
+                [
+                    str(group.get("group_id") or "")
+                    for group in operation_groups
+                    if str(group.get("group_id") or "") and predicate(group)
+                ]
+            )
+
+        if mismatch_code in {
+            "preflight_can_run_regressed",
+            "preflight_issue_count_regressed_after_success",
+            "preflight_fingerprint_changed_after_success",
+        }:
+            selected = _sorted_ids_for(lambda group: int(group.get("applied_operation_count") or 0) > 0)
+        elif mismatch_code == "preflight_issue_count_regressed_under_partial_failure":
+            selected = _sorted_ids_for(
+                lambda group: int(group.get("applied_operation_count") or 0) > 0
+                or int(group.get("failed_operation_count") or 0) > 0
+            )
+        elif mismatch_code == "preflight_changed_without_applied_operations":
+            selected = _sorted_ids_for(lambda group: int(group.get("failed_operation_count") or 0) > 0)
+        else:
+            selected = _sorted_ids_for(lambda group: int(group.get("operation_count") or 0) > 0)
+
+        if selected:
+            return selected
+
+        return _sorted_ids_for(lambda group: int(group.get("operation_count") or 0) > 0)
+
+    high_signal_mismatches: List[Dict[str, Any]] = []
+    affected_group_ids_union: List[str] = []
+
+    for diagnostic in high_signal_diagnostics:
+        mismatch_code = diagnostic["code"]
+        affected_group_ids = _select_affected_group_ids(mismatch_code)
+        for group_id in affected_group_ids:
+            if group_id not in affected_group_ids_union:
+                affected_group_ids_union.append(group_id)
+
+        affected_groups: List[Dict[str, Any]] = []
+        for group_id in affected_group_ids:
+            group = operation_groups_by_id.get(group_id)
+            if not isinstance(group, dict):
+                continue
+            affected_groups.append(
+                {
+                    "group_id": group.get("group_id"),
+                    "label": group.get("label"),
+                    "operation_count": int(group.get("operation_count") or 0),
+                    "applied_operation_count": int(group.get("applied_operation_count") or 0),
+                    "failed_operation_count": int(group.get("failed_operation_count") or 0),
+                    "status_codes": list(group.get("status_codes") or []),
+                }
+            )
+
+        high_signal_mismatches.append(
+            {
+                "mismatch_class": mismatch_code,
+                "severity": diagnostic["severity"],
+                "message": diagnostic["message"],
+                "affected_operation_groups": affected_groups,
+            }
+        )
+
+    reason_codes: List[str] = []
+    if preflight_status == "mismatch_error":
+        reason_codes.append("preflight_mismatch_error")
+    elif preflight_status == "mismatch_warning":
+        reason_codes.append("preflight_mismatch_warning")
+    elif preflight_status in {"not_available", "not_requested"}:
+        reason_codes.append("preflight_crosscheck_not_available")
+    elif preflight_status == "consistent":
+        reason_codes.append("preflight_invariants_consistent")
+
+    reason_codes.append(f"execution_status_{execution_status or 'unknown'}")
+
+    for mismatch_code in mismatch_classes:
+        if mismatch_code not in reason_codes:
+            reason_codes.append(mismatch_code)
+
+    if preflight_status in {"not_available", "not_requested"}:
+        parity_status = "not_available"
+        confidence_label = "not_available"
+        confidence_score = 0
+    elif preflight_status == "mismatch_error":
+        parity_status = "mismatch_error"
+        confidence_label = "low"
+        confidence_score = 25
+    elif preflight_status == "mismatch_warning":
+        parity_status = "mismatch_warning"
+        confidence_label = "guarded"
+        confidence_score = 55
+    else:
+        parity_status = "compatible"
+        if execution_status == "success":
+            confidence_label = "high"
+            confidence_score = 90
+        elif execution_status == "partial_failure":
+            confidence_label = "guarded"
+            confidence_score = 60
+        elif execution_status == "failed":
+            confidence_label = "low"
+            confidence_score = 30
+        else:
+            confidence_label = "guarded"
+            confidence_score = 50
+
+    high_signal_mismatch_classes = [
+        str(item.get("mismatch_class") or "")
+        for item in high_signal_mismatches
+        if str(item.get("mismatch_class") or "")
+    ]
+
+    return {
+        "status": parity_status,
+        "execution_status": execution_status,
+        "preflight_crosscheck_status": preflight_status,
+        "geant4_compatibility_confidence": {
+            "label": confidence_label,
+            "score": confidence_score,
+            "reason_codes": reason_codes,
+        },
+        "summary": {
+            "operation_group_count": len(operation_groups),
+            "high_signal_mismatch_count": len(high_signal_mismatches),
+            "high_signal_mismatch_classes": high_signal_mismatch_classes,
+            "affected_operation_group_count": len(affected_group_ids_union),
+            "issue_count_delta": issue_count_delta,
+            "regressed_can_run": regressed_can_run,
+        },
+        "issue_code_delta": issue_code_delta,
+        "issue_code_family_correlations": issue_code_family_correlations,
+        "operation_groups": operation_groups,
+        "high_signal_mismatches": high_signal_mismatches,
+    }
+
+
+@app.route('/api/ai/artifacts/<artifact_id>/extraction/review', methods=['POST'])
+def build_ai_artifact_extraction_review_route(artifact_id):
+    pm = get_project_manager_for_session()
+    store = _get_ai_artifact_store_for_session(pm)
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Request body must be a JSON object."}), 400
+
+    extraction_payload = payload.get("extraction")
+    if extraction_payload is None:
+        extraction_payload = payload
+    if not isinstance(extraction_payload, dict):
+        return jsonify({"success": False, "error": "extraction must be a JSON object."}), 400
+
+    review_status = payload.get("review_status")
+    if review_status is None:
+        review_status = payload.get("status", "pending_review")
+
+    try:
+        artifact = store.get_metadata(artifact_id)
+    except AIArtifactValidationError as exc:
+        return jsonify({"success": False, "error": str(exc), "error_code": "artifact_validation_error"}), 400
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"Failed to read AI artifact metadata: {exc}", "error_code": "artifact_metadata_error"}), 500
+
+    if artifact is None:
+        return jsonify({
+            "success": False,
+            "error": f"Artifact not found: {artifact_id}",
+            "error_code": "artifact_not_found",
+        }), 404
+
+    if store.resolve_artifact_path(artifact_id) is None:
+        return jsonify({
+            "success": False,
+            "error": f"Artifact blob file missing for artifact_id: {artifact_id}",
+            "error_code": "artifact_blob_missing",
+        }), 409
+
+    try:
+        normalized_extraction = normalize_extraction_payload(
+            extraction_payload,
+            artifact_metadata=artifact,
+        )
+        review_envelope = build_review_envelope(normalized_extraction, status=str(review_status))
+        return jsonify({
+            "success": True,
+            "schema_version": MULTIMODAL_EXTRACTION_ROUTE_SCHEMA_VERSION,
+            "artifact_schema_version": ARTIFACT_STORE_SCHEMA_VERSION,
+            "extraction_schema_version": MULTIMODAL_EXTRACTION_SCHEMA_VERSION,
+            "review_schema_version": MULTIMODAL_REVIEW_ENVELOPE_SCHEMA_VERSION,
+            "artifact": artifact,
+            "extraction": normalized_extraction,
+            "review_envelope": review_envelope,
+        })
+    except AIMultimodalSchemaValidationError as exc:
+        return jsonify({"success": False, "error": str(exc), "error_code": "extraction_validation_error"}), 400
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"Failed to build extraction/review payloads: {exc}", "error_code": "extraction_pipeline_error"}), 500
+
+
+@app.route('/api/ai/artifacts/<artifact_id>/planning/envelope', methods=['POST'])
+def build_ai_artifact_planning_envelope_route(artifact_id):
+    pm = get_project_manager_for_session()
+    store = _get_ai_artifact_store_for_session(pm)
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Request body must be a JSON object."}), 400
+
+    extraction_payload = payload.get("extraction")
+    if not isinstance(extraction_payload, dict):
+        return jsonify({"success": False, "error": "extraction must be a JSON object."}), 400
+
+    review_envelope_payload = payload.get("review_envelope")
+    if not isinstance(review_envelope_payload, dict):
+        return jsonify({"success": False, "error": "review_envelope must be a JSON object."}), 400
+
+    try:
+        artifact = store.get_metadata(artifact_id)
+    except AIArtifactValidationError as exc:
+        return jsonify({"success": False, "error": str(exc), "error_code": "artifact_validation_error"}), 400
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"Failed to read AI artifact metadata: {exc}", "error_code": "artifact_metadata_error"}), 500
+
+    if artifact is None:
+        return jsonify({
+            "success": False,
+            "error": f"Artifact not found: {artifact_id}",
+            "error_code": "artifact_not_found",
+        }), 404
+
+    if store.resolve_artifact_path(artifact_id) is None:
+        return jsonify({
+            "success": False,
+            "error": f"Artifact blob file missing for artifact_id: {artifact_id}",
+            "error_code": "artifact_blob_missing",
+        }), 409
+
+    try:
+        normalized_extraction = normalize_extraction_payload(
+            extraction_payload,
+            artifact_metadata=artifact,
+        )
+        planning_envelope = build_planning_envelope(
+            normalized_extraction,
+            review_envelope=review_envelope_payload,
+        )
+        return jsonify({
+            "success": True,
+            "schema_version": MULTIMODAL_PLANNING_ROUTE_SCHEMA_VERSION,
+            "artifact_schema_version": ARTIFACT_STORE_SCHEMA_VERSION,
+            "extraction_schema_version": MULTIMODAL_EXTRACTION_SCHEMA_VERSION,
+            "review_schema_version": MULTIMODAL_REVIEW_ENVELOPE_SCHEMA_VERSION,
+            "planning_schema_version": MULTIMODAL_PLANNING_ENVELOPE_SCHEMA_VERSION,
+            "artifact": artifact,
+            "extraction": normalized_extraction,
+            "review_envelope": review_envelope_payload,
+            "planning_envelope": planning_envelope,
+        })
+    except AIMultimodalSchemaValidationError as exc:
+        return jsonify({"success": False, "error": str(exc), "error_code": "planning_validation_error"}), 400
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"Failed to build planning envelope: {exc}", "error_code": "planning_pipeline_error"}), 500
+
+
+@app.route('/api/ai/artifacts/<artifact_id>/planning/execute', methods=['POST'])
+def execute_ai_artifact_planning_route(artifact_id):
+    pm = get_project_manager_for_session()
+    store = _get_ai_artifact_store_for_session(pm)
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Request body must be a JSON object."}), 400
+
+    extraction_payload = payload.get("extraction")
+    if not isinstance(extraction_payload, dict):
+        return jsonify({"success": False, "error": "extraction must be a JSON object."}), 400
+
+    review_envelope_payload = payload.get("review_envelope")
+    if not isinstance(review_envelope_payload, dict):
+        return jsonify({"success": False, "error": "review_envelope must be a JSON object."}), 400
+
+    region_bindings = payload.get("region_bindings")
+    if region_bindings is None:
+        region_bindings = payload.get("bindings", {})
+    if region_bindings is None:
+        region_bindings = {}
+    if not isinstance(region_bindings, dict):
+        return jsonify({"success": False, "error": "region_bindings must be a JSON object."}), 400
+
+    execute_mutations = _coerce_bool(payload.get("execute"), True)
+
+    try:
+        artifact = store.get_metadata(artifact_id)
+    except AIArtifactValidationError as exc:
+        return jsonify({"success": False, "error": str(exc), "error_code": "artifact_validation_error"}), 400
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"Failed to read AI artifact metadata: {exc}", "error_code": "artifact_metadata_error"}), 500
+
+    if artifact is None:
+        return jsonify({
+            "success": False,
+            "error": f"Artifact not found: {artifact_id}",
+            "error_code": "artifact_not_found",
+        }), 404
+
+    if store.resolve_artifact_path(artifact_id) is None:
+        return jsonify({
+            "success": False,
+            "error": f"Artifact blob file missing for artifact_id: {artifact_id}",
+            "error_code": "artifact_blob_missing",
+        }), 409
+
+    try:
+        normalized_extraction = normalize_extraction_payload(
+            extraction_payload,
+            artifact_metadata=artifact,
+        )
+        planning_envelope = build_planning_envelope(
+            normalized_extraction,
+            review_envelope=review_envelope_payload,
+        )
+        execution_plan = build_geometry_execution_plan(
+            planning_envelope,
+            region_bindings=region_bindings,
+        )
+    except AIMultimodalSchemaValidationError as exc:
+        return jsonify({"success": False, "error": str(exc), "error_code": "planning_execution_validation_error"}), 400
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": f"Failed to build planning execution payloads: {exc}", "error_code": "planning_execution_pipeline_error"}), 500
+
+    response_payload = {
+        "schema_version": MULTIMODAL_PLANNING_EXECUTION_ROUTE_SCHEMA_VERSION,
+        "artifact_schema_version": ARTIFACT_STORE_SCHEMA_VERSION,
+        "extraction_schema_version": MULTIMODAL_EXTRACTION_SCHEMA_VERSION,
+        "review_schema_version": MULTIMODAL_REVIEW_ENVELOPE_SCHEMA_VERSION,
+        "planning_schema_version": MULTIMODAL_PLANNING_ENVELOPE_SCHEMA_VERSION,
+        "execution_plan_schema_version": MULTIMODAL_PLANNING_EXECUTION_PLAN_SCHEMA_VERSION,
+        "artifact": artifact,
+        "extraction": normalized_extraction,
+        "review_envelope": review_envelope_payload,
+        "planning_envelope": planning_envelope,
+        "execution_plan": execution_plan,
+    }
+
+    planning_ready = planning_envelope.get("status") == "ready"
+    if execute_mutations and not planning_ready:
+        return jsonify({
+            "success": False,
+            "error": "planning_envelope.status must be 'ready' before mutation execution.",
+            "error_code": "planning_not_ready_for_execution",
+            "execution": {
+                "attempted": False,
+                "execute_requested": True,
+                "planning_status": planning_envelope.get("status"),
+                "execution_plan_status": execution_plan.get("status"),
+            },
+            **response_payload,
+        }), 409
+
+    execution_plan_ready = execution_plan.get("status") == "ready"
+    if execute_mutations and not execution_plan_ready:
+        return jsonify({
+            "success": False,
+            "error": "execution_plan.status is blocked; resolve execution diagnostics before applying mutations.",
+            "error_code": "execution_plan_blocked",
+            "execution": {
+                "attempted": False,
+                "execute_requested": True,
+                "planning_status": planning_envelope.get("status"),
+                "execution_plan_status": execution_plan.get("status"),
+            },
+            **response_payload,
+        }), 409
+
+    batch_operations = [
+        {
+            "tool_name": operation.get("tool_name"),
+            "arguments": operation.get("arguments", {}),
+        }
+        for operation in execution_plan.get("geometry_operations", [])
+    ]
+
+    baseline_preflight_report = None
+    candidate_preflight_report = None
+
+    batch_result = None
+    executed = False
+    if execute_mutations:
+        baseline_preflight_report = pm.run_preflight_checks()
+        batch_result = dispatch_ai_tool(pm, "batch_geometry_update", {"operations": batch_operations})
+        candidate_preflight_report = pm.run_preflight_checks()
+        executed = True
+
+    execution_outcome = _build_multimodal_execution_outcome(
+        pm,
+        execution_plan=execution_plan,
+        batch_result=batch_result,
+        execute_requested=execute_mutations,
+    )
+
+    if execute_mutations:
+        preflight_crosscheck = _build_multimodal_execution_preflight_crosscheck(
+            execution_outcome=execution_outcome,
+            baseline_preflight_report=baseline_preflight_report,
+            candidate_preflight_report=candidate_preflight_report,
+        )
+    else:
+        preflight_crosscheck = {
+            "status": "not_requested",
+            "execution_status": execution_outcome.get("status"),
+            "invariants": {
+                "attempted_operation_count": 0,
+                "applied_operation_count": 0,
+                "failed_operation_count": 0,
+            },
+            "mismatch_classes": [],
+            "diagnostics": [],
+            "baseline_preflight_summary": None,
+            "candidate_preflight_summary": None,
+            "comparison": None,
+        }
+
+    parity_report = _build_multimodal_geant4_parity_report(
+        execution_outcome=execution_outcome,
+        preflight_crosscheck=preflight_crosscheck,
+    )
+
+    return jsonify({
+        "success": True,
+        **response_payload,
+        "execution": {
+            "attempted": execute_mutations,
+            "execute_requested": execute_mutations,
+            "executed": executed,
+            "operation_count": len(batch_operations),
+            "status": execution_outcome.get("status"),
+            "summary": execution_outcome.get("summary"),
+            "operation_results": execution_outcome.get("operation_results"),
+            "diagnostics": execution_outcome.get("diagnostics"),
+            "preflight_crosscheck": preflight_crosscheck,
+            "parity_report": parity_report,
+            "batch_result": batch_result,
+        },
+    })
+
+
+def _infer_local_backend_id_from_model_prefix(model_id: Any) -> Optional[str]:
+    if not isinstance(model_id, str):
+        return None
+
+    normalized_model_id = model_id.strip()
+    if normalized_model_id.startswith("llama_cpp::"):
+        return "llama_cpp"
+    if normalized_model_id.startswith("lm_studio::"):
+        return "lm_studio"
+    return None
+
+
+LOCAL_SELECTOR_REQUIREMENT_TO_CAPABILITY_FLAG: Tuple[Tuple[str, str], ...] = (
+    ("require_tools", "supports_tools"),
+    ("require_json_mode", "supports_json_mode"),
+    ("require_vision", "supports_vision"),
+    ("require_streaming", "supports_streaming"),
+)
+
+
+def _normalize_chat_selector_requirements(
+    selector_requirements: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not isinstance(selector_requirements, dict):
+        return {}
+
+    return {
+        "require_tools": bool(selector_requirements.get("require_tools", False)),
+        "require_json_mode": bool(selector_requirements.get("require_json_mode", False)),
+        "require_vision": bool(selector_requirements.get("require_vision", False)),
+        "require_streaming": bool(selector_requirements.get("require_streaming", False)),
+        "min_context_tokens": _coerce_optional_int(selector_requirements.get("min_context_tokens")),
+    }
+
+
+def _build_chat_backend_contradictions(
+    *,
+    failure_stage: str,
+    readiness: Optional[Dict[str, Any]],
+    effective_capability_overrides: Optional[Dict[str, bool]],
+    selector_requirements: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    readiness_payload = readiness if isinstance(readiness, dict) else {}
+    readiness_status = str(readiness_payload.get("status") or "unknown").lower()
+    readiness_code = str(readiness_payload.get("readiness_code") or "unknown")
+
+    normalized_requirements = _normalize_chat_selector_requirements(selector_requirements)
+    normalized_effective_capabilities = {
+        "supports_tools": bool((effective_capability_overrides or {}).get("supports_tools", False)),
+        "supports_json_mode": bool((effective_capability_overrides or {}).get("supports_json_mode", False)),
+        "supports_vision": bool((effective_capability_overrides or {}).get("supports_vision", False)),
+        "supports_streaming": bool((effective_capability_overrides or {}).get("supports_streaming", False)),
+    }
+
+    contradictions: List[Dict[str, Any]] = []
+
+    if failure_stage == "selector_requirements" and effective_capability_overrides is not None:
+        required_capability_flags: List[str] = []
+        unsatisfied_capability_flags: List[str] = []
+
+        for requirement_key, capability_flag in LOCAL_SELECTOR_REQUIREMENT_TO_CAPABILITY_FLAG:
+            if not normalized_requirements.get(requirement_key, False):
+                continue
+            required_capability_flags.append(capability_flag)
+            if not normalized_effective_capabilities.get(capability_flag, False):
+                unsatisfied_capability_flags.append(capability_flag)
+
+        if unsatisfied_capability_flags:
+            contradictions.append({
+                "code": "selector_requirement_capability_mismatch",
+                "contradiction_class": "selector_contract_mismatch",
+                "summary": "Selector-required capabilities are disabled in effective backend capability overrides.",
+                "details": {
+                    "required_capability_flags": required_capability_flags,
+                    "unsatisfied_capability_flags": unsatisfied_capability_flags,
+                    "effective_capability_overrides": normalized_effective_capabilities,
+                },
+            })
+
+    if failure_stage == "backend_runtime" and readiness_status == "healthy":
+        contradictions.append({
+            "code": "runtime_failure_despite_healthy_readiness",
+            "contradiction_class": "runtime_backend_mismatch",
+            "summary": "Runtime invocation failed even though backend readiness probe reported healthy status.",
+            "details": {
+                "readiness_status": readiness_status,
+                "readiness_code": readiness_code,
+            },
+        })
+
+    return contradictions
+
+
+def _build_chat_backend_remediation(
+    *,
+    failure_stage: str,
+    error_code: str,
+    backend_id: Optional[str],
+    readiness: Optional[Dict[str, Any]],
+    contradictions: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    readiness_status = str((readiness or {}).get("status") or "unknown").lower()
+    backend_label = {
+        "llama_cpp": "llama.cpp",
+        "lm_studio": "LM Studio",
+    }.get(backend_id, backend_id or "local backend")
+
+    contradiction_items = [
+        item for item in (contradictions or [])
+        if isinstance(item, dict)
+    ]
+
+    contradiction_codes: List[str] = []
+    contradiction_classes: List[str] = []
+    for item in contradiction_items:
+        code = str(item.get("code") or "").strip()
+        contradiction_class = str(item.get("contradiction_class") or "").strip()
+        if code and code not in contradiction_codes:
+            contradiction_codes.append(code)
+        if contradiction_class and contradiction_class not in contradiction_classes:
+            contradiction_classes.append(contradiction_class)
+
+    primary_contradiction_class = contradiction_classes[0] if contradiction_classes else None
+
+    action_codes: List[str]
+    actions: List[str]
+    summary: str
+
+    if failure_stage == "selector_validation":
+        summary = "Local model selector is malformed."
+        action_codes = [
+            "use_backend_model_selector_format",
+            "select_nonempty_local_model_name",
+        ]
+        actions = [
+            "Use '<backend>::<model_name>' for local models (for example 'llama_cpp::llama-3.2-local').",
+            "Pick a local model option from the model dropdown so selector fields are auto-filled.",
+        ]
+    elif primary_contradiction_class == "selector_contract_mismatch":
+        summary = "Selector requirements conflict with effective backend capability overrides."
+        action_codes = [
+            "align_selector_requirements_with_effective_capabilities",
+            "update_runtime_capability_overrides_for_selected_backend",
+            "allow_fallback_or_choose_capability_compatible_backend",
+        ]
+        actions = [
+            "Align selector requirements (tools/json/vision/streaming) with the backend's effective capability flags.",
+            "Update runtime capability overrides if the backend actually supports the blocked capability.",
+            "Allow fallback or switch to a backend that satisfies the requested capabilities.",
+        ]
+    elif failure_stage == "selector_requirements":
+        summary = "Selected backend cannot satisfy the requested capabilities."
+        action_codes = [
+            "review_backend_requirements",
+            "allow_backend_fallback",
+            "switch_backend_for_missing_capabilities",
+        ]
+        actions = [
+            "Review backend selector requirements (tools/json/streaming/context) and align them with the selected backend.",
+            "Set allow_fallback=true if automatic fallback to another backend is acceptable.",
+            "If a capability is missing, switch to a backend that supports it (for example Gemini for vision-heavy tasks).",
+        ]
+    elif primary_contradiction_class == "runtime_backend_mismatch":
+        summary = f"{backend_label} failed at runtime despite a healthy readiness probe."
+        action_codes = [
+            "capture_runtime_backend_request_context",
+            "inspect_backend_runtime_logs",
+            "reprobe_backend_after_runtime_failure",
+        ]
+        actions = [
+            "Capture the failing runtime request payload and response metadata for this backend.",
+            "Inspect local backend logs for model-runtime errors (model load, tool-call parsing, or context overflow).",
+            "Re-run backend diagnostics immediately after the failure to detect transient readiness drift.",
+        ]
+    else:
+        if readiness_status == "timeout":
+            summary = f"{backend_label} timed out before completing the request."
+            action_codes = [
+                "increase_backend_timeout",
+                "retry_after_backend_idle",
+                "verify_local_host_resources",
+            ]
+            actions = [
+                "Increase local backend timeout_seconds or reduce prompt size.",
+                "Retry after the local model server is idle.",
+                "Verify local CPU/RAM load is not saturating model inference.",
+            ]
+        elif readiness_status == "unreachable":
+            summary = f"{backend_label} is unreachable from AIRPET."
+            action_codes = [
+                "start_local_backend_service",
+                "verify_backend_base_url_and_port",
+                "verify_models_endpoint_reachable",
+            ]
+            actions = [
+                "Start the local backend service (llama.cpp server or LM Studio local server).",
+                "Verify backend base_url and port match the running service.",
+                "Confirm '<base_url>/v1/models' is reachable from this machine.",
+            ]
+        elif readiness_status == "misconfigured":
+            summary = f"{backend_label} is reachable but misconfigured for OpenAI-compatible chat."
+            action_codes = [
+                "fix_backend_configuration",
+                "set_valid_local_model_name",
+                "validate_openai_compatible_models_payload",
+            ]
+            actions = [
+                "Fix backend runtime_config (base_url, endpoint_path, auth headers if required).",
+                "Set a valid model id exposed by '/v1/models'.",
+                "Validate that '/v1/models' returns an OpenAI-compatible payload shape.",
+            ]
+        else:
+            summary = f"{backend_label} failed at runtime after selector resolution."
+            action_codes = [
+                "retry_request",
+                "inspect_backend_logs",
+                "refresh_backend_diagnostics",
+            ]
+            actions = [
+                "Retry the request once to rule out transient local failures.",
+                "Inspect local backend logs for request/response errors.",
+                "Refresh backend diagnostics to confirm current readiness state.",
+            ]
+
+    return {
+        "schema_version": LOCAL_BACKEND_DIAGNOSTICS_SCHEMA_VERSION,
+        "failure_stage": failure_stage,
+        "error_code": error_code,
+        "backend_id": backend_id,
+        "readiness_status": readiness_status,
+        "summary": summary,
+        "action_codes": action_codes,
+        "actions": actions,
+        "primary_contradiction_class": primary_contradiction_class,
+        "contradiction_classes": contradiction_classes,
+        "contradiction_codes": contradiction_codes,
+    }
+
+
+def _build_chat_backend_diagnostics(
+    *,
+    failure_stage: str,
+    error_code: str,
+    backend_id: Optional[str] = None,
+    runtime_config: Optional[Dict[str, Any]] = None,
+    session_runtime_config: Optional[Dict[str, Any]] = None,
+    request_runtime_config: Optional[Dict[str, Any]] = None,
+    selector_requirements: Optional[Dict[str, Any]] = None,
+    message: Optional[str] = None,
+) -> Dict[str, Any]:
+    stage_to_error_class = {
+        "selector_validation": "selector_input_validation",
+        "selector_requirements": "selector_requirement_mismatch",
+        "backend_runtime": "backend_runtime_failure",
+    }
+
+    diagnostics: Dict[str, Any] = {
+        "schema_version": LOCAL_BACKEND_DIAGNOSTICS_SCHEMA_VERSION,
+        "failure_stage": failure_stage,
+        "error_class": stage_to_error_class.get(failure_stage, "backend_diagnostics_error"),
+        "error_code": error_code,
+        "backend_id": backend_id,
+    }
+
+    if message:
+        diagnostics["message"] = message
+
+    runtime_profile = _build_backend_runtime_profile_usage(
+        str(backend_id or ""),
+        session_runtime_config=session_runtime_config,
+        request_runtime_config=request_runtime_config,
+    )
+    diagnostics["runtime_profile"] = runtime_profile
+
+    local_backend_ids = {"llama_cpp", "lm_studio"}
+    effective_capability_overrides = _resolve_effective_local_capability_overrides(
+        backend_id,
+        runtime_config=runtime_config,
+    )
+
+    if backend_id in local_backend_ids:
+        readiness_raw = build_local_backend_readiness_diagnostic(
+            backend_id,
+            runtime_config=runtime_config,
+            session_runtime_config=session_runtime_config,
+            request_runtime_config=request_runtime_config,
+        )
+        readiness = dict(readiness_raw) if isinstance(readiness_raw, dict) else {}
+        readiness.setdefault("schema_version", LOCAL_BACKEND_DIAGNOSTICS_SCHEMA_VERSION)
+        readiness.setdefault("backend_id", backend_id)
+        readiness.setdefault("runtime_profile", runtime_profile)
+    else:
+        readiness = {
+            "schema_version": LOCAL_BACKEND_DIAGNOSTICS_SCHEMA_VERSION,
+            "status": "misconfigured",
+            "readiness_code": "readiness_not_applicable",
+            "ready": False,
+            "message": "Readiness probe is only available for local text-first backends.",
+            "backend_id": backend_id,
+        }
+
+    readiness.setdefault("runtime_profile", runtime_profile)
+
+    if effective_capability_overrides is not None:
+        readiness["effective_capability_overrides"] = effective_capability_overrides
+        diagnostics["effective_capability_overrides"] = effective_capability_overrides
+
+    normalized_selector_requirements = _normalize_chat_selector_requirements(selector_requirements)
+    if normalized_selector_requirements:
+        diagnostics["selector_requirements"] = normalized_selector_requirements
+
+    contradictions = _build_chat_backend_contradictions(
+        failure_stage=failure_stage,
+        readiness=readiness,
+        effective_capability_overrides=effective_capability_overrides,
+        selector_requirements=normalized_selector_requirements,
+    )
+
+    diagnostics["readiness"] = readiness
+    diagnostics["contradictions"] = contradictions
+    diagnostics["remediation"] = _build_chat_backend_remediation(
+        failure_stage=failure_stage,
+        error_code=error_code,
+        backend_id=backend_id,
+        readiness=readiness,
+        contradictions=contradictions,
+    )
+
+    return diagnostics
+
+
+def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_selection_payload, selector_runtime_config, selector_session_runtime_config, selector_request_runtime_config, selector_requirements, use_local_text_adapter, is_gemini, chat_extra_payload, client_instance=None):
+    """Generator function for streaming AI chat progress via SSE."""
+    import time
+    
+    context_summary = pm.get_summarized_context()
+    formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nUser Message: {user_message}"
+
+    if use_local_text_adapter:
+        selected_backend_id = backend_selection_payload.get("resolved_backend_id") if backend_selection_payload else None
+        
+        pm.chat_history.append({
+            "role": "user",
+            "content": formatted_user_msg,
+            "metadata": {
+                "model_id": model_id,
+                "original_message": user_message,
+                "resolved_backend_id": selected_backend_id,
+            },
+        })
+
+        pm.begin_transaction()
+
+        try:
+            require_tools = bool((selector_requirements or {}).get("require_tools", False))
+            require_json_mode = bool((selector_requirements or {}).get("require_json_mode", True))
+            require_streaming = bool((selector_requirements or {}).get("require_streaming", False))
+            min_context_tokens = _coerce_optional_int((selector_requirements or {}).get("min_context_tokens"))
+
+            local_messages = _build_local_adapter_message_history(pm.chat_history)
+            if not local_messages:
+                local_messages = [
+                    TextMessage(role="system", content=load_system_prompt()),
+                    TextMessage(role="user", content=formatted_user_msg),
+                ]
+
+            openai_tool_schemas = tuple(_build_openai_tool_schema_from_ai_tools())
+            use_native_tool_loop = bool(selected_backend_id == "llama_cpp")
+            effective_require_tools = bool(require_tools or use_native_tool_loop)
+
+            job_id = None
+            version_id = None
+            last_execution_payload = {
+                "backend_id": selected_backend_id,
+                "model": None,
+                "usage": None,
+            }
+
+            for turn in range(turn_limit):
+                print(f"\n=== Stream Turn {turn + 1}/{turn_limit} ===", flush=True)
+                yield f"data: {json.dumps({'type': 'turn_start', 'turn': turn + 1, 'turn_limit': turn_limit})}\n\n"
+                
+                invocation_request = TextGenerationRequest(
+                    messages=tuple(local_messages),
+                    require_tools=effective_require_tools,
+                    require_json_mode=require_json_mode,
+                    require_streaming=require_streaming,
+                    min_context_tokens=min_context_tokens,
+                    tool_schemas=openai_tool_schemas if effective_require_tools else None,
+                    tool_choice="auto" if effective_require_tools else None,
+                )
+
+                adapter_response = invoke_text_request_for_backend(
+                    selected_backend_id,
+                    invocation_request,
+                    runtime_config=selector_runtime_config,
+                )
+
+                last_execution_payload = {
+                    "backend_id": adapter_response.backend_id,
+                    "model": adapter_response.model,
+                    "usage": adapter_response.usage,
+                }
+
+                assistant_payload = _extract_openai_assistant_payload(
+                    adapter_response.raw_response,
+                    fallback_text=adapter_response.text,
+                )
+                assistant_text = assistant_payload.get("content") or adapter_response.text or ""
+                parsed_tool_calls = assistant_payload.get("tool_calls") or []
+
+                if not parsed_tool_calls and isinstance(adapter_response.tool_calls, list):
+                    parsed_tool_calls = _normalize_tool_calls_payload(adapter_response.tool_calls)
+
+                executable_tool_calls = _build_executable_tool_calls(parsed_tool_calls, turn)
+                assistant_openai_tool_calls = _to_openai_tool_calls(executable_tool_calls, id_prefix=f"turn_{turn}")
+
+                tool_names = [tc.get("name") for tc in executable_tool_calls if tc.get("name")]
+                if tool_names:
+                    print(f"  Stream Tool Calls: {tool_names}", flush=True)
+                    yield f"data: {json.dumps({'type': 'tool_calls', 'turn': turn + 1, 'tools': tool_names})}\n\n"
+                    time.sleep(1.5)
+
+                assistant_history_entry = {
+                    "role": "assistant",
+                    "content": assistant_text,
+                    "metadata": {
+                        "resolved_backend_id": adapter_response.backend_id,
+                        "provider_model": adapter_response.model,
+                        "_intermediate": True,  # Mark as intermediate turn (not final response)
+                    },
+                }
+                if assistant_openai_tool_calls:
+                    assistant_history_entry["tool_calls"] = assistant_openai_tool_calls
+
+                pm.chat_history.append(assistant_history_entry)
+                local_messages.append(
+                    TextMessage(
+                        role="assistant",
+                        content=assistant_text,
+                        tool_calls=tuple(assistant_openai_tool_calls) if assistant_openai_tool_calls else None,
+                    )
+                )
+
+                if backend_selection_payload is not None:
+                    backend_selection_payload["execution_mode"] = "local_text_adapter"
+                    backend_selection_payload["resolved_model"] = adapter_response.model
+
+                if not executable_tool_calls:
+                    final_text = assistant_text or adapter_response.text or "Done."
+                    local_extra_payload = dict(chat_extra_payload or {})
+                    local_extra_payload["backend_execution"] = last_execution_payload
+
+                    pm.end_transaction(f"AI: {user_message[:50]}")
+                    print(f"  Stream Complete", flush=True)
+                    
+                    complete_payload = {
+                        'type': 'complete',
+                        'message': final_text,
+                        'extra_payload': local_extra_payload,
+                        'job_id': job_id,
+                        'version_id': version_id or pm.current_version_id,
+                        'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True),
+                        'scene_update': pm.get_threejs_description(),
+                        'response_type': 'full_with_exclusions',
+                        'project_name': pm.project_name,
+                        'success': True,
+                        'history_status': {
+                            'can_undo': pm.history_index > 0,
+                            'can_redo': pm.history_index < len(pm.history) - 1
+                        }
+                    }
+                    yield f"data: {json.dumps(complete_payload)}\n\n"
+                    return
+
+                for tool_call in executable_tool_calls:
+                    tool_name = tool_call.get("name")
+                    if not tool_name:
+                        continue
+
+                    args = tool_call.get("arguments", {})
+                    result = dispatch_ai_tool(pm, tool_name, args)
+
+                    if isinstance(result, dict):
+                        if "job_id" in result:
+                            job_id = result["job_id"]
+                        if "version_id" in result:
+                            version_id = result["version_id"]
+
+                    tool_result_payload = json.dumps(result)
+                    tool_call_id = str(tool_call.get("id") or f"call_{turn}_{tool_name}")
+                    pm.chat_history.append({
+                        "role": "tool",
+                        "name": tool_name,
+                        "content": tool_result_payload,
+                        "tool_call_id": tool_call_id,
+                    })
+                    local_messages.append(
+                        TextMessage(
+                            role="tool",
+                            content=tool_result_payload,
+                            name=tool_name,
+                            tool_call_id=tool_call_id,
+                        )
+                    )
+
+            pm.end_transaction(f"AI: {user_message[:50]}")
+            print(f"  Stream Complete (turn limit)", flush=True)
+            yield f"data: {json.dumps({'type': 'complete', 'message': 'Turn limit reached. Please try a more specific request.', 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id, 'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True), 'scene_update': pm.get_threejs_description(), 'response_type': 'full_with_exclusions', 'project_name': pm.project_name, 'success': True, 'history_status': {'can_undo': pm.history_index > 0, 'can_redo': pm.history_index < len(pm.history) - 1}})}\n\n"
+        except Exception as stream_err:
+            print(f"  Stream Error (local backend): {stream_err}", flush=True)
+            import traceback
+            traceback.print_exc()
+            pm.end_transaction(f"AI Error: {user_message[:50]}")
+
+            err_payload = {
+                "type": "error",
+                "success": False,
+                "message": f"Stream processing error: {str(stream_err)}",
+                "error": f"AI backend invocation failed ({selected_backend_id}): {stream_err}",
+                "backend_diagnostics": _build_chat_backend_diagnostics(
+                    failure_stage="backend_runtime",
+                    error_code="local_backend_invocation_failed",
+                    backend_id=selected_backend_id,
+                    runtime_config=selector_runtime_config,
+                    session_runtime_config=selector_session_runtime_config,
+                    request_runtime_config=selector_request_runtime_config,
+                    selector_requirements=selector_requirements,
+                    message="Local backend invocation failed after selection succeeded.",
+                ),
+            }
+            if backend_selection_payload:
+                backend_selection_payload["execution_mode"] = "local_text_adapter"
+                err_payload["backend_selection"] = backend_selection_payload
+
+            yield f"data: {json.dumps(err_payload)}\n\n"
+        finally:
+            if pm._is_transaction_open:
+                pm.end_transaction(f"AI: {user_message[:50]}")
+
+    elif is_gemini:
+        from google.genai import types
+        
+        if client_instance is None:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Gemini client not configured. Check your API key.'})}\n\n"
+            return
+        
+        if backend_selection_payload is not None:
+            backend_selection_payload["execution_mode"] = "gemini_sdk"
+            backend_selection_payload["resolved_model"] = model_id
+        
+        pm.chat_history.append({
+            "role": "user", 
+            "parts": [{"text": formatted_user_msg}],
+            "metadata": {"model_id": model_id, "original_message": user_message}
+        })
+        
+        pm.begin_transaction()
+        
+        try:
+            sanitized_history = []
+            for msg in pm.chat_history:
+                sanitized_msg = {"role": msg["role"], "parts": msg["parts"]}
+                sanitized_history.append(sanitized_msg)
+            
+            job_id = None
+            version_id = None
+            
+            for turn in range(turn_limit):
+                print(f"\n=== Stream Turn {turn + 1}/{turn_limit} ===", flush=True)
+                yield f"data: {json.dumps({'type': 'turn_start', 'turn': turn + 1, 'turn_limit': turn_limit})}\n\n"
+                
+                time.sleep(1)
+                
+                try:
+                    response = client_instance.models.generate_content(
+                        model=model_id,
+                        contents=sanitized_history,
+                        config=types.GenerateContentConfig(
+                            tools=[{"function_declarations": AI_GEOMETRY_TOOLS}]
+                        )
+                    )
+                except Exception as api_err:
+                    pm.end_transaction("Gemini API Error")
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(api_err)})}\n\n"
+                    return
+                
+                candidates = getattr(response, 'candidates', None) or []
+                candidate = candidates[0] if candidates else None
+                content = getattr(candidate, 'content', None) if candidate else None
+                
+                if content is None:
+                    fallback_text = getattr(response, 'text', None)
+                    if fallback_text:
+                        pm.chat_history.append({"role": "model", "parts": [{"text": fallback_text}]})
+                        pm.end_transaction(f"AI: {user_message[:50]}")
+                        yield f"data: {json.dumps({'type': 'complete', 'message': fallback_text, 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id})}\n\n"
+                        return
+                    raise RuntimeError("Gemini returned an empty candidate content")
+                
+                response_parts = getattr(content, 'parts', None) or []
+                response_role = getattr(content, 'role', None) or 'model'
+                
+                sanitized_history.append(content)
+                
+                assistant_parts = []
+                for p in response_parts:
+                    if getattr(p, 'text', None):
+                        assistant_parts.append({"text": p.text})
+                    if getattr(p, 'function_call', None):
+                        assistant_parts.append({
+                            "function_call": {
+                                "name": p.function_call.name,
+                                "args": p.function_call.args
+                            }
+                        })
+                
+                if not assistant_parts and getattr(response, 'text', None):
+                    assistant_parts = [{"text": response.text}]
+                
+                pm.chat_history.append({
+                    "role": response_role, 
+                    "parts": assistant_parts,
+                    "metadata": {"_intermediate": True}  # Mark as intermediate turn
+                })
+                
+                tool_names = []
+                has_tool_call = False
+                tool_results_parts = []
+                
+                for part in response_parts:
+                    if getattr(part, 'function_call', None):
+                        has_tool_call = True
+                        tool_name = part.function_call.name
+                        args = part.function_call.args
+                        tool_names.append(tool_name)
+                        
+                        print(f"  Stream Tool Calls: {tool_name}", flush=True)
+                        result = dispatch_ai_tool(pm, tool_name, args)
+                        
+                        if "job_id" in result: job_id = result["job_id"]
+                        if "version_id" in result: version_id = result["version_id"]
+                        
+                        tool_results_parts.append(types.Part.from_function_response(
+                            name=tool_name,
+                            response=result
+                        ))
+                
+                if tool_names:
+                    yield f"data: {json.dumps({'type': 'tool_calls', 'turn': turn + 1, 'tools': tool_names})}\n\n"
+                    time.sleep(1.5)
+                
+                if not has_tool_call:
+                    pm.end_transaction(f"AI: {user_message[:50]}")
+                    
+                    final_text = getattr(response, 'text', None)
+                    if not final_text:
+                        text_parts = [p.get('text') for p in assistant_parts if isinstance(p, dict) and p.get('text')]
+                        final_text = "\n".join(text_parts) if text_parts else "Done."
+                    
+                    print(f"  Stream Complete", flush=True)
+                    complete_payload = {
+                        'type': 'complete',
+                        'message': final_text,
+                        'extra_payload': chat_extra_payload,
+                        'job_id': job_id,
+                        'version_id': version_id or pm.current_version_id,
+                        'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True),
+                        'scene_update': pm.get_threejs_description(),
+                        'response_type': 'full_with_exclusions',
+                        'project_name': pm.project_name,
+                        'success': True,
+                        'history_status': {
+                            'can_undo': pm.history_index > 0,
+                            'can_redo': pm.history_index < len(pm.history) - 1
+                        }
+                    }
+                    yield f"data: {json.dumps(complete_payload)}\n\n"
+                    return
+                
+                tool_response_msg = {"role": "function", "parts": tool_results_parts}
+                sanitized_history.append(tool_response_msg)
+                pm.chat_history.append(tool_response_msg)
+            
+            pm.end_transaction(f"AI: {user_message[:50]}")
+            print(f"  Stream Complete (turn limit)", flush=True)
+            yield f"data: {json.dumps({'type': 'complete', 'message': 'Turn limit reached. Please try a more specific request.', 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id, 'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True), 'scene_update': pm.get_threejs_description(), 'response_type': 'full_with_exclusions', 'project_name': pm.project_name, 'success': True, 'history_status': {'can_undo': pm.history_index > 0, 'can_redo': pm.history_index < len(pm.history) - 1}})}\n\n"
+        except Exception as stream_err:
+            print(f"  Stream Error (Gemini): {stream_err}", flush=True)
+            import traceback
+            traceback.print_exc()
+            pm.end_transaction(f"AI Error: {user_message[:50]}")
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Stream processing error: {str(stream_err)}'})}\n\n"
+        finally:
+            if pm._is_transaction_open:
+                pm.end_transaction(f"AI: {user_message[:50]}")
+    else:
+        yield f"data: {json.dumps({'type': 'error', 'message': 'Streaming not supported for this backend'})}\n\n"
+
+
+@app.route('/api/ai/chat/stream', methods=['POST'])
+def ai_chat_stream_route():
+    """Stream AI chat progress via Server-Sent Events."""
+    pm = get_project_manager_for_session()
+    data = request.get_json() or {}
+    user_message = data.get('message')
+    model_id = data.get('model', 'models/gemini-2.0-flash-exp')
+    turn_limit = data.get('turn_limit', 20)  # Increased from 10 to give AI more chances for complex tasks
+
+    if not user_message:
+        return Response(f"data: {json.dumps({'type': 'error', 'message': 'No message provided.'})}\n\n", mimetype='text/event-stream')
+
+    backend_selection_payload = None
+    selector_runtime_config = None
+    selector_session_runtime_config = None
+    selector_request_runtime_config = None
+    selector_requirements = None
+
+    selector_cfg_raw = data.get("backend_selector")
+    if selector_cfg_raw is not None and not isinstance(selector_cfg_raw, dict):
+        return Response(f"data: {json.dumps({'type': 'error', 'message': 'Invalid backend_selector payload.'})}\n\n", mimetype='text/event-stream')
+
+    selector_cfg = selector_cfg_raw if isinstance(selector_cfg_raw, dict) else None
+    selector_inferred_from_model = False
+
+    if selector_cfg is None:
+        inferred_selector_cfg, infer_error = _infer_local_backend_selector_from_model_id(model_id)
+        if inferred_selector_cfg is not None:
+            selector_cfg = inferred_selector_cfg
+            selector_inferred_from_model = True
+
+    if isinstance(selector_cfg, dict):
+        requirements_cfg = selector_cfg.get("requirements")
+        if not isinstance(requirements_cfg, dict):
+            requirements_cfg = {}
+
+        runtime_config_raw = selector_cfg.get("runtime_config")
+        if runtime_config_raw is not None and not isinstance(runtime_config_raw, dict):
+            runtime_config_raw = None
+
+        request_runtime_config = (
+            _normalize_runtime_config_payload(runtime_config_raw)
+            if runtime_config_raw is not None
+            else None
+        )
+        session_runtime_config = _get_session_local_backend_runtime_config()
+        runtime_config = _resolve_effective_runtime_config(request_runtime_config)
+
+        selector_runtime_config = runtime_config
+        selector_session_runtime_config = session_runtime_config
+        selector_request_runtime_config = request_runtime_config
+
+        preferred_backend_id = (
+            selector_cfg.get("preferred_backend_id")
+            if selector_cfg.get("preferred_backend_id") is not None
+            else selector_cfg.get("preferred_backend")
+        )
+        if preferred_backend_id is not None:
+            preferred_backend_id = str(preferred_backend_id)
+
+        allow_fallback = _coerce_bool(selector_cfg.get("allow_fallback"), True)
+
+        text_request = TextGenerationRequest(
+            messages=(TextMessage(role="user", content=str(user_message)),),
+            require_tools=_coerce_bool(requirements_cfg.get("require_tools"), True),
+            require_json_mode=_coerce_bool(requirements_cfg.get("require_json_mode"), True),
+            require_streaming=_coerce_bool(requirements_cfg.get("require_streaming"), False),
+            min_context_tokens=_coerce_optional_int(requirements_cfg.get("min_context_tokens")),
+        )
+
+        requirements_payload = {
+            "require_tools": text_request.require_tools,
+            "require_json_mode": text_request.require_json_mode,
+            "require_streaming": text_request.require_streaming,
+            "min_context_tokens": text_request.min_context_tokens,
+        }
+        selector_requirements = dict(requirements_payload)
+
+        try:
+            selection = select_backend_for_text_request(
+                request=text_request,
+                runtime_config=runtime_config,
+                preferred_backend_id=preferred_backend_id,
+                allow_fallback=allow_fallback,
+            )
+        except ValueError as exc:
+            return Response(f"data: {json.dumps({'type': 'error', 'message': f'AI backend selection failed: {exc}'})}\n\n", mimetype='text/event-stream')
+
+        backend_selection_payload = {
+            "contract_version": ADAPTER_CONTRACT_VERSION,
+            "preferred_backend_id": preferred_backend_id,
+            "allow_fallback": allow_fallback,
+            "requirements": requirements_payload,
+            "resolved_backend_id": selection.backend_id,
+            "resolved_provider_family": selection.spec.provider_family,
+            "resolved_adapter_kind": selection.spec.adapter_kind,
+            "used_fallback": selection.used_fallback,
+            "tried": list(selection.tried),
+            "selector_source": "model_prefix" if selector_inferred_from_model else "request_payload",
+        }
+
+    selected_backend_id = backend_selection_payload.get("resolved_backend_id") if backend_selection_payload else None
+    local_text_backends = {"llama_cpp", "lm_studio"}
+    use_local_text_adapter = selected_backend_id in local_text_backends
+
+    if selected_backend_id == "gemini_remote":
+        is_gemini = True
+    elif selected_backend_id in local_text_backends:
+        is_gemini = False
+    else:
+        is_gemini = model_id.startswith("models/")
+
+    chat_extra_payload = {"backend_selection": backend_selection_payload} if backend_selection_payload else None
+
+    gemini_client = None
+    if is_gemini:
+        gemini_client = get_gemini_client_for_session()
+
+    if not pm.chat_history:
+        system_prompt = load_system_prompt()
+        if is_gemini:
+            pm.chat_history = [
+                {"role": "user", "parts": [{"text": system_prompt}]},
+                {"role": "model", "parts": [{"text": "Understood. I am AIRPET AI, your detector design assistant. I have my tools ready."}]}
+            ]
+        else:
+            pm.chat_history = [
+                {"role": "system", "content": system_prompt},
+                {"role": "assistant", "content": "Understood. I am AIRPET AI, your detector design assistant."}
+            ]
+
+    def generate():
+        yield from _stream_ai_chat_response(
+            pm, user_message, model_id, turn_limit,
+            backend_selection_payload,
+            selector_runtime_config,
+            selector_session_runtime_config,
+            selector_request_runtime_config,
+            selector_requirements,
+            use_local_text_adapter,
+            is_gemini,
+            chat_extra_payload,
+            gemini_client,
+        )
+
+    return Response(generate(), mimetype='text/event-stream')
+
+
 @app.route('/api/ai/chat', methods=['POST'])
 def ai_chat_route():
     pm = get_project_manager_for_session()
-    data = request.get_json()
+    data = request.get_json() or {}
     user_message = data.get('message')
-    model_id = data.get('model', 'models/gemini-2.0-flash-exp') 
-    turn_limit = data.get('turn_limit', 10)
-    
+    model_id = data.get('model', 'models/gemini-2.0-flash-exp')
+    turn_limit = data.get('turn_limit', 20)  # Increased from 10 to give AI more chances for complex tasks
+    print(f"[CHAT] Received turn_limit: {turn_limit}", flush=True, file=sys.stderr)
+
     if not user_message:
         return jsonify({"success": False, "error": "No message provided."}), 400
 
-    # Determine if we are using Gemini or Ollama
-    is_gemini = model_id.startswith("models/")
+    backend_selection_payload = None
+    selector_runtime_config = None
+    selector_session_runtime_config = None
+    selector_request_runtime_config = None
+    selector_requirements = None
+
+    selector_cfg_raw = data.get("backend_selector")
+    if selector_cfg_raw is not None and not isinstance(selector_cfg_raw, dict):
+        return jsonify({
+            "success": False,
+            "error": "Invalid backend_selector payload. Expected an object.",
+            "backend_diagnostics": _build_chat_backend_diagnostics(
+                failure_stage="selector_validation",
+                error_code="invalid_backend_selector_payload",
+                backend_id=None,
+                message="backend_selector must be a JSON object when provided.",
+            ),
+        }), 400
+
+    selector_cfg = selector_cfg_raw if isinstance(selector_cfg_raw, dict) else None
+    selector_inferred_from_model = False
+
+    if selector_cfg is None:
+        inferred_selector_cfg, infer_error = _infer_local_backend_selector_from_model_id(model_id)
+        if infer_error:
+            inferred_backend_id = _infer_local_backend_id_from_model_prefix(model_id)
+            return jsonify({
+                "success": False,
+                "error": infer_error,
+                "backend_diagnostics": _build_chat_backend_diagnostics(
+                    failure_stage="selector_validation",
+                    error_code="invalid_local_model_selector",
+                    backend_id=inferred_backend_id,
+                    message="Local model prefixes must follow '<backend>::<model_name>'.",
+                ),
+            }), 400
+        if inferred_selector_cfg is not None:
+            selector_cfg = inferred_selector_cfg
+            selector_inferred_from_model = True
+
+    if isinstance(selector_cfg, dict):
+        requirements_cfg = selector_cfg.get("requirements")
+        if not isinstance(requirements_cfg, dict):
+            requirements_cfg = {}
+
+        runtime_config_raw = selector_cfg.get("runtime_config")
+        if runtime_config_raw is not None and not isinstance(runtime_config_raw, dict):
+            runtime_config_raw = None
+
+        request_runtime_config = (
+            _normalize_runtime_config_payload(runtime_config_raw)
+            if runtime_config_raw is not None
+            else None
+        )
+        session_runtime_config = _get_session_local_backend_runtime_config()
+        runtime_config = _resolve_effective_runtime_config(request_runtime_config)
+
+        selector_runtime_config = runtime_config
+        selector_session_runtime_config = session_runtime_config
+        selector_request_runtime_config = request_runtime_config
+
+        preferred_backend_id = (
+            selector_cfg.get("preferred_backend_id")
+            if selector_cfg.get("preferred_backend_id") is not None
+            else selector_cfg.get("preferred_backend")
+        )
+        if preferred_backend_id is not None:
+            preferred_backend_id = str(preferred_backend_id)
+
+        allow_fallback = _coerce_bool(selector_cfg.get("allow_fallback"), True)
+
+        text_request = TextGenerationRequest(
+            messages=(TextMessage(role="user", content=str(user_message)),),
+            require_tools=_coerce_bool(requirements_cfg.get("require_tools"), True),
+            require_json_mode=_coerce_bool(requirements_cfg.get("require_json_mode"), True),
+            require_streaming=_coerce_bool(requirements_cfg.get("require_streaming"), False),
+            min_context_tokens=_coerce_optional_int(requirements_cfg.get("min_context_tokens")),
+        )
+
+        requirements_payload = {
+            "require_tools": text_request.require_tools,
+            "require_json_mode": text_request.require_json_mode,
+            "require_streaming": text_request.require_streaming,
+            "min_context_tokens": text_request.min_context_tokens,
+        }
+        selector_requirements = dict(requirements_payload)
+
+        try:
+            selection = select_backend_for_text_request(
+                request=text_request,
+                runtime_config=runtime_config,
+                preferred_backend_id=preferred_backend_id,
+                allow_fallback=allow_fallback,
+            )
+        except ValueError as exc:
+            return jsonify({
+                "success": False,
+                "error": f"AI backend selection failed: {exc}",
+                "backend_selection": {
+                    "contract_version": ADAPTER_CONTRACT_VERSION,
+                    "preferred_backend_id": preferred_backend_id,
+                    "allow_fallback": allow_fallback,
+                    "requirements": requirements_payload,
+                    "selection_error": str(exc),
+                },
+                "backend_diagnostics": _build_chat_backend_diagnostics(
+                    failure_stage="selector_requirements",
+                    error_code="backend_selection_failed",
+                    backend_id=preferred_backend_id if preferred_backend_id in {"llama_cpp", "lm_studio"} else None,
+                    runtime_config=runtime_config,
+                    session_runtime_config=selector_session_runtime_config,
+                    request_runtime_config=selector_request_runtime_config,
+                    selector_requirements=requirements_payload,
+                    message="Backend selector requirements could not be satisfied by the preferred backend configuration.",
+                ),
+            }), 400
+
+        backend_selection_payload = {
+            "contract_version": ADAPTER_CONTRACT_VERSION,
+            "preferred_backend_id": preferred_backend_id,
+            "allow_fallback": allow_fallback,
+            "requirements": requirements_payload,
+            "resolved_backend_id": selection.backend_id,
+            "resolved_provider_family": selection.spec.provider_family,
+            "resolved_adapter_kind": selection.spec.adapter_kind,
+            "used_fallback": selection.used_fallback,
+            "tried": list(selection.tried),
+            "selector_source": "model_prefix" if selector_inferred_from_model else "request_payload",
+        }
+
+    selected_backend_id = backend_selection_payload.get("resolved_backend_id") if backend_selection_payload else None
+    local_text_backends = {"llama_cpp", "lm_studio"}
+    use_local_text_adapter = selected_backend_id in local_text_backends
+
+    # Determine if we are using Gemini or Ollama. If selector is present, its
+    # resolved backend wins over model-id heuristics.
+    if selected_backend_id == "gemini_remote":
+        is_gemini = True
+    elif selected_backend_id in local_text_backends:
+        is_gemini = False
+    else:
+        is_gemini = model_id.startswith("models/")
+
+    chat_extra_payload = {"backend_selection": backend_selection_payload} if backend_selection_payload else None
 
     # Initialize chat history if empty
     if not pm.chat_history:
@@ -4549,10 +13718,206 @@ def ai_chat_route():
     context_summary = pm.get_summarized_context()
     formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nUser Message: {user_message}"
 
+    if use_local_text_adapter:
+        pm.chat_history.append({
+            "role": "user",
+            "content": formatted_user_msg,
+            "metadata": {
+                "model_id": model_id,
+                "original_message": user_message,
+                "resolved_backend_id": selected_backend_id,
+            },
+        })
+
+        pm.begin_transaction()
+
+        try:
+            require_tools = bool((selector_requirements or {}).get("require_tools", False))
+            require_json_mode = bool((selector_requirements or {}).get("require_json_mode", True))
+            require_streaming = bool((selector_requirements or {}).get("require_streaming", False))
+            min_context_tokens = _coerce_optional_int((selector_requirements or {}).get("min_context_tokens"))
+
+            # Mirror the working local flow from feature/llama-lmstudio-ui:
+            # keep full sanitized history (assistant tool_calls + tool tool_call_id)
+            # so llama.cpp can continue native function-calling turns reliably.
+            local_messages = _build_local_adapter_message_history(pm.chat_history)
+            if not local_messages:
+                local_messages = [
+                    TextMessage(role="system", content=load_system_prompt()),
+                    TextMessage(role="user", content=formatted_user_msg),
+                ]
+
+            openai_tool_schemas: Tuple[Dict[str, Any], ...] = tuple(_build_openai_tool_schema_from_ai_tools())
+            use_native_tool_loop = bool(selected_backend_id == "llama_cpp")
+            effective_require_tools = bool(require_tools or use_native_tool_loop)
+
+            job_id = None
+            version_id = None
+            last_execution_payload = {
+                "backend_id": selected_backend_id,
+                "model": None,
+                "usage": None,
+            }
+
+            for turn in range(turn_limit):
+                print(f"\n=== Turn {turn + 1}/{turn_limit} ===", flush=True)
+                print(f"  Messages: {len(local_messages)}, Tools: {effective_require_tools}", flush=True)
+                invocation_request = TextGenerationRequest(
+                    messages=tuple(local_messages),
+                    require_tools=effective_require_tools,
+                    require_json_mode=require_json_mode,
+                    require_streaming=require_streaming,
+                    min_context_tokens=min_context_tokens,
+                    tool_schemas=openai_tool_schemas if effective_require_tools else None,
+                    tool_choice="auto" if effective_require_tools else None,
+                )
+
+                print(f"  Calling llama.cpp...", flush=True)
+                import json
+                print(f"  Tool schemas being sent: {len(openai_tool_schemas)} tools", flush=True)
+                if turn == 0:
+                    for ts in openai_tool_schemas[:1]:  # Just log first tool as sample
+                        print(f"    Sample tool: {ts.get('name')} with {len(ts.get('function', {}).get('parameters', {}).get('properties', {}))} params", flush=True)
+                adapter_response = invoke_text_request_for_backend(
+                    selected_backend_id,
+                    invocation_request,
+                    runtime_config=selector_runtime_config,
+                )
+
+                last_execution_payload = {
+                    "backend_id": adapter_response.backend_id,
+                    "model": adapter_response.model,
+                    "usage": adapter_response.usage,
+                }
+
+                assistant_payload = _extract_openai_assistant_payload(
+                    adapter_response.raw_response,
+                    fallback_text=adapter_response.text,
+                )
+                assistant_text = assistant_payload.get("content") or adapter_response.text or ""
+                parsed_tool_calls = assistant_payload.get("tool_calls") or []
+
+                # Prefer native tool_calls from backend response when present.
+                if not parsed_tool_calls and isinstance(adapter_response.tool_calls, list):
+                    parsed_tool_calls = _normalize_tool_calls_payload(adapter_response.tool_calls)
+
+                print(f"  Parsed {len(parsed_tool_calls)} tool calls", flush=True)
+                for tc in parsed_tool_calls:
+                    print(f"    Tool call: {tc.get('name')} args: {json.dumps(tc.get('arguments'))[:200]}", flush=True)
+
+                executable_tool_calls = _build_executable_tool_calls(parsed_tool_calls, turn)
+                print(f"  Executable tool calls: {len(executable_tool_calls)}", flush=True)
+                assistant_openai_tool_calls = _to_openai_tool_calls(executable_tool_calls, id_prefix=f"turn_{turn}")
+
+                assistant_history_entry: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": assistant_text,
+                    "metadata": {
+                        "resolved_backend_id": adapter_response.backend_id,
+                        "provider_model": adapter_response.model,
+                        "_intermediate": True,  # Mark as intermediate turn (not final response)
+                    },
+                }
+                if assistant_openai_tool_calls:
+                    assistant_history_entry["tool_calls"] = assistant_openai_tool_calls
+
+                pm.chat_history.append(assistant_history_entry)
+                local_messages.append(
+                    TextMessage(
+                        role="assistant",
+                        content=assistant_text,
+                        tool_calls=tuple(assistant_openai_tool_calls) if assistant_openai_tool_calls else None,
+                    )
+                )
+
+                if backend_selection_payload is not None:
+                    backend_selection_payload["execution_mode"] = "local_text_adapter"
+                    backend_selection_payload["resolved_model"] = adapter_response.model
+
+                if not executable_tool_calls:
+                    final_text = assistant_text or adapter_response.text or "Done."
+                    local_extra_payload = dict(chat_extra_payload or {})
+                    local_extra_payload["backend_execution"] = last_execution_payload
+
+                    pm.end_transaction(f"AI: {user_message[:50]}")
+                    res_obj = create_success_response(pm, final_text, extra_payload=local_extra_payload)
+                    if job_id:
+                        res_json = res_obj.get_json()
+                        res_json['job_id'] = job_id
+                        res_json['version_id'] = version_id or pm.current_version_id
+                        return jsonify(res_json)
+                    return res_obj
+
+                for tool_call in executable_tool_calls:
+                    tool_name = tool_call.get("name")
+                    if not tool_name:
+                        continue
+
+                    args = tool_call.get("arguments", {})
+                    print(f"Local Adapter AI Calling Tool: {tool_name}")
+                    result = dispatch_ai_tool(pm, tool_name, args)
+
+                    if isinstance(result, dict):
+                        if "job_id" in result:
+                            job_id = result["job_id"]
+                        if "version_id" in result:
+                            version_id = result["version_id"]
+
+                    tool_result_payload = json.dumps(result)
+                    tool_call_id = str(tool_call.get("id") or f"call_{turn}_{tool_name}")
+                    pm.chat_history.append({
+                        "role": "tool",
+                        "name": tool_name,
+                        "content": tool_result_payload,
+                        "tool_call_id": tool_call_id,
+                    })
+                    local_messages.append(
+                        TextMessage(
+                            role="tool",
+                            content=tool_result_payload,
+                            tool_call_id=tool_call_id,
+                            name=tool_name,
+                        )
+                    )
+
+            pm.end_transaction("AI Timeout")
+            timeout_extra_payload = dict(chat_extra_payload or {})
+            timeout_extra_payload["backend_execution"] = last_execution_payload
+            return create_success_response(pm, "Too many tool iterations (local adapter).", extra_payload=timeout_extra_payload)
+
+        except Exception as e:
+            pm.end_transaction("AI Error")
+            traceback.print_exc()
+            err_payload = {
+                "success": False,
+                "error": f"AI backend invocation failed ({selected_backend_id}): {e}",
+                "backend_diagnostics": _build_chat_backend_diagnostics(
+                    failure_stage="backend_runtime",
+                    error_code="local_backend_invocation_failed",
+                    backend_id=selected_backend_id,
+                    runtime_config=selector_runtime_config,
+                    session_runtime_config=selector_session_runtime_config,
+                    request_runtime_config=selector_request_runtime_config,
+                    selector_requirements=selector_requirements,
+                    message="Local backend invocation failed after selection succeeded.",
+                ),
+            }
+            if backend_selection_payload:
+                backend_selection_payload["execution_mode"] = "local_text_adapter"
+                err_payload["backend_selection"] = backend_selection_payload
+            return jsonify(err_payload), 502
+
     if is_gemini:
+        if backend_selection_payload is not None:
+            backend_selection_payload["execution_mode"] = "gemini_sdk"
+            backend_selection_payload["resolved_model"] = model_id
+
         client_instance = get_gemini_client_for_session()
         if not client_instance:
-            return jsonify({"success": False, "error": "Gemini client not configured. Check your API key."}), 500
+            err_payload = {"success": False, "error": "Gemini client not configured. Check your API key."}
+            if backend_selection_payload:
+                err_payload["backend_selection"] = backend_selection_payload
+            return jsonify(err_payload), 500
 
         pm.chat_history.append({
             "role": "user", 
@@ -4607,7 +13972,7 @@ def ai_chat_route():
                             "parts": [{"text": fallback_text}]
                         })
                         pm.end_transaction(f"AI: {user_message[:50]}")
-                        return create_success_response(pm, fallback_text)
+                        return create_success_response(pm, fallback_text, extra_payload=chat_extra_payload)
 
                     raise RuntimeError(
                         "Gemini returned an empty candidate content (possibly filtered/empty output). "
@@ -4672,7 +14037,7 @@ def ai_chat_route():
                         text_parts = [p.get('text') for p in assistant_parts if isinstance(p, dict) and p.get('text')]
                         final_text = "\n".join(text_parts) if text_parts else "Done."
                     
-                    res_obj = create_success_response(pm, final_text)
+                    res_obj = create_success_response(pm, final_text, extra_payload=chat_extra_payload)
                     # Re-inject captured job metadata into the final response
                     if job_id:
                         res_json = res_obj.get_json()
@@ -4690,7 +14055,7 @@ def ai_chat_route():
                 })
 
             pm.end_transaction("AI Timeout")
-            return create_success_response(pm, "Too many tool iterations.")
+            return create_success_response(pm, "Too many tool iterations.", extra_payload=chat_extra_payload)
 
         except Exception as e:
             pm.end_transaction("AI Error")
@@ -4700,9 +14065,16 @@ def ai_chat_route():
             if "429" in err_msg or "ResourceExhausted" in err_msg or "Quota" in err_msg:
                 err_msg = f"AI Rate Limit Exceeded (429): {err_msg}. Please wait a moment before trying again."
                 status_code = 429
-            return jsonify({"success": False, "error": err_msg}), status_code
+            err_payload = {"success": False, "error": err_msg}
+            if backend_selection_payload:
+                err_payload["backend_selection"] = backend_selection_payload
+            return jsonify(err_payload), status_code
 
     else: # Ollama Path
+        if backend_selection_payload is not None:
+            backend_selection_payload["execution_mode"] = "ollama_legacy"
+            backend_selection_payload["resolved_model"] = model_id
+
         pm.chat_history.append({
             "role": "user", 
             "content": formatted_user_msg,
@@ -4790,6 +14162,7 @@ def ai_chat_route():
                 assistant_msg = {
                     "role": getattr(raw_assistant_msg, 'role', 'assistant'),
                     "content": getattr(raw_assistant_msg, 'content', ""),
+                    "metadata": {"_intermediate": True},  # Mark as intermediate turn
                 }
                 if hasattr(raw_assistant_msg, 'tool_calls') and raw_assistant_msg.tool_calls:
                     assistant_msg["tool_calls"] = [
@@ -4807,7 +14180,7 @@ def ai_chat_route():
                 
                 if not assistant_msg.get('tool_calls'):
                     pm.end_transaction(f"AI: {user_message[:50]}")
-                    return create_success_response(pm, assistant_msg['content'])
+                    return create_success_response(pm, assistant_msg['content'], extra_payload=chat_extra_payload)
 
                 # Process tool calls
                 for tool_call in assistant_msg['tool_calls']:
@@ -4828,7 +14201,7 @@ def ai_chat_route():
                     pm.chat_history.append(tool_res)
             
             pm.end_transaction("AI Timeout")
-            return create_success_response(pm, "Too many tool iterations (Ollama).")
+            return create_success_response(pm, "Too many tool iterations (Ollama).", extra_payload=chat_extra_payload)
 
         except Exception as e:
             pm.end_transaction("AI Error")
@@ -4838,7 +14211,10 @@ def ai_chat_route():
             if "429" in err_msg:
                 err_msg = f"Local AI Overloaded (429): {err_msg}."
                 status_code = 429
-            return jsonify({"success": False, "error": err_msg}), status_code
+            err_payload = {"success": False, "error": err_msg}
+            if backend_selection_payload:
+                err_payload["backend_selection"] = backend_selection_payload
+            return jsonify(err_payload), status_code
 
 @app.route('/api/ai/history', methods=['GET'])
 def get_ai_history():
@@ -4903,6 +14279,22 @@ def get_ai_context_stats():
                         break
             except Exception:
                 pass
+    elif model_id.startswith('llama_cpp::'):
+        context_source = "llama_cpp"
+        try:
+            runtime_model = model_id.split('::', 1)[1]
+            if runtime_model:
+                max_context_tokens = 16_384
+        except Exception:
+            pass
+    elif model_id.startswith('lm_studio::'):
+        context_source = "lm_studio"
+        try:
+            runtime_model = model_id.split('::', 1)[1]
+            if runtime_model:
+                max_context_tokens = 32_768
+        except Exception:
+            pass
     elif model_id and model_id != '--export--':
         context_source = "ollama"
         # Try to read Ollama context length from local model metadata.
@@ -5091,9 +14483,13 @@ def import_step_with_options_route():
         
     try:
         # We need a new method in ProjectManager to handle this
-        success, error_msg = pm.import_step_with_options(file, options)
+        success, error_msg, import_report = pm.import_step_with_options(file, options)
         if success:
-            return create_success_response(pm, "STEP file imported successfully.")
+            return create_success_response(
+                pm,
+                "STEP file imported successfully.",
+                extra_payload={"step_import_report": import_report}
+            )
         else:
             return jsonify({"success": False, "error": error_msg or "Failed to process STEP file."}), 500
             
