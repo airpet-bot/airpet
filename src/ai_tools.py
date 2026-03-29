@@ -356,14 +356,14 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "manage_material",
-        "description": "Create or update a material or element. For compound materials, use components array with element names as ref values (e.g., 'nickel', 'oxygen'). Elements will be auto-created if they don't exist.",
+        "description": "Create or update a material or element. Prefer built-in Geant4/NIST materials when available (for silicon use 'G4_Si'). For compound materials, use components array with element names as ref values (e.g., 'nickel', 'oxygen'). Elements will be auto-created if they don't exist. For custom elemental materials, use plain numeric A/Z values or supported expressions like density='2.33*g/cm3'.",
         "parameters": {
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
-                "density": {"type": "string", "description": "Density expression in g/cm3"},
-                "Z": {"type": "string", "description": "Atomic number expression"},
-                "A": {"type": "string", "description": "Atomic mass expression"},
+                "density": {"type": "string", "description": "Density expression, e.g. '2.33*g/cm3' or '2.33'."},
+                "Z": {"type": "string", "description": "Atomic number expression, e.g. '14'."},
+                "A": {"type": "string", "description": "Atomic mass expression, e.g. '28.085'. Avoid inventing unsupported unit symbols."},
                 "state": {"type": "string", "description": "Material state: 'solid' (default), 'liquid', or 'gas'."},
                 "components": {
                     "type": "array",
@@ -424,7 +424,7 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "manage_logical_volume",
-        "description": "Create or update a logical volume (binds a solid to a material and sets visual appearance).",
+        "description": "Create or update a logical volume (binds a solid to a material and sets visual appearance). If the LV should record deposited-energy hits, explicitly set is_sensitive=true. When updating an existing LV, omitting is_sensitive preserves the current value.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1143,14 +1143,14 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "manage_particle_source",
-        "description": "Create or update a particle source (GPS commands, transform, activity, confinement). All gps_commands values must be strings with units. Energy format: use '100*keV' or '1*GeV' (with * operator). Defaults: particle='gamma', ang/type='Direction' (not 'Isotropic').",
+        "description": "Low-level GPS tool for creating or editing particle sources directly. Prefer configure_incident_beam for simple monoenergetic beams aimed at a target volume. All gps_commands values must be strings with units. Energy format: use '100*keV' or '1*GeV' (with * operator). Geant4 angular modes are ang/type='beam1d' for directed beams and ang/type='iso' for isotropic emission; friendly aliases like 'Direction' and 'Isotropic' are normalized. Geant4 particle names prefer 'e-' and 'e+'; common aliases like 'electron'/'positron' are normalized.",
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["create", "update", "update_transform"]},
                 "source_id": {"type": "string", "description": "Required for update/update_transform."},
                 "name": {"type": "string"},
-                "gps_commands": {"type": "object", "description": "GPS commands as key-value pairs. ALL values must be strings. Use energy format '100*keV' or '1*GeV'. Examples: {'particle': 'gamma', 'energy': '511*keV', 'pos/type': 'Point', 'ang/type': 'Direction', 'ang/dir1': '0 0 1'}. Common particles: gamma, electron, positron, proton. Direction modes: 'Direction' (specify ang/dir1 vector) or 'Isotropic'."},
+                "gps_commands": {"type": "object", "description": "GPS commands as key-value pairs. ALL values must be strings. Use energy format '100*keV' or '1*GeV'. Examples: {'particle': 'e-', 'energy': '10*keV', 'pos/type': 'Point', 'ang/type': 'beam1d', 'ang/dir1': '0 0 1'}. Common particles: gamma, e-, e+, proton. Use ang/type='beam1d' for directed beams and ang/type='iso' for isotropic emission. Friendly aliases like distribution/direction/electron are normalized."},
                 "position": {"type": "object"},
                 "rotation": {"type": "object"},
                 "activity": {"type": "number"},
@@ -1158,6 +1158,26 @@ AI_GEOMETRY_TOOLS = [
                 "volume_link_id": {"type": "string"}
             },
             "required": ["action"]
+        }
+    },
+    {
+        "name": "configure_incident_beam",
+        "description": "Create or update a monoenergetic directed beam aimed at the center of a target volume. Prefer this over raw GPS commands for requests like '10 keV electron incident on a 10 micrometer silicon slab'. The target may be a physical-volume id/name or a logical-volume name if that LV has exactly one placement. By default this also marks the target logical volume sensitive so deposited-energy hits will be recorded.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Target physical volume id/name, or logical volume name if uniquely placed."},
+                "source_name": {"type": "string", "description": "Optional source name; defaults to 'incident_beam'."},
+                "particle": {"type": "string", "description": "Beam particle, e.g. 'e-', 'gamma', 'proton'. Common aliases like 'electron' are normalized."},
+                "energy": {"type": "string", "description": "Beam energy, e.g. '10*keV'."},
+                "incident_axis": {"type": "string", "enum": ["+x", "-x", "+y", "-y", "+z", "-z"], "description": "Beam travel direction in the target's local coordinates."},
+                "offset": {"type": "string", "description": "Upstream distance from the target surface to the source point, e.g. '1*mm'."},
+                "activity": {"type": "number", "description": "Relative source activity/intensity."},
+                "mark_target_sensitive": {"type": "boolean", "description": "If true, mark the target logical volume sensitive so hits are recorded. Defaults to true."},
+                "activate": {"type": "boolean", "description": "If true, activate the configured beam source."},
+                "exclusive_activation": {"type": "boolean", "description": "If true, make this the only active source."}
+            },
+            "required": ["target", "particle", "energy"]
         }
     },
     {

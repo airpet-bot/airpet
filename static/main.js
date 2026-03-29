@@ -22,6 +22,10 @@ import * as ParameterRegistryEditor from './parameterRegistryEditor.js';
 import * as ParamStudyEditor from './paramStudyEditor.js';
 import * as UIManager from './uiManager.js';
 import * as AIAssistant from './aiAssistant.js';
+import {
+    getNormalizedGpsDirectionVector,
+    isDirectedGpsAngularType,
+} from './gpsAngularMode.js';
 
 // --- Global Application State (Keep this minimal) ---
 const AppState = {
@@ -52,6 +56,7 @@ const AppState = {
         seed1: 0,
         seed2: 0,
         print_progress: 1000,
+        hit_energy_threshold: "1 eV",
         save_hits: true,
         save_particles: false,
         save_tracks_range: "0-99", // Default to saving the first 100 tracks
@@ -192,6 +197,8 @@ async function initializeApp() {
         onSwitchProject: handleSwitchProject,
         onLoadVersionClicked: handleLoadVersion,
         onRenameVersion: handleRenameVersion,
+        onDeleteVersion: handleDeleteVersion,
+        onDeleteHistorySelection: handleDeleteHistorySelection,
         // Add/edit solids
         onAddSolidClicked: handleAddSolid,
         onEditSolidClicked: handleEditSolid,
@@ -268,6 +275,7 @@ async function initializeApp() {
         // Run/version loading
         onLoadVersionClicked: handleLoadVersion,
         onLoadRunResults: handleLoadRunResults,
+        onDeleteRun: handleDeleteRun,
         // Reconstruction
         onReconModalOpen: handleOpenReconstructionModal,
         onRunReconstruction: handleRunReconstruction,
@@ -518,8 +526,17 @@ async function initializeApp() {
 
     // Initialize AI Assistant
     AIAssistant.init({
-        onGeometryUpdate: (result) => {
-            syncUIWithState(result);
+        onGeometryUpdate: async (result) => {
+            let canonicalResult = null;
+            if (result?.project_state || result?.scene_update) {
+                try {
+                    canonicalResult = await APIService.getProjectState();
+                } catch (refreshError) {
+                    console.warn("[AI] Canonical project refresh failed after streamed update:", refreshError);
+                }
+            }
+
+            syncUIWithState((canonicalResult && canonicalResult.success) ? canonicalResult : result);
 
             // --- Handle AI-triggered simulation ---
             if (result.job_id) {
@@ -1126,15 +1143,31 @@ async function handleRedo() {
 async function handleShowHistory() {
     //UIManager.showLoading("Fetching history...");
     try {
-        const result = await APIService.getProjectHistory(AppState.currentProjectName);
-        if (result.success) {
-            UIManager.populateHistoryPanel(result.history, AppState.currentProjectName);
-            UIManager.showHistoryPanel();
-        } else {
-            UIManager.showError(result.error);
-        }
+        await refreshHistoryPanel(AppState.currentProjectName);
+        UIManager.showHistoryPanel();
     } catch (error) { UIManager.showError(error.message); }
     //finally { UIManager.hideLoading(); }
+}
+
+async function refreshHistoryPanel(projectName = AppState.currentProjectName) {
+    const result = await APIService.getProjectHistory(projectName);
+    if (!result.success) {
+        throw new Error(result.error || 'Failed to fetch project history.');
+    }
+    UIManager.populateHistoryPanel(result.history, projectName);
+    return result.history;
+}
+
+function clearLoadedSimulationRunState() {
+    AppState.lastSimVersionId = null;
+    AppState.lastSimJobId = null;
+    UIManager.clearSimStatusDisplay();
+    UIManager.setReconModalButtonEnabled(false);
+    UIManager.setDownloadButtonEnabled(false);
+    UIManager.setReconstructionButtonEnabled(false);
+    UIManager.setLorStatus("No simulation run loaded.", false);
+    UIManager.clearAnalysisCharts();
+    SceneManager.clearTracks();
 }
 
 async function handleLoadVersion(projectName, versionId) {
@@ -1153,14 +1186,34 @@ async function handleRenameVersion(projectName, versionId, newDescription) {
     try {
         const result = await APIService.renameVersion(projectName, versionId, newDescription);
         if (result.success) {
-            const refreshed = await APIService.getProjectHistory(projectName);
-            if (refreshed.success) {
-                UIManager.populateHistoryPanel(refreshed.history, projectName);
-            }
+            await refreshHistoryPanel(projectName);
             UIManager.showTemporaryStatus("Version renamed");
         }
     } catch (error) {
         UIManager.showError("Failed to rename version: " + error.message);
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleDeleteVersion(projectName, versionId, versionDescription, runCount = 0) {
+    const runText = `${runCount} simulation run${runCount === 1 ? '' : 's'}`;
+    const confirmMessage = `Delete version "${versionDescription}" and its ${runText}? This cannot be undone.`;
+    if (!UIManager.confirmAction(confirmMessage)) return;
+
+    UIManager.showLoading("Deleting version...");
+    try {
+        const result = await APIService.deleteVersion(projectName, versionId);
+        if (!result.success) throw new Error(result.error || 'Failed to delete version.');
+
+        if (AppState.lastSimVersionId === versionId) {
+            clearLoadedSimulationRunState();
+        }
+
+        await refreshHistoryPanel(projectName);
+        UIManager.showTemporaryStatus(result.message || 'Version deleted');
+    } catch (error) {
+        UIManager.showError("Failed to delete version: " + error.message);
     } finally {
         UIManager.hideLoading();
     }
@@ -1213,6 +1266,102 @@ async function handleLoadRunResults(versionId, jobId) {
 
     } catch (error) {
         UIManager.showError(`Failed to load run results: ${error.message}`);
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleDeleteRun(projectName, versionId, jobId, versionDescription) {
+    const confirmMessage = `Delete run ${jobId.substring(0, 8)}... from version "${versionDescription}"? This cannot be undone.`;
+    if (!UIManager.confirmAction(confirmMessage)) return;
+
+    UIManager.showLoading(`Deleting run ${jobId.substring(0, 8)}...`);
+    try {
+        const result = await APIService.deleteSimulationRun(projectName, versionId, jobId);
+        if (!result.success) throw new Error(result.error || 'Failed to delete simulation run.');
+
+        if (AppState.lastSimVersionId === versionId && AppState.lastSimJobId === jobId) {
+            clearLoadedSimulationRunState();
+        }
+
+        await refreshHistoryPanel(projectName);
+        UIManager.showTemporaryStatus(result.message || 'Simulation run deleted');
+    } catch (error) {
+        UIManager.showError("Failed to delete simulation run: " + error.message);
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleDeleteHistorySelection(projectName, selection) {
+    const versionIds = [...new Set((selection?.versionIds || []).filter(Boolean))];
+    const versionIdSet = new Set(versionIds);
+    const runs = [...new Map(
+        (selection?.runs || [])
+            .filter(item => item && item.versionId && item.runId)
+            .filter(item => !versionIdSet.has(item.versionId))
+            .map(item => [`${item.versionId}::${item.runId}`, item])
+    ).values()];
+
+    const versionCount = versionIds.length;
+    const runCount = runs.length;
+    if (versionCount === 0 && runCount === 0) return;
+
+    const parts = [];
+    if (versionCount > 0) parts.push(`${versionCount} version${versionCount === 1 ? '' : 's'}`);
+    if (runCount > 0) parts.push(`${runCount} run${runCount === 1 ? '' : 's'}`);
+
+    const confirmMessage = `Delete ${parts.join(' and ')}? This cannot be undone.`;
+    if (!UIManager.confirmAction(confirmMessage)) return;
+
+    UIManager.showLoading("Deleting selected history items...");
+    try {
+        let deletedVersionCount = 0;
+        let deletedRunCount = 0;
+        let deletedLoadedRun = false;
+        const errors = [];
+
+        for (const versionId of versionIds) {
+            try {
+                const result = await APIService.deleteVersion(projectName, versionId);
+                if (!result.success) throw new Error(result.error || 'Failed to delete version.');
+                deletedVersionCount += 1;
+                if (AppState.lastSimVersionId === versionId) {
+                    deletedLoadedRun = true;
+                }
+            } catch (error) {
+                errors.push(`version ${versionId}: ${error.message}`);
+            }
+        }
+
+        for (const run of runs) {
+            try {
+                const result = await APIService.deleteSimulationRun(projectName, run.versionId, run.runId);
+                if (!result.success) throw new Error(result.error || 'Failed to delete simulation run.');
+                deletedRunCount += 1;
+                if (AppState.lastSimVersionId === run.versionId && AppState.lastSimJobId === run.runId) {
+                    deletedLoadedRun = true;
+                }
+            } catch (error) {
+                errors.push(`run ${run.runId}: ${error.message}`);
+            }
+        }
+
+        if (deletedLoadedRun) {
+            clearLoadedSimulationRunState();
+        }
+
+        UIManager.setHistorySelectionMode(false);
+        await refreshHistoryPanel(projectName);
+
+        const successMessage = `Deleted ${deletedVersionCount} version(s) and ${deletedRunCount} run(s).`;
+        if (errors.length > 0) {
+            UIManager.showError(`${successMessage} Some items could not be deleted: ${errors.join('; ')}`);
+        } else {
+            UIManager.showTemporaryStatus(successMessage);
+        }
+    } catch (error) {
+        UIManager.showError("Failed to delete selected history items: " + error.message);
     } finally {
         UIManager.hideLoading();
     }
@@ -1609,12 +1758,19 @@ async function handleTransformEnd(transformedObject) {
 
     if (transformedObject.userData.is_source) {
         // --- It's a particle source ---
-        const sourceId = transformedObject.userData.id;
+        const sourceData = transformedObject.userData || {};
+        const sourceId = sourceData.id;
         const newPosition = {
             x: transformedObject.position.x,
             y: transformedObject.position.y,
             z: transformedObject.position.z,
         };
+
+        const gpsCommands = sourceData.gps_commands || {};
+        const shapeType = gpsCommands['pos/type'] || 'Point';
+        const isDirectedPointBeam = shapeType === 'Point' && isDirectedGpsAngularType(gpsCommands['ang/type']);
+
+        const fmt = (value) => `${Number(value).toFixed(8).replace(/\.?0+$/, '') || '0'}`;
 
         // --- GET ROTATION FROM GIZMO ---
         // The gizmo gives a quaternion, we need to convert it to ZYX Euler angles in radians.
@@ -1626,7 +1782,35 @@ async function handleTransformEnd(transformedObject) {
         };
 
         try {
-            const result = await APIService.updateSourceTransform(sourceId, newPosition, newRotation);
+            let result;
+            if (isDirectedPointBeam) {
+                const currentDir = getNormalizedGpsDirectionVector(gpsCommands['ang/dir1'], { x: 0, y: 0, z: 1 });
+                const dirVec = new THREE.Vector3(currentDir.x, currentDir.y, currentDir.z)
+                    .applyQuaternion(transformedObject.quaternion.clone());
+                if (dirVec.lengthSq() <= 1e-12) {
+                    dirVec.set(0, 0, 1);
+                } else {
+                    dirVec.normalize();
+                }
+
+                const updatedGpsCommands = {
+                    ...gpsCommands,
+                    'ang/dir1': `${fmt(dirVec.x)} ${fmt(dirVec.y)} ${fmt(dirVec.z)}`,
+                };
+
+                result = await APIService.updateParticleSource(
+                    sourceId,
+                    sourceData.name,
+                    updatedGpsCommands,
+                    newPosition,
+                    { x: '0', y: '0', z: '0' },
+                    sourceData.activity,
+                    sourceData.confine_to_pv,
+                    sourceData.volume_link_id
+                );
+            } else {
+                result = await APIService.updateSourceTransform(sourceId, newPosition, newRotation);
+            }
             syncUIWithState(result, AppState.selectedHierarchyItems);
         } catch (error) {
             UIManager.showError("Error updating source transform: " + error.message);

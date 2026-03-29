@@ -52,6 +52,8 @@ let inspectorContentDiv;
 
 // Project, history and undo/redo
 let projectNameDisplay, historyButton, historyPanel, closeHistoryPanel, historyListContainer,
+    historySelectModeButton, historySelectionBar, historySelectionSummary,
+    historyDeleteSelectedButton, historyCancelSelectionButton,
     undoButton, redoButton, projectNameWrapper, projectListDropdown;
 
 // Button for adding PVs
@@ -72,13 +74,20 @@ let lastSelectedItem = null; // Stores the DOM element of the last clicked item
 // AI backend readiness diagnostics cache (keyed by backend id)
 let aiBackendDiagnosticsById = {};
 
+let historySelectionMode = false;
+let historySelectedVersionIds = new Set();
+let historySelectedRunKeys = new Set();
+let historyExpandedVersionIds = new Set();
+let historyLastEntries = [];
+let historyLastProjectName = '';
+
 // Number of items per group for lists
 const ITEMS_PER_GROUP = 100;
 
 // Simulation control variables
 let simEventsInput, runSimButton, stopSimButton, preflightButton, simOptionsButton, simConsole,
     simStatusDisplay, simOptionsModal, saveSimOptionsButton, simThreadsInput, simSeed1Input, simSeed2Input,
-    simSaveHitsCheckbox, simSaveParticlesCheckbox, simSaveTracksRangeInput, simPrintProgressInput,
+    simSaveHitsCheckbox, simHitEnergyThresholdInput, simSaveParticlesCheckbox, simSaveTracksRangeInput, simPrintProgressInput,
     drawTracksCheckbox, drawTracksRangeInput,
     simPhysicsListSelect, simOpticalPhysicsCheckbox,
     preflightPanel, preflightSummaryLine, preflightScopeLine, preflightDeltaLine, preflightScopeHintLine,
@@ -126,7 +135,11 @@ let callbacks = {
     onHistoryButtonClicked: () => { },
     onProjectRenamed: (newName) => { },
     onLoadVersionClicked: () => { },
+    onLoadRunResults: () => { },
     onRenameVersion: (projectName, versionId, newDescription) => { },
+    onDeleteVersion: (projectName, versionId, versionDescription, runCount) => { },
+    onDeleteRun: (projectName, versionId, runId, versionDescription) => { },
+    onDeleteHistorySelection: (projectName, selection) => { },
     onEditSolidClicked: (solidData) => { },
     onAddDefineClicked: () => { },
     onEditDefineClicked: (defineData) => { },
@@ -232,6 +245,11 @@ export function initUI(cb) {
     historyPanel = document.getElementById('history_panel');
     closeHistoryPanel = document.getElementById('closeHistoryPanel');
     historyListContainer = document.getElementById('history_list_container');
+    historySelectModeButton = document.getElementById('historySelectModeButton');
+    historySelectionBar = document.getElementById('history_selection_bar');
+    historySelectionSummary = document.getElementById('history_selection_summary');
+    historyDeleteSelectedButton = document.getElementById('historyDeleteSelectedButton');
+    historyCancelSelectionButton = document.getElementById('historyCancelSelectionButton');
     undoButton = document.getElementById('undoButton');
     redoButton = document.getElementById('redoButton');
 
@@ -318,6 +336,7 @@ export function initUI(cb) {
     simSeed1Input = document.getElementById('simSeed1');
     simSeed2Input = document.getElementById('simSeed2');
     simSaveHitsCheckbox = document.getElementById('simSaveHits');
+    simHitEnergyThresholdInput = document.getElementById('simHitEnergyThreshold');
     simSaveParticlesCheckbox = document.getElementById('simSaveParticles');
     simSaveTracksRangeInput = document.getElementById('simSaveTracksRange');
     drawTracksCheckbox = document.getElementById('drawTracksCheckbox');
@@ -490,6 +509,21 @@ export function initUI(cb) {
     // Project history and undo/redo listeners
     historyButton.addEventListener('click', callbacks.onHistoryButtonClicked);
     closeHistoryPanel.addEventListener('click', hideHistoryPanel);
+    if (historySelectModeButton) {
+        historySelectModeButton.addEventListener('click', () => {
+            setHistorySelectionMode(!historySelectionMode);
+        });
+    }
+    if (historyDeleteSelectedButton) {
+        historyDeleteSelectedButton.addEventListener('click', () => {
+            callbacks.onDeleteHistorySelection(historyLastProjectName, getHistorySelectionPayload());
+        });
+    }
+    if (historyCancelSelectionButton) {
+        historyCancelSelectionButton.addEventListener('click', () => {
+            setHistorySelectionMode(false);
+        });
+    }
     undoButton.addEventListener('click', callbacks.onUndoClicked);
     redoButton.addEventListener('click', callbacks.onRedoClicked);
     projectNameDisplay.addEventListener('keydown', (event) => {
@@ -828,22 +862,150 @@ export function updateUndoRedoButtons(historyStatus) {
 
 export function showHistoryPanel() {
     historyPanel.style.display = 'flex';
+    refreshHistorySelectionUi();
 }
 
 export function hideHistoryPanel() {
     historyPanel.style.display = 'none';
+    setHistorySelectionMode(false);
+}
+
+function makeHistoryRunSelectionKey(versionId, runId) {
+    return `${encodeURIComponent(versionId)}::${encodeURIComponent(runId)}`;
+}
+
+function parseHistoryRunSelectionKey(key) {
+    const [versionId = '', runId = ''] = String(key || '').split('::');
+    return {
+        versionId: decodeURIComponent(versionId),
+        runId: decodeURIComponent(runId),
+    };
+}
+
+function getHistoryRunSelectionKeysForVersion(version) {
+    if (!version || !Array.isArray(version.runs)) return [];
+    return version.runs.map(runId => makeHistoryRunSelectionKey(version.id, runId));
+}
+
+function renderCachedHistoryPanel() {
+    populateHistoryPanel(historyLastEntries, historyLastProjectName);
+}
+
+function getHistorySelectionPayload() {
+    return {
+        versionIds: [...historySelectedVersionIds],
+        runs: [...historySelectedRunKeys].map(parseHistoryRunSelectionKey),
+    };
+}
+
+function summarizeHistorySelection() {
+    const versionCount = historySelectedVersionIds.size;
+    const runCount = historySelectedRunKeys.size;
+    const parts = [];
+
+    if (versionCount > 0) {
+        parts.push(`${versionCount} version${versionCount === 1 ? '' : 's'}`);
+    }
+    if (runCount > 0) {
+        parts.push(`${runCount} run${runCount === 1 ? '' : 's'}`);
+    }
+
+    return parts.length > 0 ? `${parts.join(', ')} selected` : 'No items selected';
+}
+
+function pruneHistorySelection(history) {
+    const validAllVersionIds = new Set(
+        (Array.isArray(history) ? history : [])
+            .filter(version => version)
+            .map(version => version.id)
+    );
+    const validVersionIds = new Set(
+        (Array.isArray(history) ? history : [])
+            .filter(version => version && !version.is_autosave)
+            .map(version => version.id)
+    );
+    const validRunKeys = new Set();
+
+    (Array.isArray(history) ? history : []).forEach(version => {
+        if (!version || !Array.isArray(version.runs)) return;
+        version.runs.forEach(runId => {
+            validRunKeys.add(makeHistoryRunSelectionKey(version.id, runId));
+        });
+    });
+
+    historySelectedVersionIds = new Set(
+        [...historySelectedVersionIds].filter(versionId => validVersionIds.has(versionId))
+    );
+    historySelectedRunKeys = new Set(
+        [...historySelectedRunKeys].filter(key => {
+            const { versionId } = parseHistoryRunSelectionKey(key);
+            return validRunKeys.has(key) && !historySelectedVersionIds.has(versionId);
+        })
+    );
+    historyExpandedVersionIds = new Set(
+        [...historyExpandedVersionIds].filter(versionId => validAllVersionIds.has(versionId))
+    );
+}
+
+function refreshHistorySelectionUi() {
+    const hasSelection = historySelectedVersionIds.size > 0 || historySelectedRunKeys.size > 0;
+
+    if (historyPanel) {
+        historyPanel.classList.toggle('history-selection-mode', historySelectionMode);
+    }
+    if (historySelectModeButton) {
+        historySelectModeButton.textContent = historySelectionMode ? 'Done' : 'Select';
+        historySelectModeButton.classList.toggle('active', historySelectionMode);
+    }
+    if (historySelectionBar) {
+        historySelectionBar.style.display = historySelectionMode ? 'flex' : 'none';
+    }
+    if (historySelectionSummary) {
+        historySelectionSummary.textContent = summarizeHistorySelection();
+    }
+    if (historyDeleteSelectedButton) {
+        historyDeleteSelectedButton.disabled = !hasSelection;
+    }
+}
+
+export function setHistorySelectionMode(enabled) {
+    const nextMode = Boolean(enabled);
+    historySelectionMode = nextMode;
+    if (!nextMode) {
+        historySelectedVersionIds = new Set();
+        historySelectedRunKeys = new Set();
+    }
+    refreshHistorySelectionUi();
+    if (historyLastProjectName) {
+        renderCachedHistoryPanel();
+    }
+}
+
+export function clearHistorySelection() {
+    historySelectedVersionIds = new Set();
+    historySelectedRunKeys = new Set();
+    refreshHistorySelectionUi();
+    if (historyLastProjectName) {
+        renderCachedHistoryPanel();
+    }
 }
 
 export function populateHistoryPanel(history, projectName) {
+    historyLastEntries = Array.isArray(history) ? history : [];
+    historyLastProjectName = projectName || '';
+    pruneHistorySelection(historyLastEntries);
+    refreshHistorySelectionUi();
+
     historyListContainer.innerHTML = '';
-    if (history.length === 0) {
+    if (historyLastEntries.length === 0) {
         historyListContainer.innerHTML = '<p>&nbsp;&nbsp;No saved versions.</p>';
         return;
     }
 
-    history.forEach(version => {
+    historyLastEntries.forEach(version => {
         const versionItem = document.createElement('div');
         versionItem.className = 'accordion-item';
+        versionItem.dataset.versionId = version.id;
 
         // --- Add a special class for the autosave item ---
         if (version.is_autosave) {
@@ -853,20 +1015,105 @@ export function populateHistoryPanel(history, projectName) {
         const header = document.createElement('div');
         header.className = 'accordion-header';
 
-        const descriptionText = version.is_autosave
-            ? `🕒 ${version.description}` // Add an icon for autosave
-            : version.description;
-        header.innerHTML = `
-            <span class="accordion-toggle">[+]</span>
-            <div class="version-info">
-                <span class="version-desc">&nbsp;&nbsp;${descriptionText}</span>
-                <span class="version-ts">&nbsp;&nbsp;${formatTimestamp(version.timestamp)}</span>
-            </div>
-            <button class="load-version-btn" title="Load this project version">Load</button>
-        `;
+        if (historySelectionMode && !version.is_autosave) {
+            const versionCheckbox = document.createElement('input');
+            versionCheckbox.type = 'checkbox';
+            versionCheckbox.className = 'history-select-checkbox version-select-checkbox';
+            versionCheckbox.checked = historySelectedVersionIds.has(version.id);
+            versionCheckbox.title = `Select version ${version.description || version.id}. Alt/Option-click to select all runs in this version.`;
+            versionCheckbox.addEventListener('click', (e) => {
+                e.stopPropagation();
+
+                if (!e.altKey) return;
+
+                e.preventDefault();
+                historySelectedVersionIds.delete(version.id);
+
+                const versionRunKeys = getHistoryRunSelectionKeysForVersion(version);
+                const shouldSelectAllRuns = versionRunKeys.some(key => !historySelectedRunKeys.has(key));
+
+                historySelectedRunKeys = new Set(
+                    [...historySelectedRunKeys].filter((key) => parseHistoryRunSelectionKey(key).versionId !== version.id)
+                );
+
+                if (shouldSelectAllRuns) {
+                    versionRunKeys.forEach((key) => historySelectedRunKeys.add(key));
+                }
+
+                refreshHistorySelectionUi();
+                renderCachedHistoryPanel();
+            });
+            versionCheckbox.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    historySelectedVersionIds.add(version.id);
+                    historySelectedRunKeys = new Set(
+                        [...historySelectedRunKeys].filter((key) => parseHistoryRunSelectionKey(key).versionId !== version.id)
+                    );
+                } else {
+                    historySelectedVersionIds.delete(version.id);
+                }
+                refreshHistorySelectionUi();
+                renderCachedHistoryPanel();
+            });
+            header.appendChild(versionCheckbox);
+        }
+
+        const toggle = document.createElement('span');
+        toggle.className = 'accordion-toggle';
+        toggle.textContent = historyExpandedVersionIds.has(version.id) ? '[-]' : '[+]';
+
+        const versionInfo = document.createElement('div');
+        versionInfo.className = 'version-info';
+
+        const versionDesc = document.createElement('span');
+        versionDesc.className = 'version-desc';
+        versionDesc.textContent = version.is_autosave
+            ? `🕒 ${version.description}`
+            : (version.description || 'Saved');
+
+        const versionTs = document.createElement('span');
+        versionTs.className = 'version-ts';
+        const runCount = Array.isArray(version.runs) ? version.runs.length : 0;
+        const runLabel = `${runCount} run${runCount === 1 ? '' : 's'}`;
+        versionTs.textContent = `${formatTimestamp(version.timestamp)} · ${runLabel}`;
+
+        versionInfo.appendChild(versionDesc);
+        versionInfo.appendChild(versionTs);
+
+        const headerActions = document.createElement('div');
+        headerActions.className = 'history-actions';
+
+        const loadBtn = document.createElement('button');
+        loadBtn.className = 'history-action-btn load-version-btn';
+        loadBtn.type = 'button';
+        loadBtn.title = 'Load this project version';
+        loadBtn.textContent = 'Load';
+        headerActions.appendChild(loadBtn);
+        headerActions.hidden = historySelectionMode;
+
+        if (!version.is_autosave) {
+            const deleteVersionBtn = document.createElement('button');
+            deleteVersionBtn.className = 'history-action-btn history-delete-btn';
+            deleteVersionBtn.type = 'button';
+            deleteVersionBtn.title = 'Delete this version and all of its simulation runs';
+            deleteVersionBtn.textContent = 'Delete';
+            headerActions.appendChild(deleteVersionBtn);
+
+            deleteVersionBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                callbacks.onDeleteVersion(projectName, version.id, version.description || 'Saved', runCount);
+            });
+        }
+
+        header.appendChild(toggle);
+        header.appendChild(versionInfo);
+        header.appendChild(headerActions);
 
         const content = document.createElement('div');
         content.className = 'accordion-content';
+        if (historyExpandedVersionIds.has(version.id)) {
+            content.classList.add('active');
+        }
 
         // --- Populate with simulation runs ---
         if (version.runs && version.runs.length > 0) {
@@ -874,11 +1121,77 @@ export function populateHistoryPanel(history, projectName) {
             version.runs.forEach(runId => {
                 const runLi = document.createElement('li');
                 runLi.className = 'run-item';
-                runLi.textContent = `Run: ${runId.substring(0, 8)}...`;
+                runLi.dataset.versionId = version.id;
+                runLi.dataset.runId = runId;
+
+                const runSelectionKey = makeHistoryRunSelectionKey(version.id, runId);
+                const versionSelected = historySelectedVersionIds.has(version.id);
+
+                if (historySelectionMode) {
+                    const runCheckbox = document.createElement('input');
+                    runCheckbox.type = 'checkbox';
+                    runCheckbox.className = 'history-select-checkbox run-select-checkbox';
+                    runCheckbox.checked = historySelectedRunKeys.has(runSelectionKey);
+                    runCheckbox.disabled = versionSelected;
+                    runCheckbox.title = versionSelected
+                        ? 'This run is already included because its version is selected.'
+                        : `Select run ${runId}`;
+                    runCheckbox.addEventListener('click', (e) => e.stopPropagation());
+                    runCheckbox.addEventListener('change', (e) => {
+                        if (e.target.checked) {
+                            historySelectedRunKeys.add(runSelectionKey);
+                        } else {
+                            historySelectedRunKeys.delete(runSelectionKey);
+                        }
+                        refreshHistorySelectionUi();
+                    });
+                    runLi.appendChild(runCheckbox);
+                }
+
+                const runLabelEl = document.createElement('span');
+                runLabelEl.className = 'run-item-label';
+                runLabelEl.textContent = `Run: ${runId.substring(0, 8)}...`;
+                runLi.appendChild(runLabelEl);
+
+                const runActions = document.createElement('div');
+                runActions.className = 'history-actions run-actions';
+
+                const openRunBtn = document.createElement('button');
+                openRunBtn.className = 'history-action-btn';
+                openRunBtn.type = 'button';
+                openRunBtn.textContent = 'Open';
+                openRunBtn.title = `Load geometry and tracks for run ${runId}`;
+                openRunBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    callbacks.onLoadRunResults(version.id, runId);
+                });
+
+                const deleteRunBtn = document.createElement('button');
+                deleteRunBtn.className = 'history-action-btn history-delete-btn';
+                deleteRunBtn.type = 'button';
+                deleteRunBtn.textContent = 'Delete';
+                deleteRunBtn.title = `Delete simulation run ${runId}`;
+                deleteRunBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    callbacks.onDeleteRun(projectName, version.id, runId, version.description || 'Saved');
+                });
+
+                runActions.appendChild(openRunBtn);
+                runActions.appendChild(deleteRunBtn);
+                runLi.appendChild(runActions);
+                runActions.hidden = historySelectionMode;
+
                 runLi.title = `Show tracks for this run (${runId})`;
                 runLi.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    // Callback to main.js to load the geometry AND the tracks
+                    if (historySelectionMode) {
+                        const runCheckbox = runLi.querySelector('.run-select-checkbox');
+                        if (runCheckbox && !runCheckbox.disabled) {
+                            runCheckbox.checked = !runCheckbox.checked;
+                            runCheckbox.dispatchEvent(new Event('change'));
+                        }
+                        return;
+                    }
                     callbacks.onLoadRunResults(version.id, runId);
                 });
                 runList.appendChild(runLi);
@@ -898,12 +1211,14 @@ export function populateHistoryPanel(history, projectName) {
             // Close all other accordions
             historyListContainer.querySelectorAll('.accordion-content.active').forEach(ac => {
                 ac.classList.remove('active');
-                ac.previousElementSibling.querySelector('.accordion-toggle').textContent = '[+]  ';
+                ac.previousElementSibling.querySelector('.accordion-toggle').textContent = '[+]';
             });
+            historyExpandedVersionIds = new Set();
             // Toggle current one
             if (!isActive) {
                 content.classList.add('active');
-                header.querySelector('.accordion-toggle').textContent = '[-]  ';
+                header.querySelector('.accordion-toggle').textContent = '[-]';
+                historyExpandedVersionIds.add(version.id);
             }
         });
 
@@ -912,11 +1227,10 @@ export function populateHistoryPanel(history, projectName) {
             callbacks.onLoadVersionClicked(projectName, version.id);
         });
 
-        const descEl = header.querySelector('.version-desc');
-        if (descEl && !version.is_autosave) {
-            descEl.title = 'Click to rename this version';
-            descEl.style.cursor = 'pointer';
-            descEl.addEventListener('click', (e) => {
+        if (!version.is_autosave) {
+            versionDesc.title = 'Click to rename this version';
+            versionDesc.style.cursor = 'pointer';
+            versionDesc.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const currentDesc = version.description || 'Saved';
                 const newDesc = prompt('Rename version description:', currentDesc);
@@ -2973,6 +3287,7 @@ export function setSimOptions(options) {
     simSeed1Input.value = options.seed1 || 0;
     simSeed2Input.value = options.seed2 || 0;
     simSaveHitsCheckbox.checked = options.save_hits || false;
+    simHitEnergyThresholdInput.value = options.hit_energy_threshold || '1 eV';
     simSaveParticlesCheckbox.checked = options.save_particles || false;
     simSaveTracksRangeInput.value = options.save_tracks_range || '';
     simPrintProgressInput.value = options.print_progress || 1000;
@@ -2985,6 +3300,7 @@ export function getSimOptions() {
         seed2: parseInt(simSeed2Input.value, 10),
         print_progress: parseInt(simPrintProgressInput.value, 10),
         save_hits: simSaveHitsCheckbox.checked,
+        hit_energy_threshold: (simHitEnergyThresholdInput.value || '1 eV').trim(),
         save_particles: simSaveParticlesCheckbox.checked,
         save_tracks_range: simSaveTracksRangeInput.value,
         physics_list: simPhysicsListSelect ? simPhysicsListSelect.value : 'FTFP_BERT',

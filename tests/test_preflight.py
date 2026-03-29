@@ -25,7 +25,7 @@ from app import (
 )
 from src.project_manager import ProjectManager
 from src.expression_evaluator import ExpressionEvaluator
-from src.geometry_types import DivisionVolume, ParamVolume, ReplicaVolume
+from src.geometry_types import DivisionVolume, ParamVolume, ParticleSource, ReplicaVolume
 
 
 def _make_pm():
@@ -598,6 +598,26 @@ def test_preflight_detects_unknown_material_reference():
     codes = [i['code'] for i in report['issues']]
     assert 'unknown_material_reference' in codes
     assert report['summary']['can_run'] is False
+
+
+def test_preflight_warns_when_sources_exist_without_sensitive_detectors():
+    pm = _make_pm()
+    pm.current_geometry_state.add_source(
+        ParticleSource(
+            "preflight_source",
+            {"particle": "e-", "energy": "10*keV", "pos/type": "Point"},
+            {"x": "0", "y": "0", "z": "0"},
+            {"x": "0", "y": "0", "z": "0"},
+            activity=1.0,
+        )
+    )
+
+    report = pm.run_preflight_checks()
+
+    codes = [i['code'] for i in report['issues']]
+    assert 'no_sensitive_detectors_defined_for_active_sources' in codes
+    assert report['summary']['can_run'] is True
+    assert report['summary']['warnings'] >= 1
 
 
 def test_preflight_detects_missing_world_volume_reference():

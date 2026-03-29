@@ -193,6 +193,24 @@ export async function renameVersion(projectName, versionId, newDescription) {
     return handleResponse(response);
 }
 
+export async function deleteVersion(projectName, versionId) {
+    const response = await fetch(`${API_BASE_URL}/api/delete_version`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_name: projectName, version_id: versionId })
+    });
+    return handleResponse(response);
+}
+
+export async function deleteSimulationRun(projectName, versionId, jobId) {
+    const response = await fetch(`${API_BASE_URL}/api/delete_simulation_run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_name: projectName, version_id: versionId, job_id: jobId })
+    });
+    return handleResponse(response);
+}
+
 /**
  * Fetches a list of all available project names from the backend.
  * @returns {Promise<Object>} A promise that resolves to the list of project names.

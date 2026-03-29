@@ -14,7 +14,7 @@ let onGeometryUpdateCallback = () => {};
 let localUnsavedMessages = [];
 let currentRecentTools = [];
 let currentTurn = 1;
-let currentTurnLimit = 10;
+let currentTurnLimit = 50;
 
 let runtimeConfigButton, runtimeConfigStatusEl;
 let runtimeConfigModal, runtimeConfigErrorEl;
@@ -314,6 +314,7 @@ async function loadHistory(force = false) {
         console.log('loadHistory: fetching history...', { force, historyLoaded });
         const res = await APIService.getAiChatHistory();
         console.log('loadHistory: received history with', res.history?.length || 0, 'messages');
+        const serverHistoryLength = Array.isArray(res.history) ? res.history.length : 0;
         if (res.history) {
             renderHistory(res.history);
             historyLoaded = true;
@@ -322,7 +323,7 @@ async function loadHistory(force = false) {
         // Only load unsaved messages from localStorage if history is empty (no server data)
         // Otherwise, messages are already in the server history and will be rendered below
         const savedMessages = localStorage.getItem('airpet_unsaved_messages');
-        if (savedMessages && history.length === 0) {
+        if (savedMessages && serverHistoryLength === 0) {
             try {
                 localUnsavedMessages = JSON.parse(savedMessages);
                 localUnsavedMessages.forEach(msg => {
@@ -333,7 +334,7 @@ async function loadHistory(force = false) {
             } catch (e) {
                 console.error('Failed to parse unsaved messages:', e);
             }
-        } else if (savedMessages && history.length > 0) {
+        } else if (savedMessages && serverHistoryLength > 0) {
             // Clear localStorage since messages are now on the server
             localStorage.removeItem('airpet_unsaved_messages');
         }
@@ -348,12 +349,40 @@ export function reloadHistory() {
     loadHistory(true);
 }
 
-  function renderHistory(history) {
+function getMessageDisplayText(msg) {
+    if (!msg) return '';
+    if (msg.role === 'user' && msg.metadata && msg.metadata.original_message) {
+        return msg.metadata.original_message;
+    }
+    return msg.parts ? msg.parts.map(p => p.text || '').join('\n').trim() : (msg.content || '').trim();
+}
+
+function getIntermediateToolNames(msg) {
+    const toolNames = [];
+
+    if (Array.isArray(msg?.tool_calls)) {
+        msg.tool_calls.forEach((toolCall) => {
+            const toolName = toolCall?.function?.name || toolCall?.name;
+            if (toolName) toolNames.push(toolName);
+        });
+    }
+
+    if (Array.isArray(msg?.parts)) {
+        msg.parts.forEach((part) => {
+            const toolName = part?.function_call?.name;
+            if (toolName) toolNames.push(toolName);
+        });
+    }
+
+    return [...new Set(toolNames)];
+}
+
+function renderHistory(history) {
     console.log('renderHistory: called with', history.length, 'messages');
     messageList.innerHTML = '';
     // Skip the first two messages (system instructions)
     if (history.length <= 2) {
-        addMessageToUI('system', "Welcome to AIRPET AI. How can I help you with your detector geometry today?", false);
+        addMessageToUI('system', "AIRPET AI", false);
         return;
     }
     
@@ -385,30 +414,42 @@ export function reloadHistory() {
             currentTurn = [];
         }
     });
+
+    if (currentTurn.length > 0) {
+        turns.push(currentTurn);
+    }
     
     // Render each turn
     turns.forEach(turn => {
-        turn.forEach(item => {
-            let text = "";
-            if (item.msg.role === 'user' && item.msg.metadata && item.msg.metadata.original_message) {
-                text = item.msg.metadata.original_message;
-            } else {
-                text = item.msg.parts ? item.msg.parts.map(p => p.text || '').join('\n').trim() : (item.msg.content || '').trim();
+        const finalItem = turn.find(item => item.type === 'final');
+        const intermediates = turn.filter(item => item.type === 'intermediate');
+        const userItem = turn.find(item => item.type === 'user');
+        const recoveredIntermediate = !finalItem
+            ? [...turn]
+                .reverse()
+                .find(item => item.type === 'intermediate' && getMessageDisplayText(item.msg))
+            : null;
+
+        const userText = getMessageDisplayText(userItem?.msg);
+        if (userText && !userText.startsWith('[System Context Update]')) {
+            addMessageToUI('user', userText, false);
+        }
+
+        if (intermediates.length > 0) {
+            addThinkingDropdown(intermediates);
+        }
+
+        const finalText = getMessageDisplayText(finalItem?.msg);
+        if (finalText && !finalText.startsWith('[System Context Update]')) {
+            addMessageToUI('model', finalText, false);
+        }
+
+        if (!finalItem && recoveredIntermediate) {
+            const recoveredText = getMessageDisplayText(recoveredIntermediate.msg);
+            if (recoveredText && !recoveredText.startsWith('[System Context Update]')) {
+                addMessageToUI('model', recoveredText, false);
             }
-            
-            if (text && !text.startsWith('[System Context Update]')) {
-                if (item.type === 'user') {
-                    addMessageToUI('user', text, false);
-                } else if (item.type === 'final') {
-                    addMessageToUI('model', text, false);
-                    // Add thinking dropdown if there were intermediate steps
-                    const intermediates = turn.filter(t => t.type === 'intermediate');
-                    if (intermediates.length > 0) {
-                        addThinkingDropdown(intermediates);
-                    }
-                }
-            }
-        });
+        }
     });
 
     // Ensure the model selector is synced if history was loaded
@@ -460,8 +501,14 @@ async function handleSend() {
         addMessageToUI('model', result.message);
         
         if (onGeometryUpdateCallback) {
-            onGeometryUpdateCallback(result);
+            try {
+                await onGeometryUpdateCallback(result);
+            } catch (syncErr) {
+                console.error('AI geometry refresh failed:', syncErr);
+                UIManager.showError("AI response applied, but the project refresh failed: " + (syncErr.message || syncErr));
+            }
         }
+        await loadHistory(true);
     } catch (err) {
         removeThinkingIndicator(thinkingIndicator);
         const backendError = formatBackendDiagnosticsError(err);
@@ -568,9 +615,57 @@ function scrollToBottomSmooth() {
 
 function createThinkingIndicator() {
     const indicator = document.createElement('div');
-    indicator.className = 'chat-message model thinking-indicator';
+    indicator.className = 'chat-message model thinking-dropdown thinking-live';
     indicator.id = 'ai-thinking-indicator';
-    indicator.innerHTML = '<span class="thinking-text">Thinking...</span>';
+
+    const toggleBtn = document.createElement('div');
+    toggleBtn.className = 'thinking-toggle';
+    toggleBtn.setAttribute('role', 'button');
+    toggleBtn.setAttribute('tabindex', '0');
+    toggleBtn.setAttribute('aria-expanded', 'false');
+
+    const toggleMain = document.createElement('span');
+    toggleMain.className = 'thinking-toggle-main';
+
+    const toggleTitle = document.createElement('span');
+    toggleTitle.className = 'thinking-toggle-title';
+    toggleTitle.textContent = 'Thoughts...';
+
+    const toggleSummary = document.createElement('span');
+    toggleSummary.className = 'thinking-toggle-summary';
+    toggleSummary.textContent = 'Waiting for model...';
+
+    toggleMain.appendChild(toggleTitle);
+    toggleMain.appendChild(toggleSummary);
+
+    const toggleIcon = document.createElement('span');
+    toggleIcon.className = 'thinking-toggle-icon';
+    toggleIcon.textContent = '+';
+
+    toggleBtn.appendChild(toggleMain);
+    toggleBtn.appendChild(toggleIcon);
+    const toggleDropdown = () => toggleThinkingDropdown(indicator);
+    toggleBtn.onclick = toggleDropdown;
+    toggleBtn.onkeydown = (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleDropdown();
+        }
+    };
+
+    const content = document.createElement('div');
+    content.className = 'thinking-content';
+    content.hidden = true;
+
+    const emptyState = document.createElement('div');
+    emptyState.className = 'thinking-empty';
+    emptyState.textContent = 'Tool activity will appear here while the model works.';
+    content.appendChild(emptyState);
+
+    indicator.appendChild(toggleBtn);
+    indicator.appendChild(content);
+    indicator._progressKeys = new Set();
+
     messageList.appendChild(indicator);
     scrollToBottom();
     return indicator;
@@ -578,50 +673,84 @@ function createThinkingIndicator() {
 
 function updateThinkingIndicator(indicator, progress) {
     if (!indicator || !indicator.isConnected) return;
-    
-    const thinkingText = indicator.querySelector('.thinking-text');
-    
+
+    const toggleSummary = indicator.querySelector('.thinking-toggle-summary');
+    const content = indicator.querySelector('.thinking-content');
+    const emptyState = content?.querySelector('.thinking-empty');
+    const progressKeys = indicator._progressKeys || new Set();
+
+    const appendProgressEntry = (key, html, className = 'thinking-step') => {
+        if (!content || !key || progressKeys.has(key)) return;
+        progressKeys.add(key);
+        indicator._progressKeys = progressKeys;
+
+        if (emptyState && emptyState.isConnected) {
+            emptyState.remove();
+        }
+
+        const entry = document.createElement('div');
+        entry.className = className;
+        entry.innerHTML = html;
+        content.appendChild(entry);
+    };
+
     if (progress.type === 'turn_start') {
         currentTurn = progress.turn;
         currentTurnLimit = progress.turnLimit;
-        
-        if (currentRecentTools.length > 0) {
-            const turnBadge = `<span class="turn-badge">Turn ${currentTurn}/${currentTurnLimit}</span>`;
-            const toolsHtml = currentRecentTools.map(tool => 
-                `<div class="tool-entry">🛠️ ${tool}</div>`
-            ).join('');
-            thinkingText.innerHTML = `${turnBadge}<div class="tools-list">${toolsHtml}</div>`;
-        } else {
-            thinkingText.innerHTML = `<span class="turn-badge">Turn ${currentTurn}/${currentTurnLimit}</span> Processing...`;
+
+        if (toggleSummary) {
+            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} in progress`;
         }
+        appendProgressEntry(
+            `turn_start:${currentTurn}:${currentTurnLimit}`,
+            `<strong>Turn ${currentTurn}/${currentTurnLimit}:</strong> Processing...`
+        );
     } else if (progress.type === 'tool_calls' && progress.tools && progress.tools.length > 0) {
         currentTurn = progress.turn;
-        
+
         if (progress.recentTools && progress.recentTools.length > 0) {
             currentRecentTools = progress.recentTools;
         } else {
             currentRecentTools = [...currentRecentTools, ...progress.tools].slice(-3);
         }
-        
-        const turnBadge = `<span class="turn-badge">Turn ${currentTurn}/${currentTurnLimit}</span>`;
-        const toolsHtml = currentRecentTools.map(tool => 
-            `<div class="tool-entry">🛠️ ${tool}</div>`
-        ).join('');
-        thinkingText.innerHTML = `${turnBadge}<div class="tools-list">${toolsHtml}</div>`;
+
+        if (toggleSummary) {
+            const liveToolSummary = currentRecentTools.join(', ');
+            toggleSummary.textContent = liveToolSummary
+                ? `Turn ${currentTurn}/${currentTurnLimit} • ${liveToolSummary}`
+                : `Turn ${currentTurn}/${currentTurnLimit} • tool activity`;
+        }
+
+        const toolList = progress.tools.join(', ');
+        appendProgressEntry(
+            `tool_calls:${currentTurn}:${toolList}`,
+            `<strong>Turn ${currentTurn} tools:</strong> ${toolList}`,
+            'thinking-tools'
+        );
     } else if (progress.type === 'paused') {
-        thinkingText.innerHTML = `<span class="pause-badge">⏸️ Paused</span> ${progress.reason || 'tab hidden'}`;
+        if (toggleSummary) {
+            toggleSummary.textContent = `Paused: ${progress.reason || 'tab hidden'}`;
+        }
+        appendProgressEntry(
+            `paused:${progress.reason || 'tab hidden'}`,
+            `<strong>Paused:</strong> ${progress.reason || 'tab hidden'}`,
+            'thinking-tools'
+        );
     } else if (progress.type === 'resumed') {
         if (progress.recentTools && progress.recentTools.length > 0) {
             currentRecentTools = progress.recentTools;
         }
-        
-        const turnBadge = `<span class="turn-badge">Turn ${currentTurn}/${currentTurnLimit}</span>`;
-        const toolsHtml = currentRecentTools.map(tool => 
-            `<div class="tool-entry">🛠️ ${tool}</div>`
-        ).join('');
-        thinkingText.innerHTML = `${turnBadge}<div class="tools-list">${toolsHtml}</div>`;
+
+        if (toggleSummary) {
+            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} resumed`;
+        }
+        appendProgressEntry(
+            `resumed:${currentTurn}:${currentRecentTools.join(',')}`,
+            `<strong>Resumed:</strong> continuing turn ${currentTurn}/${currentTurnLimit}.`,
+            'thinking-tools'
+        );
     }
-    
+
     scrollToBottom();
 }
 
@@ -635,15 +764,56 @@ function removeThinkingIndicator(indicator) {
 function addThinkingDropdown(intermediates) {
     const dropdown = document.createElement('div');
     dropdown.className = 'chat-message model thinking-dropdown';
-    
-    const toggleBtn = document.createElement('button');
+
+    const toolNames = [...new Set(intermediates.flatMap(item => getIntermediateToolNames(item.msg)))];
+    const summaryParts = [`${intermediates.length} step${intermediates.length > 1 ? 's' : ''}`];
+    if (toolNames.length > 0) {
+        summaryParts.push(toolNames.slice(0, 3).join(', '));
+        if (toolNames.length > 3) {
+            summaryParts.push(`+${toolNames.length - 3} more`);
+        }
+    }
+    const summaryText = summaryParts.join(' • ');
+
+    const toggleBtn = document.createElement('div');
     toggleBtn.className = 'thinking-toggle';
-    toggleBtn.innerHTML = `🤔 Thinking (${intermediates.length} step${intermediates.length > 1 ? 's' : ''}) ▼`;
-    toggleBtn.onclick = () => toggleThinkingDropdown(dropdown);
+    toggleBtn.setAttribute('role', 'button');
+    toggleBtn.setAttribute('tabindex', '0');
+    toggleBtn.setAttribute('aria-expanded', 'false');
+    toggleBtn.dataset.summary = summaryText;
+
+    const toggleMain = document.createElement('span');
+    toggleMain.className = 'thinking-toggle-main';
+
+    const toggleTitle = document.createElement('span');
+    toggleTitle.className = 'thinking-toggle-title';
+    toggleTitle.textContent = 'Thoughts...';
+
+    const toggleSummary = document.createElement('span');
+    toggleSummary.className = 'thinking-toggle-summary';
+    toggleSummary.textContent = summaryText;
+
+    toggleMain.appendChild(toggleTitle);
+    toggleMain.appendChild(toggleSummary);
+
+    const toggleIcon = document.createElement('span');
+    toggleIcon.className = 'thinking-toggle-icon';
+    toggleIcon.textContent = '+';
+
+    toggleBtn.appendChild(toggleMain);
+    toggleBtn.appendChild(toggleIcon);
+    const toggleDropdown = () => toggleThinkingDropdown(dropdown);
+    toggleBtn.onclick = toggleDropdown;
+    toggleBtn.onkeydown = (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggleDropdown();
+        }
+    };
     
     const content = document.createElement('div');
     content.className = 'thinking-content';
-    content.style.display = 'none';
+    content.hidden = true;
     
     intermediates.forEach((item, idx) => {
         const text = item.msg.parts ? item.msg.parts.map(p => p.text || '').join('\n').trim() : (item.msg.content || '').trim();
@@ -654,29 +824,37 @@ function addThinkingDropdown(intermediates) {
             content.appendChild(step);
         }
         
-        // Show tool calls if any
-        if (item.msg.tool_calls && item.msg.tool_calls.length > 0) {
+        const toolNamesForStep = getIntermediateToolNames(item.msg);
+        if (toolNamesForStep.length > 0) {
             const toolDiv = document.createElement('div');
             toolDiv.className = 'thinking-tools';
-            toolDiv.innerHTML = `<strong>Tools called:</strong> ${item.msg.tool_calls.map(tc => tc.function?.name || tc.name).join(', ')}`;
+            toolDiv.innerHTML = `<strong>Tools called:</strong> ${toolNamesForStep.join(', ')}`;
             content.appendChild(toolDiv);
         }
     });
+
+    if (content.childElementCount === 0) {
+        const emptyState = document.createElement('div');
+        emptyState.className = 'thinking-empty';
+        emptyState.textContent = 'Tool activity was recorded, but no intermediate text was saved for this turn.';
+        content.appendChild(emptyState);
+    }
     
     dropdown.appendChild(toggleBtn);
     dropdown.appendChild(content);
     messageList.appendChild(dropdown);
+    scrollToBottom();
 }
 
 function toggleThinkingDropdown(dropdown) {
     const content = dropdown.querySelector('.thinking-content');
     const toggleBtn = dropdown.querySelector('.thinking-toggle');
-    
-    if (content.style.display === 'none') {
-        content.style.display = 'block';
-        toggleBtn.innerHTML = toggleBtn.innerHTML.replace('▼', '▲');
-    } else {
-        content.style.display = 'none';
-        toggleBtn.innerHTML = toggleBtn.innerHTML.replace('▲', '▼');
+    const toggleIcon = dropdown.querySelector('.thinking-toggle-icon');
+    const isExpanded = !content.hidden;
+
+    content.hidden = isExpanded;
+    toggleBtn.setAttribute('aria-expanded', isExpanded ? 'false' : 'true');
+    if (toggleIcon) {
+        toggleIcon.textContent = isExpanded ? '+' : '−';
     }
 }

@@ -23,8 +23,11 @@ def create_configured_asteval():
         'mm3': 1.0, 'cm3': 1000.0, 'm3': 1000000000.0,
         'urad': 1.0e-6, 'mrad': 1.0e-3, 'rad': 1.0, 'radian': 1.0, 
         'deg': math.pi / 180.0, 'degree': math.pi / 180.0,
-        'eV': 1.0e-3, 'keV': 1.0, 'MeV': 1000.0,
+        'eV': 1.0e-3, 'keV': 1.0, 'MeV': 1000.0, 'GeV': 1000000.0, 'TeV': 1000000000.0,
         'g': 1.0, 'kg': 1000.0,
+        # AIRPET does not model amount-of-substance internally, but accepting
+        # mol/mole keeps common Geant4 chemistry notation evaluable.
+        'mol': 1.0, 'mole': 1.0,
         'ns': 1.0e-9, 'us': 1.0e-6, 'ms': 1.0e-3, 's': 1.0
     })
     
@@ -52,16 +55,23 @@ class ExpressionEvaluator:
         Handles cases like '90 deg' or '10mm' by converting them to '90 * deg' or '10 * mm'.
         This makes the evaluator much more robust to AI-generated inputs.
         """
+        processed = expression
+
+        # Normalize a few common unit spellings the models tend to emit for
+        # material densities and volumes, e.g. g/cm^3 or g/cm**3.
+        processed = re.sub(r'\b(nm|um|mm|cm|m)\s*(?:\^|\*\*)\s*([23])\b', r'\1\2', processed)
+
         # List of units defined in create_configured_asteval
         units = [
             'nm', 'um', 'mm', 'cm', 'm', 'km', 'mm2', 'cm2', 'm2', 'mm3', 'cm3', 'm3',
-            'urad', 'mrad', 'rad', 'radian', 'deg', 'degree', 'eV', 'keV', 'MeV', 
-            'g', 'kg', 'ns', 'us', 'ms', 's'
+            'urad', 'mrad', 'rad', 'radian', 'deg', 'degree',
+            'eV', 'keV', 'MeV', 'GeV', 'TeV',
+            'g', 'kg', 'mol', 'mole',
+            'ns', 'us', 'ms', 's'
         ]
         # Sort by length descending to match 'mm' before 'm'
         units.sort(key=len, reverse=True)
         
-        processed = expression
         for unit in units:
             # Match digit, optional space, then unit with word boundary at the end
             pattern = re.compile(rf'(?<=\d)\s?({unit})\b')
