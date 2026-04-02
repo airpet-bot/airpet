@@ -54,3 +54,23 @@ def test_unit_preprocessing():
     success, result = evaluator.evaluate("10cm + 5mm")
     assert success
     assert result == 105.0
+
+
+def test_common_geant4_material_unit_aliases():
+    evaluator = ExpressionEvaluator()
+
+    success, result = evaluator.evaluate("28.085*g/mole")
+    assert success
+    assert result == pytest.approx(28.085)
+
+    success, result = evaluator.evaluate("28.085*g/mol")
+    assert success
+    assert result == pytest.approx(28.085)
+
+    success, result = evaluator.evaluate("2.33*g/cm^3")
+    assert success
+    assert result == pytest.approx(0.00233)
+
+    success, result = evaluator.evaluate("1 GeV")
+    assert success
+    assert result == pytest.approx(1_000_000.0)

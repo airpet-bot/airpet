@@ -12,6 +12,8 @@ import { acceleratedRaycast, computeBoundsTree, disposeBoundsTree } from 'three-
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
+import { isDirectedGpsAngularType } from './gpsAngularMode.js';
+import { getNormalizedGpsDirectionVector } from './gpsAngularMode.js';
 
 // We must extend the THREE.js objects with the BVH functionality.
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -2026,8 +2028,12 @@ export function renderObjects(pvDescriptions, projectState) {
                 // --- ARROW HELPER ---
                 // Only add the direction arrow if the source is a beam
                 const angType = pvData.gps_commands?.['ang/type'];
-                if (angType === 'beam1d') {
-                    const dir = new THREE.Vector3(0, 0, -1);
+                if (isDirectedGpsAngularType(angType)) {
+                    const dirData = getNormalizedGpsDirectionVector(
+                        pvData.gps_commands?.['ang/dir1'],
+                        { x: 0, y: 0, z: 1 }
+                    );
+                    const dir = new THREE.Vector3(dirData.x, dirData.y, dirData.z);
                     const origin = new THREE.Vector3(0, 0, 0);
                     const length = 25; // 25mm long arrow
                     const hexColor = 0xff0000; // Red
@@ -2089,7 +2095,15 @@ export function renderObjects(pvDescriptions, projectState) {
 
         // Apply LOCAL transforms, not world transforms
         const position = pvData.position || { x: 0, y: 0, z: 0 };
-        const rotation = pvData.rotation || { x: 0, y: 0, z: 0 };
+        const sourceCommands = pvData.gps_commands || {};
+        const shouldIgnoreSourceRotation = Boolean(
+            pvData.is_source
+            && (sourceCommands['pos/type'] || 'Point') === 'Point'
+            && isDirectedGpsAngularType(sourceCommands['ang/type'])
+        );
+        const rotation = shouldIgnoreSourceRotation
+            ? { x: 0, y: 0, z: 0 }
+            : (pvData.rotation || { x: 0, y: 0, z: 0 });
         //const scale = pvData.scale || { x: 1, y: 1, z: 1 };
 
         obj.position.set(position.x, position.y, position.z);

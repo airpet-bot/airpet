@@ -6,6 +6,7 @@ import tempfile
 import os
 import re
 import numpy as np
+from copy import deepcopy
 from datetime import datetime
 from scipy.spatial.transform import Rotation as R
 import shutil
@@ -601,16 +602,29 @@ class ProjectManager:
             return False, f"Could not resolve all defines. Unresolved: {[d.name for d in unresolved_defines]}"
 
         # --- Stage 2: Evaluate Material properties (Z, A, density) ---
+        material_errors = []
         for material in state.materials.values():
-            try:
-                if material.Z_expr:
-                    material._evaluated_Z = evaluator.evaluate(str(material.Z_expr))[1]
-                if material.A_expr:
-                    material._evaluated_A = evaluator.evaluate(str(material.A_expr))[1]
-                if material.density_expr:
-                    material._evaluated_density = evaluator.evaluate(str(material.density_expr))[1]
-            except Exception as e:
-                print(f"Warning: Could not evaluate material property for '{material.name}': {e}")
+            if material.Z_expr:
+                success, value = evaluator.evaluate(str(material.Z_expr), verbose=False)
+                if success:
+                    material._evaluated_Z = value
+                else:
+                    material_errors.append(f"{material.name}.Z: {value}")
+            if material.A_expr:
+                success, value = evaluator.evaluate(str(material.A_expr), verbose=False)
+                if success:
+                    material._evaluated_A = value
+                else:
+                    material_errors.append(f"{material.name}.A: {value}")
+            if material.density_expr:
+                success, value = evaluator.evaluate(str(material.density_expr), verbose=False)
+                if success:
+                    material._evaluated_density = value
+                else:
+                    material_errors.append(f"{material.name}.density: {value}")
+
+        if material_errors:
+            return False, "Invalid material expression(s): " + "; ".join(material_errors)
 
 
         # --- Stage 3: Evaluate and NORMALIZE solid parameters ---
@@ -2985,7 +2999,11 @@ class ProjectManager:
         # Assumes properties_dict contains expression strings like Z_expr, A_expr, density_expr
         new_material = Material(name, **properties_dict)
         self.current_geometry_state.add_material(new_material)
-        self.recalculate_geometry_state()
+        success, error_msg = self.recalculate_geometry_state()
+        if not success:
+            del self.current_geometry_state.materials[name]
+            self.recalculate_geometry_state()
+            return None, error_msg
 
         # Capture the new state
         self._capture_history_state(f"Added material {name}")
@@ -2997,17 +3015,31 @@ class ProjectManager:
         target_mat = self.current_geometry_state.materials.get(mat_name)
         if not target_mat: return False, f"Material '{mat_name}' not found."
 
+        old_values = {
+            'mat_type': target_mat.mat_type,
+            'Z_expr': target_mat.Z_expr,
+            'A_expr': target_mat.A_expr,
+            'density_expr': target_mat.density_expr,
+            'state': target_mat.state,
+            'components': deepcopy(target_mat.components),
+        }
+
         # Update properties from the provided dictionary
         # if 'density' in new_properties: target_mat.density = new_properties['density']
         # if 'Z' in new_properties: target_mat.Z = new_properties['Z']
         # if 'A' in new_properties: target_mat.A = new_properties['A']
         # if 'components' in new_properties: target_mat.components = new_properties['components']
         for key, value in new_properties.items(): setattr(target_mat, key, value)
-        
+
+        success, error_msg = self.recalculate_geometry_state()
+        if not success:
+            for key, value in old_values.items():
+                setattr(target_mat, key, value)
+            self.recalculate_geometry_state()
+            return False, error_msg
+
         # Capture the new state
         self._capture_history_state(f"Updated material {mat_name}")
-
-        self.recalculate_geometry_state()
         return True, None
 
     def add_element(self, name_suggestion, params):
@@ -4862,28 +4894,69 @@ class ProjectManager:
     def _normalize_gps_commands(self, gps_commands):
         """Normalize gps_commands values to strings to prevent [object Object] display issues."""
         normalized = {}
+        key_aliases = {
+            '/gps/particle': 'particle',
+            'particle_type': 'particle',
+            'particle_name': 'particle',
+            'distribution': 'ang/type',
+            'angular_distribution': 'ang/type',
+            'ang/distribution': 'ang/type',
+            'direction': 'ang/dir1',
+            'beam_direction': 'ang/dir1',
+            'ang/direction': 'ang/dir1',
+            'ang/dir': 'ang/dir1',
+            '/gps/ang/type': 'ang/type',
+            '/gps/ang/dir1': 'ang/dir1',
+            '/gps/energy': 'energy',
+        }
         
         if gps_commands:
             for key, value in gps_commands.items():
+                raw_key = str(key).strip()
+                key_lookup = raw_key.lower()
+                if key_lookup.startswith('/gps/'):
+                    key_lookup = key_lookup[5:]
+                norm_key = key_aliases.get(key_lookup, key_aliases.get(raw_key.lower(), raw_key))
+
                 if isinstance(value, dict):
                     # Convert {"value": 100, "unit": "keV"} to "100 keV"
                     if 'value' in value and 'unit' in value:
-                        normalized[key] = f"{value['value']} {value['unit']}"
+                        normalized[norm_key] = f"{value['value']} {value['unit']}"
                     else:
-                        normalized[key] = str(value)
+                        normalized[norm_key] = str(value)
                 elif value is None:
-                    normalized[key] = ""
+                    normalized[norm_key] = ""
                 else:
-                    normalized[key] = str(value)
+                    normalized[norm_key] = str(value)
+
+        particle_aliases = {
+            'electron': 'e-',
+            'electron-': 'e-',
+            'e_minus': 'e-',
+            'e minus': 'e-',
+            'positron': 'e+',
+            'positron+': 'e+',
+            'e_plus': 'e+',
+            'e plus': 'e+',
+            'photon': 'gamma',
+        }
+        particle = normalized.get('particle')
+        if particle:
+            normalized['particle'] = particle_aliases.get(str(particle).strip().lower(), str(particle).strip())
         
         # Set sensible defaults for missing GPS commands
         # Particle type - default to gamma if not specified
         if 'particle' not in normalized or not normalized.get('particle'):
             normalized['particle'] = 'gamma'
         
-        # Direction mode - default to Direction (not Isotropic) if not specified
-        if 'ang/type' not in normalized or not normalized.get('ang/type'):
-            normalized['ang/type'] = 'Direction'
+        # Direction mode - default to Direction (not Isotropic) if not specified.
+        ang_type = str(normalized.get('ang/type', '')).strip().lower()
+        if ang_type in {'isotropic', 'iso'}:
+            normalized['ang/type'] = 'iso'
+        elif ang_type in {'direction', 'directed', 'beam', 'beam1d', 'mono', 'monodirectional', 'pencil', 'pencilbeam', 'pencil_beam'}:
+            normalized['ang/type'] = 'beam1d'
+        elif 'ang/type' not in normalized or not normalized.get('ang/type'):
+            normalized['ang/type'] = 'beam1d'
         
         # Energy format - ensure proper Geant4 format with * operator
         if 'energy' in normalized and normalized['energy']:
@@ -5125,9 +5198,72 @@ class ProjectManager:
         # Search in Assemblies
         for asm in state.assemblies.values():
             for pv in asm.placements:
-                if pv.name == pv_name:
-                    return pv
+                    if pv.name == pv_name:
+                        return pv
         return None
+
+    def _find_pvs_by_lv_name(self, lv_name):
+        """Returns all placements that instantiate the given logical volume."""
+        placements = []
+        state = self.current_geometry_state
+
+        for lv in state.logical_volumes.values():
+            if lv.content_type == 'physvol':
+                for pv in lv.content:
+                    if pv.volume_ref == lv_name:
+                        placements.append(pv)
+
+        for asm in state.assemblies.values():
+            for pv in asm.placements:
+                if pv.volume_ref == lv_name:
+                    placements.append(pv)
+
+        return placements
+
+    def _calculate_global_transform_matrix(self, start_pv):
+        """Returns the 4x4 global transform matrix for a placed physical volume."""
+        state = self.current_geometry_state
+        if not state:
+            return np.eye(4)
+
+        current_transform = start_pv.get_transform_matrix()
+        current_parent_lv_name = start_pv.parent_lv_name
+
+        depth = 0
+        max_depth = 20
+
+        while current_parent_lv_name and current_parent_lv_name != state.world_volume_ref and depth < max_depth:
+            depth += 1
+            parent_placement = None
+
+            found = False
+            for lv in state.logical_volumes.values():
+                if lv.content_type == 'physvol':
+                    for pv in lv.content:
+                        if pv.volume_ref == current_parent_lv_name:
+                            parent_placement = pv
+                            found = True
+                            break
+                if found:
+                    break
+
+            if not found:
+                for asm in state.assemblies.values():
+                    for pv in asm.placements:
+                        if pv.volume_ref == current_parent_lv_name:
+                            parent_placement = pv
+                            found = True
+                            break
+                    if found:
+                        break
+
+            if not parent_placement:
+                break
+
+            current_transform = parent_placement.get_transform_matrix() @ current_transform
+            current_parent_lv_name = parent_placement.parent_lv_name
+
+        return current_transform
 
     def _calculate_global_transform(self, start_pv):
         """
@@ -5142,66 +5278,242 @@ class ProjectManager:
         if not state:
             return {'x':0,'y':0,'z':0}, {'x':0,'y':0,'z':0}
 
-        # Start with the local transform of the PV
-        # Note: get_transform_matrix() uses _evaluated_position/_evaluated_rotation
-        current_transform = start_pv.get_transform_matrix()
-        
-        # Traverse up
-        # Assumption: The 'parent_lv_name' is the container.
-        # We need to find the PV that PLACES this container.
-        # Limitation: If the container LV is placed multiple times, this simple lookup 
-        # is ambiguous. We will just find the *first* placement we encounter.
-        
-        current_parent_lv_name = start_pv.parent_lv_name
-        
-        # Safety depth counter
-        depth = 0
-        max_depth = 20
-
-        while current_parent_lv_name and current_parent_lv_name != state.world_volume_ref and depth < max_depth:
-            depth += 1
-            parent_placement = None
-            
-            # Find a placement of 'current_parent_lv_name'
-            # 1. Search in LVs
-            found = False
-            for lv in state.logical_volumes.values():
-                if lv.content_type == 'physvol':
-                    for pv in lv.content:
-                        if pv.volume_ref == current_parent_lv_name:
-                            parent_placement = pv
-                            found = True
-                            break
-                if found: break
-            
-            # 2. Search in Assemblies if not found
-            if not found:
-                for asm in state.assemblies.values():
-                    for pv in asm.placements:
-                        if pv.volume_ref == current_parent_lv_name:
-                            parent_placement = pv
-                            found = True
-                            break
-                    if found: break
-            
-            if parent_placement:
-                # Apply parent transform: Global = Parent * Child
-                parent_matrix = parent_placement.get_transform_matrix()
-                current_transform = parent_matrix @ current_transform
-                
-                # Move up one level
-                current_parent_lv_name = parent_placement.parent_lv_name
-            else:
-                # Could be a top-level placement in the World, or orphaned
-                # If it's in the world, parent_lv_name should ideally be the world name, 
-                # but if we passed check '!= state.world_volume_ref', maybe it's implicitly world.
-                # Stop here.
-                break
-                
-        # Now decompose the final global matrix
+        current_transform = self._calculate_global_transform_matrix(start_pv)
         pos_dict, rot_dict, scale_dict = PhysicalVolumePlacement.decompose_matrix(current_transform)
         
         return pos_dict, rot_dict
+
+    def _resolve_incident_beam_target(self, target):
+        state = self.current_geometry_state
+        target_str = str(target or '').strip()
+        if not target_str:
+            return None, "A target volume is required."
+
+        pv = self._find_pv_by_id(target_str)
+        if pv:
+            return pv, None
+
+        pv = self._find_pv_by_name(target_str)
+        if pv:
+            return pv, None
+
+        if target_str in state.logical_volumes:
+            placements = self._find_pvs_by_lv_name(target_str)
+            if len(placements) == 1:
+                return placements[0], None
+            if not placements:
+                return None, (
+                    f"Logical volume '{target_str}' is not placed anywhere. "
+                    "Place it first or target a placed physical volume."
+                )
+            placement_names = ", ".join(pv.name for pv in placements[:5])
+            if len(placements) > 5:
+                placement_names += ", ..."
+            return None, (
+                f"Logical volume '{target_str}' has {len(placements)} placements "
+                f"({placement_names}). Target a specific physical volume instead."
+            )
+
+        return None, (
+            f"Could not resolve target '{target_str}' as a physical volume id/name "
+            "or a uniquely placed logical volume."
+        )
+
+    def configure_incident_beam(
+        self,
+        *,
+        target,
+        particle,
+        energy,
+        incident_axis='+z',
+        offset='1*mm',
+        source_name='incident_beam',
+        activity=1.0,
+        mark_target_sensitive=True,
+        activate=True,
+        exclusive_activation=True,
+    ):
+        """Create or update a directed beam source aimed through a target center."""
+        if not self.current_geometry_state:
+            return None, "No project loaded."
+
+        particle_name = str(particle or '').strip()
+        if not particle_name:
+            return None, "particle is required."
+
+        energy_expr = str(energy or '').strip()
+        if not energy_expr:
+            return None, "energy is required."
+
+        pv, error = self._resolve_incident_beam_target(target)
+        if not pv:
+            return None, error
+
+        state = self.current_geometry_state
+        lv = state.logical_volumes.get(pv.volume_ref)
+        if not lv:
+            return None, f"Logical volume '{pv.volume_ref}' for target '{pv.name}' was not found."
+
+        solid = state.solids.get(lv.solid_ref)
+        if not solid:
+            return None, f"Solid '{lv.solid_ref}' for target '{pv.name}' was not found."
+
+        old_target_sensitive = bool(lv.is_sensitive)
+        target_sensitive_updated = False
+        if mark_target_sensitive and not old_target_sensitive:
+            lv.is_sensitive = True
+            target_sensitive_updated = True
+
+        half_extents = self._get_solid_local_half_extents(solid)
+        if not half_extents:
+            if target_sensitive_updated:
+                lv.is_sensitive = old_target_sensitive
+            return None, (
+                f"Target '{pv.name}' uses unsupported solid type '{solid.type}' for beam setup. "
+                "Supported targets currently include box, tube/tubs, sphere, and orb."
+            )
+
+        axis_map = {
+            '+x': (np.array([1.0, 0.0, 0.0]), 0),
+            '-x': (np.array([-1.0, 0.0, 0.0]), 0),
+            '+y': (np.array([0.0, 1.0, 0.0]), 1),
+            '-y': (np.array([0.0, -1.0, 0.0]), 1),
+            '+z': (np.array([0.0, 0.0, 1.0]), 2),
+            '-z': (np.array([0.0, 0.0, -1.0]), 2),
+        }
+        axis_key = str(incident_axis or '+z').strip().lower()
+        if axis_key not in axis_map:
+            return None, "incident_axis must be one of +x, -x, +y, -y, +z, -z."
+
+        offset_success, offset_value = self.expression_evaluator.evaluate(str(offset), verbose=False)
+        if not offset_success:
+            return None, f"Invalid offset expression: {offset_value}"
+
+        try:
+            offset_mm = float(offset_value)
+        except Exception:
+            return None, f"Offset '{offset}' did not evaluate to a numeric length."
+        if offset_mm < 0:
+            return None, "offset must be >= 0."
+
+        try:
+            activity_value = float(activity)
+        except (TypeError, ValueError):
+            return None, f"activity '{activity}' is not numeric."
+
+        local_dir, axis_index = axis_map[axis_key]
+        half_extent = float(half_extents[axis_index])
+
+        global_matrix = self._calculate_global_transform_matrix(pv)
+        center = np.asarray(global_matrix[:3, 3], dtype=float)
+
+        rotation_scale = np.asarray(global_matrix[:3, :3], dtype=float).copy()
+        for idx in range(3):
+            norm = np.linalg.norm(rotation_scale[:, idx])
+            if norm > 1e-12:
+                rotation_scale[:, idx] /= norm
+
+        global_dir = rotation_scale @ local_dir
+        dir_norm = np.linalg.norm(global_dir)
+        if dir_norm <= 1e-12:
+            if target_sensitive_updated:
+                lv.is_sensitive = old_target_sensitive
+            return None, f"Could not determine a valid beam direction for target '{pv.name}'."
+        global_dir = global_dir / dir_norm
+
+        source_pos = center - global_dir * (half_extent + offset_mm)
+
+        def _fmt(value):
+            return f"{float(value):.8g}"
+
+        gps_commands = self._normalize_gps_commands({
+            'particle': particle_name,
+            'energy': energy_expr,
+            'pos/type': 'Point',
+            'ang/type': 'beam1d',
+            'ang/dir1': f"{_fmt(global_dir[0])} {_fmt(global_dir[1])} {_fmt(global_dir[2])}",
+        })
+
+        position = {
+            'x': _fmt(source_pos[0]),
+            'y': _fmt(source_pos[1]),
+            'z': _fmt(source_pos[2]),
+        }
+        rotation = {'x': '0', 'y': '0', 'z': '0'}
+
+        old_active_source_ids = list(self.current_geometry_state.active_source_ids)
+        old_source_snapshot = None
+
+        existing_source = self.current_geometry_state.sources.get(source_name)
+        if existing_source:
+            old_source_snapshot = deepcopy(existing_source.to_dict())
+            existing_source.gps_commands = gps_commands
+            existing_source.position = position
+            existing_source.rotation = rotation
+            existing_source.activity = activity_value
+            existing_source.confine_to_pv = None
+            existing_source.volume_link_id = None
+            source_obj = existing_source
+            action = 'updated'
+        else:
+            final_name = self._generate_unique_name(source_name, self.current_geometry_state.sources)
+            source_obj = ParticleSource(
+                final_name,
+                gps_commands,
+                position,
+                rotation,
+                activity=activity_value,
+                confine_to_pv=None,
+                volume_link_id=None,
+            )
+            self.current_geometry_state.add_source(source_obj)
+            action = 'created'
+
+        if activate:
+            if exclusive_activation:
+                self.current_geometry_state.active_source_ids = [source_obj.id]
+            elif source_obj.id not in self.current_geometry_state.active_source_ids:
+                self.current_geometry_state.active_source_ids.append(source_obj.id)
+
+        success, error_msg = self.recalculate_geometry_state()
+        if not success:
+            lv.is_sensitive = old_target_sensitive
+            if old_source_snapshot is not None:
+                restored = ParticleSource.from_dict(old_source_snapshot)
+                self.current_geometry_state.sources[restored.name] = restored
+            else:
+                self.current_geometry_state.sources.pop(source_obj.name, None)
+            self.current_geometry_state.active_source_ids = old_active_source_ids
+            self.recalculate_geometry_state()
+            return None, error_msg
+
+        self._capture_history_state(
+            f"Configured incident beam {source_obj.name} for target {pv.name}"
+        )
+
+        return {
+            'id': source_obj.id,
+            'name': source_obj.name,
+            'action': action,
+            'gps_commands': source_obj.gps_commands,
+            'position': source_obj.position,
+            'rotation': source_obj.rotation,
+            'activity': source_obj.activity,
+            'target_pv_id': pv.id,
+            'target_pv_name': pv.name,
+            'target_lv_name': lv.name,
+            'target_is_sensitive': bool(lv.is_sensitive),
+            'target_sensitive_updated': bool(target_sensitive_updated),
+            'incident_axis': axis_key,
+            'direction_vector': {
+                'x': float(global_dir[0]),
+                'y': float(global_dir[1]),
+                'z': float(global_dir[2]),
+            },
+            'offset_mm': offset_mm,
+            'activated': bool(activate),
+            'exclusive_activation': bool(exclusive_activation),
+        }, None
 
     
     def get_source_params_from_volume(self, volume_id):
@@ -5997,6 +6309,18 @@ class ProjectManager:
                     hint='Create this material or switch to a known/NIST material.',
                 )
 
+        if state.sources and not any(bool(lv.is_sensitive) for lv in state.logical_volumes.values()):
+            self._preflight_add_issue(
+                report,
+                'warning',
+                'no_sensitive_detectors_defined_for_active_sources',
+                (
+                    'Particle sources are configured, but no logical volumes are marked sensitive. '
+                    'Track visualization may work, but Hits HDF5 outputs will stay empty.'
+                ),
+                hint='Mark at least one target logical volume as sensitive to record deposited-energy hits.',
+            )
+
         # 5) Solid geometry sanity checks.
         tiny_threshold_mm = 1e-3  # 1 micron in mm units
         for solid in state.solids.values():
@@ -6290,22 +6614,21 @@ class ProjectManager:
         else:
             macro_content.append("# Using default/random seeds")
 
+        # --- Load Geometry ---
+        macro_content.append(f"/g4pet/detector/readFile geometry.gdml")
+        macro_content.append("")
+
         # --- Configure Sensitive Detectors ---
         macro_content.append("# --- Sensitive Detectors ---")
-        # Find all LVs marked as sensitive
         sensitive_lvs = [lv for lv in self.current_geometry_state.logical_volumes.values() if lv.is_sensitive]
-        
+
         if not sensitive_lvs:
             macro_content.append("# No sensitive detectors defined.")
         else:
             for lv in sensitive_lvs:
-                sd_name = f"{lv.name}_SD" # Automatic naming
+                sd_name = f"{lv.name}_SD"
                 macro_content.append(f"/g4pet/detector/addSD {lv.name} {sd_name}")
-        
-        macro_content.append("")
 
-        # --- Load Geometry ---
-        macro_content.append(f"/g4pet/detector/readFile geometry.gdml")
         macro_content.append("")
 
         # --- Initialize ---
@@ -6321,11 +6644,13 @@ class ProjectManager:
         macro_content.append("# --- N-tuple Saving Control ---")
         save_particles = sim_params.get('save_particles', False)
         save_hits = sim_params.get('save_hits', True)
+        save_hit_metadata = sim_params.get('save_hit_metadata', True)
         macro_content.append(f"/g4pet/run/saveParticles {str(save_particles).lower()}")
         macro_content.append(f"/g4pet/run/saveHits {str(save_hits).lower()}")
+        macro_content.append(f"/g4pet/run/saveHitMetadata {str(save_hit_metadata).lower()}")
         
-        # Default Hit Energy Threshold to reduce file size
-        hit_threshold = sim_params.get('hit_energy_threshold', '400 keV')
+        # Keep the default low enough that low-energy studies still produce hits.
+        hit_threshold = str(sim_params.get('hit_energy_threshold') or '1 eV').strip()
         macro_content.append(f"/g4pet/run/hitEnergyThreshold {hit_threshold}")
         macro_content.append("")
 
@@ -6369,6 +6694,11 @@ class ProjectManager:
                 macro_content.append(f"# Source: {source.name} (Activity: {source.activity} Bq)")
                 
                 cmds = source.gps_commands.copy()
+                direction_vector = str(cmds.pop('ang/dir1', '') or '').strip()
+                ang_type = str(cmds.get('ang/type', '') or '').strip().lower()
+                emit_gps_direction = bool(direction_vector) and ang_type in {'beam1d', 'direction', 'directed', 'beam'}
+                if emit_gps_direction:
+                    cmds.pop('ang/type', None)
                 
                 # Handling Confinement and Transform
                 evaluated_pos = source._evaluated_position
@@ -6426,8 +6756,30 @@ class ProjectManager:
                             final_val_str = f"{val}"
 
                     macro_content.append(f"/gps/{cmd} {final_val_str}")
-                
-                # Write Position (Centre)
+
+                if emit_gps_direction:
+                    raw_components = direction_vector.replace(',', ' ').split()
+                    formatted_components = []
+                    for component in raw_components[:3]:
+                        success, val = self.expression_evaluator.evaluate(str(component), verbose=False)
+                        if success and isinstance(val, (int, float)):
+                            formatted_components.append(f"{float(val):.8g}")
+                        else:
+                            formatted_components.append(str(component))
+                    if len(formatted_components) == 3:
+                        try:
+                            dx, dy, dz = (float(formatted_components[0]), float(formatted_components[1]), float(formatted_components[2]))
+                            norm = np.linalg.norm([dx, dy, dz])
+                            if norm <= 1e-12:
+                                macro_content.append("/gps/direction 0 0 1")
+                            else:
+                                macro_content.append(f"/gps/direction {dx / norm:.8g} {dy / norm:.8g} {dz / norm:.8g}")
+                        except Exception:
+                            macro_content.append(f"/gps/direction {' '.join(formatted_components)}")
+                    else:
+                        macro_content.append(f"/gps/direction {direction_vector}")
+	                
+	                # Write Position (Centre)
                 # Use evaluated_pos (either Source origin or PV origin)
                 pos = evaluated_pos
                 macro_content.append(f"/gps/pos/centre {pos['x']} {pos['y']} {pos['z']} mm")

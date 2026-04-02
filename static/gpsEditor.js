@@ -1,6 +1,11 @@
 // static/gpsEditor.js
 import * as ExpressionInput from './expressionInput.js';
 import * as APIService from './apiService.js';
+import {
+    normalizeGpsAngularType,
+    isIsotropicGpsAngularType,
+    parseGpsDirectionVector,
+} from './gpsAngularMode.js';
 
 let modalElement, titleElement, nameInput, confirmButton, cancelButton;
 let particleSelect, energyContainer, shapeSelect, shapeParamsContainer;
@@ -9,6 +14,11 @@ let onConfirmCallback = null;
 let isEditMode = false;
 let editingSourceId = null;
 let currentAvailableVolumes = [];
+let currentSourceCommands = {};
+
+function isPointSourceShape(shape) {
+    return (shape || 'Point') === 'Point';
+}
 
 export function initGpsEditor(callbacks) {
     onConfirmCallback = callbacks.onConfirm;
@@ -58,6 +68,7 @@ export function show(sourceData = null, availableVolumes = []) {
     if (sourceData) { // EDIT MODE
         isEditMode = true;
         editingSourceId = sourceData.id;
+        currentSourceCommands = { ...(sourceData.gps_commands || {}) };
         titleElement.textContent = `Edit Particle Source: ${sourceData.name} `;
         nameInput.value = sourceData.name;
         nameInput.disabled = false;
@@ -98,6 +109,7 @@ export function show(sourceData = null, availableVolumes = []) {
     } else { // CREATE MODE
         isEditMode = false;
         editingSourceId = null;
+        currentSourceCommands = {};
         titleElement.textContent = "Create New Particle Source";
         nameInput.value = '';
         nameInput.disabled = false;
@@ -211,12 +223,24 @@ function renderShapeParamsUI(shapeType = null, commands = {}, position = {}, rot
     `;
     shapeParamsContainer.appendChild(angGroup);
     const angTypeSelect = angGroup.querySelector('#gpsAngType');
-    angTypeSelect.value = commands['ang/type'] || 'iso';
+    angTypeSelect.value = normalizeGpsAngularType(commands['ang/type'], 'iso');
+
+    // --- Beam Direction ---
+    const directionGroup = document.createElement('div');
+    directionGroup.className = 'transform-group';
+    directionGroup.innerHTML = `<span>Beam Direction (unit vector)</span>`;
+    shapeParamsContainer.appendChild(directionGroup);
+    const directionVector = parseGpsDirectionVector(commands['ang/dir1'], { x: '0', y: '0', z: '1' });
+    ['x', 'y', 'z'].forEach(axis => {
+        directionGroup.appendChild(ExpressionInput.create(
+            `gps_dir_${axis}`, axis.toUpperCase(), directionVector[axis] || '0'
+        ));
+    });
 
     // --- Rotation ---
     const rotGroup = document.createElement('div');
     rotGroup.className = 'transform-group';
-    rotGroup.innerHTML = `<span>Orientation (rad)</span>`;
+    rotGroup.innerHTML = `<span>Shape Orientation (rad)</span>`;
     shapeParamsContainer.appendChild(rotGroup);
     ['x', 'y', 'z'].forEach(axis => {
         rotGroup.appendChild(ExpressionInput.create(
@@ -224,15 +248,14 @@ function renderShapeParamsUI(shapeType = null, commands = {}, position = {}, rot
         ));
     });
 
-    angTypeSelect.addEventListener('change', () => {
-        const isIso = angTypeSelect.value === 'iso';
-        rotGroup.style.opacity = isIso ? '0.5' : '1.0';
-        rotGroup.querySelectorAll('input').forEach(input => input.disabled = isIso);
-    });
-    // Initial State
-    const isIso = angTypeSelect.value === 'iso';
-    rotGroup.style.opacity = isIso ? '0.5' : '1.0';
-    rotGroup.querySelectorAll('input').forEach(input => input.disabled = isIso);
+    const syncAngularUi = () => {
+        const isIso = isIsotropicGpsAngularType(angTypeSelect.value);
+        const isPointShape = isPointSourceShape(shape);
+        directionGroup.style.display = isIso ? 'none' : 'block';
+        rotGroup.style.display = isPointShape ? 'none' : 'block';
+    };
+    angTypeSelect.addEventListener('change', syncAngularUi);
+    syncAngularUi();
 }
 
 
@@ -283,15 +306,24 @@ function handleConfirm() {
     };
 
     // Collect angular commands
-    const angType = document.getElementById('gpsAngType').value;
+    const angType = normalizeGpsAngularType(document.getElementById('gpsAngType').value, 'iso');
     gpsCommands['ang/type'] = angType;
+    if (angType === 'beam1d') {
+        gpsCommands['ang/dir1'] = [
+            document.getElementById('gps_dir_x').value.trim() || '0',
+            document.getElementById('gps_dir_y').value.trim() || '0',
+            document.getElementById('gps_dir_z').value.trim() || '1',
+        ].join(' ');
+    }
 
     // Collect rotation
-    const rotation = {
-        x: document.getElementById('gps_rot_x').value,
-        y: document.getElementById('gps_rot_y').value,
-        z: document.getElementById('gps_rot_z').value
-    };
+    const rotation = isPointSourceShape(shape)
+        ? { x: '0', y: '0', z: '0' }
+        : {
+            x: document.getElementById('gps_rot_x').value,
+            y: document.getElementById('gps_rot_y').value,
+            z: document.getElementById('gps_rot_z').value
+        };
 
     // Collect Confinement
     let confineToPv = "";

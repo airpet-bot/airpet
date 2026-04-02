@@ -1,12 +1,15 @@
 import json
 import os
+from pathlib import Path
+import h5py
+import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
 from flask import jsonify, session
 from src.project_manager import ProjectManager
 from src.expression_evaluator import ExpressionEvaluator
 from src.geometry_types import DivisionVolume, ReplicaVolume
-from app import dispatch_ai_tool, app as flask_app
+from app import dispatch_ai_tool, app as flask_app, _persist_final_stream_reply
 
 @pytest.fixture
 def pm():
@@ -4864,13 +4867,15 @@ def test_preflight_snapshot_selector_routes_and_ai_wrappers_share_not_enough_ver
 
 def test_ai_simulation_tools(pm):
     # Setup for simulation
-    with patch('threading.Thread') as MockThread, \
+    with patch.object(pm, 'run_preflight_checks', return_value={'summary': {'can_run': True, 'issue_count': 0}, 'issues': []}), \
+         patch('threading.Thread') as MockThread, \
          patch('app.run_g4_simulation') as MockRunSim:
         
         # 1. Run simulation
         res = dispatch_ai_tool(pm, "run_simulation", {"events": 500})
         assert res['success']
         assert 'job_id' in res
+        assert res['preflight_summary']['can_run'] is True
         assert MockThread.called
 
         # 2. Check status
@@ -4882,6 +4887,24 @@ def test_ai_simulation_tools(pm):
         res_status = dispatch_ai_tool(pm, "get_simulation_status", {"job_id": job_id})
         assert res_status['success']
         assert res_status['status'] == "Finished"
+
+
+def test_ai_run_simulation_blocks_on_preflight_failure(pm):
+    failing_preflight = {
+        'summary': {'can_run': False, 'issue_count': 1},
+        'issues': [{'code': 'missing_world_volume', 'severity': 'error'}],
+    }
+
+    with patch.object(pm, 'run_preflight_checks', return_value=failing_preflight), \
+         patch('threading.Thread') as MockThread, \
+         patch('app.run_g4_simulation') as MockRunSim:
+        res = dispatch_ai_tool(pm, "run_simulation", {"events": 500})
+
+    assert not res['success'], res
+    assert 'preflight' in res['error'].lower()
+    assert res['preflight_summary']['can_run'] is False
+    assert res['preflight_report'] == failing_preflight
+    assert not MockThread.called
 
 
 def test_ai_tool_get_simulation_status_supports_since_cursor(pm):
@@ -5447,6 +5470,359 @@ def test_ai_tool_manage_particle_source_create_and_update(pm):
     assert upd_res['success'], upd_res
 
 
+def test_ai_tool_manage_particle_source_normalizes_common_aliases(pm):
+    create_res = dispatch_ai_tool(pm, "manage_particle_source", {
+        "action": "create",
+        "name": "BeamAI",
+        "gps_commands": {
+            "particle": "electron",
+            "distribution": "directed",
+            "direction": "0 0 1",
+            "energy": "10 GeV"
+        }
+    })
+    assert create_res['success'], create_res
+
+    source = pm.current_geometry_state.sources["BeamAI"]
+    assert source.gps_commands["particle"] == "e-"
+    assert source.gps_commands["ang/type"] == "beam1d"
+    assert source.gps_commands["ang/dir1"] == "0 0 1"
+    assert source.gps_commands["energy"] == "10*GeV"
+
+
+def test_persist_final_stream_reply_preserves_tool_intermediate_entries():
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "run_simulation", "arguments": "{}"},
+            }],
+            "metadata": {"_intermediate": True},
+        }
+    ]
+
+    _persist_final_stream_reply(
+        history,
+        role="assistant",
+        final_text="Simulation started.",
+    )
+
+    assert len(history) == 2
+    assert history[0]["metadata"]["_intermediate"] is True
+    assert history[0]["tool_calls"][0]["function"]["name"] == "run_simulation"
+    assert history[1]["role"] == "assistant"
+    assert history[1]["content"] == "Simulation started."
+    assert "_intermediate" not in history[1].get("metadata", {})
+
+
+def test_persist_final_stream_reply_reuses_plain_intermediate_without_tool_activity():
+    history = [
+        {
+            "role": "assistant",
+            "content": "Draft final reply",
+            "metadata": {"_intermediate": True, "provider_model": "test-model"},
+        }
+    ]
+
+    _persist_final_stream_reply(
+        history,
+        role="assistant",
+        final_text="Final reply",
+    )
+
+    assert len(history) == 1
+    assert history[0]["content"] == "Final reply"
+    assert history[0]["metadata"]["provider_model"] == "test-model"
+    assert "_intermediate" not in history[0]["metadata"]
+
+
+def test_ai_tool_manage_material_rejects_invalid_unit_expression(pm):
+    res = dispatch_ai_tool(pm, "manage_material", {
+        "name": "BrokenSilicon",
+        "Z": "14",
+        "A": "28.085*unsupported_unit",
+        "density": "2.33"
+    })
+    assert not res["success"], res
+    assert "Invalid material expression" in res["error"]
+
+
+def test_ai_tool_configure_incident_beam_for_uniquely_placed_lv(pm):
+    solid, err = pm.add_solid("SlabSolid", "box", {"x": "10", "y": "10", "z": "0.01"})
+    assert err is None
+    lv, err = pm.add_logical_volume("SlabLV", "SlabSolid", "G4_Galactic")
+    assert err is None
+    assert lv is not None
+    assert pm.current_geometry_state.logical_volumes["SlabLV"].is_sensitive is False
+    pv, err = pm.add_physical_volume(
+        "World",
+        "SlabPV",
+        "SlabLV",
+        {'x': '0', 'y': '0', 'z': '5'},
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '1', 'y': '1', 'z': '1'},
+    )
+    assert err is None
+
+    res = dispatch_ai_tool(pm, "configure_incident_beam", {
+        "target": "SlabLV",
+        "source_name": "BeamOnSlab",
+        "particle": "electron",
+        "energy": "10 keV",
+        "incident_axis": "+z",
+        "offset": "1*mm",
+    })
+    assert res["success"], res
+
+    source = pm.current_geometry_state.sources["BeamOnSlab"]
+    assert source.gps_commands["particle"] == "e-"
+    assert source.gps_commands["ang/type"] == "beam1d"
+    assert source.gps_commands["energy"] == "10*keV"
+    assert source.gps_commands["ang/dir1"] == "0 0 1"
+    assert float(source.position["z"]) < 5.0
+    assert pm.current_geometry_state.logical_volumes["SlabLV"].is_sensitive is True
+    assert res["source"]["target_sensitive_updated"] is True
+    assert pm.current_geometry_state.active_source_ids == [source.id]
+
+
+def test_configure_incident_beam_macro_uses_gps_direction(pm, tmp_path):
+    solid, err = pm.add_solid("MacroSlabSolid", "box", {"x": "10", "y": "10", "z": "0.01"})
+    assert err is None
+    lv, err = pm.add_logical_volume("MacroSlabLV", "MacroSlabSolid", "G4_Galactic")
+    assert err is None
+    assert lv is not None
+
+    _, err = pm.add_physical_volume(
+        "World",
+        "MacroSlabPV",
+        "MacroSlabLV",
+        {'x': '0', 'y': '0', 'z': '5'},
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '1', 'y': '1', 'z': '1'},
+    )
+    assert err is None
+
+    res = dispatch_ai_tool(pm, "configure_incident_beam", {
+        "target": "MacroSlabPV",
+        "source_name": "MacroBeam",
+        "particle": "electron",
+        "energy": "10 keV",
+        "incident_axis": "+z",
+        "offset": "1*mm",
+    })
+    assert res["success"], res
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text("{}", encoding="utf-8")
+    macro_path = pm.generate_macro_file("beam-job", {"events": 1}, str(tmp_path), str(tmp_path), str(version_dir))
+    macro_text = Path(macro_path).read_text(encoding="utf-8")
+
+    assert "/gps/direction 0 0 1" in macro_text
+    assert "/gps/ang/type beam1d" not in macro_text
+
+
+def test_directed_source_zero_vector_falls_back_to_positive_z_in_macro(pm, tmp_path):
+    create_res = dispatch_ai_tool(pm, "manage_particle_source", {
+        "action": "create",
+        "name": "ZeroVectorBeam",
+        "gps_commands": {
+            "particle": "e-",
+            "ang/type": "beam1d",
+            "ang/dir1": "0 0 0",
+            "energy": "10*keV",
+        }
+    })
+    assert create_res["success"], create_res
+    assert create_res["source_id"] in pm.current_geometry_state.active_source_ids
+
+    version_dir = tmp_path / "version_zero_dir"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text("{}", encoding="utf-8")
+    macro_path = pm.generate_macro_file("beam-job-zero", {"events": 1}, str(tmp_path), str(tmp_path), str(version_dir))
+    macro_text = Path(macro_path).read_text(encoding="utf-8")
+
+    assert "/gps/direction 0 0 1" in macro_text
+
+
+def test_generate_macro_uses_low_default_hit_energy_threshold(pm, tmp_path):
+    version_dir = tmp_path / "version_hit_threshold_default"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text("{}", encoding="utf-8")
+
+    macro_path = pm.generate_macro_file("hit-threshold-default", {"events": 1}, str(tmp_path), str(tmp_path), str(version_dir))
+    macro_text = Path(macro_path).read_text(encoding="utf-8")
+
+    assert "/g4pet/run/hitEnergyThreshold 1 eV" in macro_text
+    assert "/g4pet/run/saveHitMetadata true" in macro_text
+
+
+def test_generate_macro_respects_explicit_hit_energy_threshold(pm, tmp_path):
+    version_dir = tmp_path / "version_hit_threshold_override"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text("{}", encoding="utf-8")
+
+    macro_path = pm.generate_macro_file(
+        "hit-threshold-override",
+        {"events": 1, "hit_energy_threshold": "25 eV"},
+        str(tmp_path),
+        str(tmp_path),
+        str(version_dir),
+    )
+    macro_text = Path(macro_path).read_text(encoding="utf-8")
+
+    assert "/g4pet/run/hitEnergyThreshold 25 eV" in macro_text
+
+
+def test_generate_macro_allows_disabling_hit_metadata(pm, tmp_path):
+    version_dir = tmp_path / "version_hit_metadata_override"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text("{}", encoding="utf-8")
+
+    macro_path = pm.generate_macro_file(
+        "hit-metadata-override",
+        {"events": 1, "save_hit_metadata": False},
+        str(tmp_path),
+        str(tmp_path),
+        str(version_dir),
+    )
+    macro_text = Path(macro_path).read_text(encoding="utf-8")
+
+    assert "/g4pet/run/saveHitMetadata false" in macro_text
+
+
+def test_ai_tool_manage_logical_volume_preserves_sensitivity_when_omitted_on_update(pm):
+    lv, err = pm.add_logical_volume("SensitiveLV", "box_solid", "G4_Galactic", is_sensitive=True)
+    assert err is None
+    assert lv is not None
+    assert pm.current_geometry_state.logical_volumes["SensitiveLV"].is_sensitive is True
+
+    res = dispatch_ai_tool(pm, "manage_logical_volume", {
+        "name": "SensitiveLV",
+        "material_ref": "G4_AIR",
+    })
+    assert res["success"], res
+    assert pm.current_geometry_state.logical_volumes["SensitiveLV"].is_sensitive is True
+
+
+def test_generate_macro_places_sensitive_detector_commands_after_geometry_load(pm, tmp_path):
+    lv, err = pm.add_logical_volume("SensitiveMacroLV", "box_solid", "G4_Galactic", is_sensitive=True)
+    assert err is None
+    assert lv is not None
+
+    version_dir = tmp_path / "version_sd_order"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text("{}", encoding="utf-8")
+
+    macro_path = pm.generate_macro_file("sd-order", {"events": 1}, str(tmp_path), str(tmp_path), str(version_dir))
+    macro_text = Path(macro_path).read_text(encoding="utf-8")
+
+    read_file_idx = macro_text.index("/g4pet/detector/readFile geometry.gdml")
+    add_sd_idx = macro_text.index("/g4pet/detector/addSD SensitiveMacroLV SensitiveMacroLV_SD")
+    init_idx = macro_text.index("/run/initialize")
+
+    assert read_file_idx < add_sd_idx < init_idx
+
+
+def test_ai_tool_configure_incident_beam_rejects_ambiguous_lv_target(pm):
+    solid, err = pm.add_solid("RepeatedSolid", "box", {"x": "1", "y": "1", "z": "1"})
+    assert err is None
+    lv, err = pm.add_logical_volume("RepeatedLV", "RepeatedSolid", "G4_Galactic")
+    assert err is None
+    assert lv is not None
+
+    for idx in range(2):
+        _, err = pm.add_physical_volume(
+            "World",
+            f"RepeatedPV{idx}",
+            "RepeatedLV",
+            {'x': str(idx * 10), 'y': '0', 'z': '0'},
+            {'x': '0', 'y': '0', 'z': '0'},
+            {'x': '1', 'y': '1', 'z': '1'},
+        )
+        assert err is None
+
+    res = dispatch_ai_tool(pm, "configure_incident_beam", {
+        "target": "RepeatedLV",
+        "particle": "e-",
+        "energy": "10*keV",
+    })
+    assert not res["success"], res
+    assert "specific physical volume" in res["error"].lower()
+
+
+def test_ai_tool_configure_incident_beam_respects_target_rotation(pm):
+    solid, err = pm.add_solid("RotSlabSolid", "box", {"x": "10", "y": "10", "z": "0.5"})
+    assert err is None
+    lv, err = pm.add_logical_volume("RotSlabLV", "RotSlabSolid", "G4_Galactic")
+    assert err is None
+    assert lv is not None
+
+    _, err = pm.add_physical_volume(
+        "World",
+        "RotSlabPV",
+        "RotSlabLV",
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '0', 'y': '90*deg', 'z': '0'},
+        {'x': '1', 'y': '1', 'z': '1'},
+    )
+    assert err is None
+
+    res = dispatch_ai_tool(pm, "configure_incident_beam", {
+        "target": "RotSlabPV",
+        "source_name": "RotBeam",
+        "particle": "electron",
+        "energy": "10 keV",
+        "incident_axis": "+z",
+        "offset": "2*mm",
+    })
+    assert res["success"], res
+
+    source = pm.current_geometry_state.sources["RotBeam"]
+    dir_vec = [float(value) for value in source.gps_commands["ang/dir1"].split()]
+    assert abs(abs(dir_vec[0]) - 1.0) < 1e-6
+    assert abs(dir_vec[1]) < 1e-6
+    assert abs(dir_vec[2]) < 1e-5
+    assert float(source.position["x"]) * dir_vec[0] < 0.0
+
+
+def test_project_manager_configure_incident_beam_requires_particle_and_energy(pm):
+    solid, err = pm.add_solid("ReqSolid", "box", {"x": "1", "y": "1", "z": "1"})
+    assert err is None
+    lv, err = pm.add_logical_volume("ReqLV", "ReqSolid", "G4_Galactic")
+    assert err is None
+    assert lv is not None
+
+    _, err = pm.add_physical_volume(
+        "World",
+        "ReqPV",
+        "ReqLV",
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '0', 'y': '0', 'z': '0'},
+        {'x': '1', 'y': '1', 'z': '1'},
+    )
+    assert err is None
+
+    res_missing_particle, err = pm.configure_incident_beam(
+        target="ReqPV",
+        particle="",
+        energy="10*keV",
+    )
+    assert res_missing_particle is None
+    assert "particle is required" in err.lower()
+
+    res_missing_energy, err = pm.configure_incident_beam(
+        target="ReqPV",
+        particle="e-",
+        energy="",
+    )
+    assert res_missing_energy is None
+    assert "energy is required" in err.lower()
+
+
 def test_ai_tool_rename_ui_group(pm):
     dispatch_ai_tool(pm, "manage_ui_group", {
         "group_type": "solid",
@@ -5545,6 +5921,150 @@ def test_ai_tool_route_bridge_get_metadata_and_analysis(pm):
     assert meta_res['metadata']['events'] == 1000
     assert analysis_res['success'], analysis_res
     assert analysis_res['analysis']['total_hits'] == 5
+
+
+def test_ai_tool_route_bridge_get_analysis_without_request_context(pm):
+    with patch(
+        'app.get_simulation_analysis',
+        side_effect=lambda version_id, job_id: jsonify({"success": True, "analysis": {"total_hits": 7, "job_id": job_id}})
+    ):
+        analysis_res = dispatch_ai_tool(pm, "get_simulation_analysis", {
+            "version_id": "v2",
+            "job_id": "job-ctxless",
+            "energy_bins": 32,
+            "spatial_bins": 16,
+        })
+
+    assert analysis_res['success'], analysis_res
+    assert analysis_res['analysis']['total_hits'] == 7
+    assert analysis_res['analysis']['job_id'] == 'job-ctxless'
+
+
+def test_delete_version_route_removes_version_and_child_sim_runs(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "history_delete_project"
+
+    version_id, _ = pm.save_project_version("delete_me")
+    sim_runs_dir = Path(pm._get_version_dir(version_id)) / "sim_runs"
+    (sim_runs_dir / "run-a").mkdir(parents=True)
+    (sim_runs_dir / "run-b").mkdir(parents=True)
+
+    with patch('app.get_project_manager_for_session', return_value=pm):
+        with flask_app.test_client() as client:
+            resp = client.post('/api/delete_version', json={
+                'project_name': pm.project_name,
+                'version_id': version_id,
+            })
+
+    data = resp.get_json()
+    assert resp.status_code == 200
+    assert data['success'] is True
+    assert data['deleted_run_count'] == 2
+    assert not Path(pm._get_version_dir(version_id)).exists()
+    assert pm.current_version_id is None
+    assert pm.is_changed is True
+
+
+def test_delete_simulation_run_route_removes_only_selected_run(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "history_delete_run_project"
+
+    version_id, _ = pm.save_project_version("keep_version")
+    sim_runs_dir = Path(pm._get_version_dir(version_id)) / "sim_runs"
+    target_run_dir = sim_runs_dir / "run-target"
+    sibling_run_dir = sim_runs_dir / "run-sibling"
+    target_run_dir.mkdir(parents=True)
+    sibling_run_dir.mkdir(parents=True)
+
+    with patch('app.get_project_manager_for_session', return_value=pm):
+        with flask_app.test_client() as client:
+            resp = client.post('/api/delete_simulation_run', json={
+                'project_name': pm.project_name,
+                'version_id': version_id,
+                'job_id': 'run-target',
+            })
+
+    data = resp.get_json()
+    assert resp.status_code == 200
+    assert data['success'] is True
+    assert not target_run_dir.exists()
+    assert sibling_run_dir.exists()
+    assert Path(pm._get_version_dir(version_id)).exists()
+
+
+def test_simulation_analysis_route_handles_degenerate_histogram_ranges(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "analysis_degenerate_project"
+
+    version_id, _ = pm.save_project_version("analysis_case")
+    job_id = "analysis-job"
+    run_dir = Path(pm._get_version_dir(version_id)) / "sim_runs" / job_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output_path = run_dir / "output.hdf5"
+
+    with h5py.File(output_path, 'w') as f:
+        hits = f.create_group('default_ntuples/Hits')
+        hits.create_dataset('entries', data=5)
+        hits.create_dataset('Edep', data=np.full(5, 0.01))
+        hits.create_dataset('PosX', data=np.zeros(5))
+        hits.create_dataset('PosY', data=np.zeros(5))
+        hits.create_dataset('PosZ', data=np.zeros(5))
+        hits.create_dataset('CopyNo', data=np.zeros(5, dtype=int))
+        hits.create_dataset('ParticleName', data=np.array([b'e-'] * 5, dtype='S2'))
+
+    with patch('app.get_project_manager_for_session', return_value=pm):
+        with flask_app.test_client() as client:
+            resp = client.get(
+                f'/api/simulation/analysis/{version_id}/{job_id}?energy_bins=100&spatial_bins=50'
+            )
+
+    data = resp.get_json()
+    assert resp.status_code == 200
+    assert data['success'] is True
+    assert data['analysis']['total_hits'] == 5
+    assert len(data['analysis']['energy_spectrum']['counts']) == 100
+    assert len(data['analysis']['energy_spectrum']['bin_edges']) == 101
+    assert len(data['analysis']['heatmaps']['xy']['z']) == 50
+    assert data['analysis']['filtering']['sensitive_detector_supported'] is False
+    assert data['analysis']['filtering']['available_sensitive_detectors'] == []
+    assert data['analysis']['filtering']['selected_sensitive_detector'] == ''
+
+
+def test_simulation_analysis_route_filters_by_sensitive_detector(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "analysis_filter_project"
+
+    version_id, _ = pm.save_project_version("analysis_filter_case")
+    job_id = "analysis-filter-job"
+    run_dir = Path(pm._get_version_dir(version_id)) / "sim_runs" / job_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output_path = run_dir / "output.hdf5"
+
+    with h5py.File(output_path, 'w') as f:
+        hits = f.create_group('default_ntuples/Hits')
+        hits.create_dataset('entries', data=4)
+        hits.create_dataset('Edep', data=np.array([0.01, 0.02, 0.03, 0.04]))
+        hits.create_dataset('PosX', data=np.array([0.0, 1.0, 2.0, 3.0]))
+        hits.create_dataset('PosY', data=np.array([0.0, 1.0, 2.0, 3.0]))
+        hits.create_dataset('PosZ', data=np.array([0.0, 1.0, 2.0, 3.0]))
+        hits.create_dataset('CopyNo', data=np.array([0, 1, 2, 3], dtype=int))
+        hits.create_dataset('ParticleName', data=np.array([b'e-', b'e-', b'gamma', b'gamma'], dtype='S5'))
+        hits.create_dataset('SensitiveDetectorName', data=np.array([b'SD_A', b'SD_A', b'SD_B', b'SD_B'], dtype='S8'))
+
+    with patch('app.get_project_manager_for_session', return_value=pm):
+        with flask_app.test_client() as client:
+            resp = client.get(
+                f'/api/simulation/analysis/{version_id}/{job_id}?energy_bins=10&spatial_bins=5&sensitive_detector=SD_B'
+            )
+
+    data = resp.get_json()
+    assert resp.status_code == 200
+    assert data['success'] is True
+    assert data['analysis']['total_hits'] == 2
+    assert data['analysis']['filtering']['sensitive_detector_supported'] is True
+    assert data['analysis']['filtering']['available_sensitive_detectors'] == ['SD_A', 'SD_B']
+    assert data['analysis']['filtering']['selected_sensitive_detector'] == 'SD_B'
+    assert sum(data['analysis']['energy_spectrum']['counts']) == 2
 
 
 def test_ai_tool_batch_geometry_update_accepts_type_alias(pm):

@@ -39,6 +39,7 @@ When using `create_primitive_solid`, use these exact parameter names:
     *   `manage_define`: Use this to keep the geometry parametric. Define constants like `{"name": "num_copies", "value": "10"}`.
     *   `create_primitive_solid`: Create the shape first, then bind it to a Logical Volume.
     *   `place_volume`: Physical volumes (PVs) represent instances of Logical Volumes (LVs). Use `copy_number_expr` field to reference a define name (e.g., `"copy_number_expr": "num_copies"`) for parametric copy counts. The value should be the STRING name of the define, not the numeric value.
+    *   `configure_incident_beam`: Preferred tool for monoenergetic directed beams incident on a target volume. Use this instead of hand-authoring GPS commands when the user asks for a beam hitting a slab, detector, or phantom. It can also mark the target sensitive for hit recording.
     *   `manage_assembly`: Create assemblies with multiple placements. Specify placements as an array with position/rotation for each. Example: `{"name": "my_assembly", "placements": [{"volume_ref": "det_LV", "position": {"x": "0", "y": "0", "z": "0"}}, {"volume_ref": "det_LV", "position": {"x": "100", "y": "0", "z": "0"}}]}`
     *   `create_skin_surface`: Create a skin surface by first creating an optical surface property via `create_optical_surface`, then use it: `{"name": "my_skin", "volume_ref": "my_LV", "surfaceproperty_ref": "my_optical_prop"}`
     *   `manage_material`: Create or update materials. To set material state, use: `{"name": "material_name", "state": "liquid"}`. Valid states: "solid" (default), "liquid", "gas".
@@ -51,9 +52,13 @@ When using `create_primitive_solid`, use these exact parameter names:
     *   `get_analysis_summary`: Once a simulation is complete, use this to see hit counts.
 
 ## Physics Components & Materials
-*   **Common NIST Materials:** G4_Pb, G4_WATER, G4_LSO, G4_Al, G4_AIR, G4_Galactic, G4_BGO, G4_PLASTIC_SC_VINYLTOLUENE.
+*   **Common NIST Materials:** G4_Pb, G4_WATER, G4_LSO, G4_Al, G4_AIR, G4_Galactic, G4_BGO, G4_PLASTIC_SC_VINYLTOLUENE, G4_Si.
 *   **Material States:** Materials can have state: "solid" (default), "liquid", or "gas".
+*   **Preferred Silicon Material:** For silicon slabs, wafers, or detectors, prefer the built-in material `G4_Si` unless the user explicitly asks for a custom material definition.
+*   **Custom Material Expressions:** If you must define a custom material, use simple AIRPET-friendly expressions such as `A="28.085"` and `density="2.33*g/cm3"`. Do not invent new unit symbols.
 *   **Sensors:** Mark Logical Volumes as `is_sensitive=True` if they are active detector elements.
+*   **GPS Directionality:** For low-level GPS work, use `ang/type="beam1d"` for directed beams and `ang/type="iso"` for isotropic emission. Friendly aliases like `Direction` and `Isotropic` are normalized, but prefer the Geant4-style values when possible.
+*   **Beam Tool Preference:** For prompts such as "10 keV electron incident on a thin silicon slab", create or identify the target geometry and then use `configure_incident_beam` rather than manually assembling GPS commands with `manage_particle_source`. Let the tool keep the target sensitive unless the user explicitly wants a passive target.
 
 ## Response Style
 *   Be technical and precise.

@@ -751,6 +751,147 @@ def _parse_sse_data_events(response):
     return events
 
 
+def test_ai_chat_stream_persists_final_reply_in_history_for_local_adapter(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.invoke_text_request_for_backend') as MockInvokeAdapter:
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        MockInvokeAdapter.return_value = MagicMock(
+            backend_id='llama_cpp',
+            model='qwen-local',
+            text='All set.',
+            usage={'prompt_tokens': 7, 'completion_tokens': 3},
+            raw_response={},
+        )
+
+        response = client.post('/api/ai/chat/stream', json={
+            'message': 'Say hello.',
+            'model': 'llama_cpp::qwen-local',
+        })
+
+        assert response.status_code == 200
+        events = _parse_sse_data_events(response)
+        complete_events = [evt for evt in events if evt.get('type') == 'complete']
+        assert complete_events, events
+        assert complete_events[-1]['message'] == 'All set.'
+
+        history_response = client.get('/api/ai/history')
+        assert history_response.status_code == 200
+        history = history_response.get_json()['history']
+
+        final_messages = [
+            msg for msg in history
+            if msg.get('role') == 'assistant'
+            and msg.get('content') == 'All set.'
+            and not (msg.get('metadata') or {}).get('_intermediate')
+        ]
+        assert final_messages, history
+
+
+def test_ai_chat_stream_persists_final_reply_in_history_for_gemini(client):
+    final_part = MagicMock()
+    final_part.function_call = None
+    final_part.text = "Gemini final reply."
+
+    final_response = MagicMock()
+    final_response.candidates = [MagicMock()]
+    final_response.candidates[0].content.parts = [final_part]
+    final_response.candidates[0].content.role = "model"
+    final_response.text = "Gemini final reply."
+
+    with patch('app.get_gemini_client_for_session') as MockClientGetter, \
+         patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.types.GenerateContentConfig', side_effect=lambda **kwargs: kwargs):
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = final_response
+        MockClientGetter.return_value = mock_client
+
+        response = client.post('/api/ai/chat/stream', json={
+            'message': 'Say hello.',
+            'model': 'models/gemini-2.0-flash-exp',
+        })
+
+        assert response.status_code == 200
+        events = _parse_sse_data_events(response)
+        complete_events = [evt for evt in events if evt.get('type') == 'complete']
+        assert complete_events, events
+        assert complete_events[-1]['message'] == 'Gemini final reply.'
+
+        history_response = client.get('/api/ai/history')
+        assert history_response.status_code == 200
+        history = history_response.get_json()['history']
+
+        final_messages = [
+            msg for msg in history
+            if msg.get('role') == 'model'
+            and (msg.get('parts') or [{}])[0].get('text') == 'Gemini final reply.'
+            and not (msg.get('metadata') or {}).get('_intermediate')
+        ]
+        assert final_messages, history
+
+
+def test_ai_chat_stream_gemini_handles_mixed_history_message_formats(client):
+    final_part = MagicMock()
+    final_part.function_call = None
+    final_part.text = "Gemini reply after mixed history."
+
+    final_response = MagicMock()
+    final_response.candidates = [MagicMock()]
+    final_response.candidates[0].content.parts = [final_part]
+    final_response.candidates[0].content.role = "model"
+    final_response.text = "Gemini reply after mixed history."
+
+    with patch('app.get_gemini_client_for_session') as MockClientGetter, \
+         patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.types.GenerateContentConfig', side_effect=lambda **kwargs: kwargs):
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        pm.chat_history = [
+            {
+                "role": "assistant",
+                "content": "Earlier local assistant reply.",
+                "tool_calls": [
+                    {
+                        "id": "hist_call_1",
+                        "type": "function",
+                        "function": {"name": "manage_define", "arguments": "{\"name\":\"si_thickness\",\"value\":\"0.1\"}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "manage_define",
+                "content": json.dumps({"success": True, "message": "Define updated."}),
+                "tool_call_id": "hist_call_1",
+            },
+        ]
+        MockPMGetter.return_value = pm
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = final_response
+        MockClientGetter.return_value = mock_client
+
+        response = client.post('/api/ai/chat/stream', json={
+            'message': 'Continue from here.',
+            'model': 'models/gemini-2.0-flash-exp',
+        })
+
+        assert response.status_code == 200
+        events = _parse_sse_data_events(response)
+        complete_events = [evt for evt in events if evt.get('type') == 'complete']
+        assert complete_events, events
+        assert complete_events[-1]['message'] == 'Gemini reply after mixed history.'
+
+
 @pytest.mark.parametrize(
     "route_path",
     [

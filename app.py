@@ -25,7 +25,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template, Response, session, send_file
+from flask import Flask, request, jsonify, render_template, Response, session, send_file, has_request_context
 from flask_cors import CORS
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -705,6 +705,7 @@ def _objective_builder_example_payload(pm: Optional[ProjectManager], template_id
             'events': 1000,
             'threads': 1,
             'save_hits': True,
+            'save_hit_metadata': True,
             'save_particles': True,
             'hit_energy_threshold': '1 eV',
         },
@@ -964,6 +965,7 @@ def _build_objective_builder_payload(payload, validation):
         'events': 1000,
         'threads': 1,
         'save_hits': True,
+        'save_hit_metadata': True,
         'save_particles': True,
         'hit_energy_threshold': '1 eV',
     }
@@ -4717,8 +4719,75 @@ def get_simulation_analysis(version_id, job_id):
         # Parse query parameters
         energy_bins = request.args.get('energy_bins', default=100, type=int)
         spatial_bins = request.args.get('spatial_bins', default=50, type=int)
+        sensitive_detector = (request.args.get('sensitive_detector') or '').strip()
+        energy_bins = max(int(energy_bins or 100), 1)
+        spatial_bins = max(int(spatial_bins or 50), 1)
 
         analysis_data = {}
+
+        def _finite_numeric_array(values):
+            if values is None:
+                return np.array([], dtype=float)
+            arr = np.asarray(values, dtype=float).reshape(-1)
+            return arr[np.isfinite(arr)]
+
+        def _expanded_range(min_val, max_val):
+            min_val = float(min_val)
+            max_val = float(max_val)
+            if not np.isfinite(min_val) or not np.isfinite(max_val):
+                return None
+            if min_val == max_val:
+                padding = max(abs(min_val) * 1e-9, 1e-12)
+                return (min_val - padding, max_val + padding)
+            return (min_val, max_val)
+
+        def _safe_histogram_1d(values, bins):
+            arr = _finite_numeric_array(values)
+            if arr.size == 0:
+                return np.array([], dtype=int), np.array([], dtype=float)
+
+            value_range = _expanded_range(arr.min(), arr.max())
+            if value_range is None:
+                return np.array([], dtype=int), np.array([], dtype=float)
+
+            hist, bin_edges = np.histogram(arr, bins=max(int(bins), 1), range=value_range)
+            return hist, bin_edges
+
+        def _safe_histogram_2d(x_values, y_values, bins):
+            x_arr = np.asarray(x_values, dtype=float).reshape(-1)
+            y_arr = np.asarray(y_values, dtype=float).reshape(-1)
+            if x_arr.size == 0 or y_arr.size == 0:
+                return np.array([]), np.array([]), np.array([])
+
+            valid_mask = np.isfinite(x_arr) & np.isfinite(y_arr)
+            x_arr = x_arr[valid_mask]
+            y_arr = y_arr[valid_mask]
+            if x_arr.size == 0 or y_arr.size == 0:
+                return np.array([]), np.array([]), np.array([])
+
+            x_range = _expanded_range(x_arr.min(), x_arr.max())
+            y_range = _expanded_range(y_arr.min(), y_arr.max())
+            if x_range is None or y_range is None:
+                return np.array([]), np.array([]), np.array([])
+
+            return np.histogram2d(x_arr, y_arr, bins=max(int(bins), 1), range=(x_range, y_range))
+
+        def _decode_string_array(values):
+            out = []
+            for value in np.asarray(values).reshape(-1):
+                if isinstance(value, bytes):
+                    out.append(value.decode('utf-8'))
+                else:
+                    out.append(str(value))
+            return np.array(out, dtype=object)
+
+        def _apply_mask(values, mask):
+            arr = np.asarray(values)
+            if arr.size == 0:
+                return arr
+            if mask is None or arr.shape[0] != mask.shape[0]:
+                return arr
+            return arr[mask]
 
         with h5py.File(output_path, 'r') as f:
             # Check for Hits ntuple
@@ -4764,10 +4833,45 @@ def get_simulation_analysis(version_id, job_id):
             pos_z = get_col('PosZ')
             copy_no = get_col('CopyNo')
             particle_name_ds = get_col('ParticleName')
-            
+            sensitive_detector_ds = get_col('SensitiveDetectorName')
+
+            available_sensitive_detectors = []
+            selected_sensitive_detector = ''
+            supports_sensitive_detector_filter = len(sensitive_detector_ds) > 0
+            hit_mask = None
+
+            if supports_sensitive_detector_filter:
+                sensitive_detector_names = _decode_string_array(sensitive_detector_ds)
+                available_sensitive_detectors = sorted({
+                    str(name).strip()
+                    for name in sensitive_detector_names
+                    if str(name).strip()
+                })
+
+                if sensitive_detector:
+                    if sensitive_detector not in available_sensitive_detectors:
+                        return jsonify({
+                            "success": False,
+                            "error": f"Sensitive detector '{sensitive_detector}' not found in hits output."
+                        }), 400
+                    selected_sensitive_detector = sensitive_detector
+                    hit_mask = sensitive_detector_names == sensitive_detector
+            elif sensitive_detector:
+                return jsonify({
+                    "success": False,
+                    "error": "This run does not contain sensitive-detector metadata, so detector filtering is unavailable."
+                }), 400
+
+            edep = _apply_mask(edep, hit_mask)
+            pos_x = _apply_mask(pos_x, hit_mask)
+            pos_y = _apply_mask(pos_y, hit_mask)
+            pos_z = _apply_mask(pos_z, hit_mask)
+            copy_no = _apply_mask(copy_no, hit_mask)
+            particle_name_ds = _apply_mask(particle_name_ds, hit_mask)
+             
             # 1. Energy Spectrum
             if len(edep) > 0:
-                hist, bin_edges = np.histogram(edep, bins=energy_bins)
+                hist, bin_edges = _safe_histogram_1d(edep, energy_bins)
                 analysis_data['energy_spectrum'] = {
                     'counts': hist.tolist(),
                     'bin_edges': bin_edges.tolist()
@@ -4779,14 +4883,10 @@ def get_simulation_analysis(version_id, job_id):
             def compute_heatmap(x, y, bins):
                 if len(x) == 0 or len(y) == 0:
                     return {'z': [], 'x_edges': [], 'y_edges': []}
-                # Use np.histogram2d
-                # Note: numpy returns (nx, ny), where x is the first dimension (rows).
-                # Plotly expects z as an array of arrays where z[i] is a row.
-                # So we might need to transpose depending on convention.
-                # Usually: z[y][x].
-                # histogram2d returns H[x, y].
-                # So H.T is H[y, x].
-                h, x_edges, y_edges = np.histogram2d(x, y, bins=bins)
+                # Note: histogram2d returns H[x, y], so we transpose for Plotly.
+                h, x_edges, y_edges = _safe_histogram_2d(x, y, bins)
+                if h.size == 0:
+                    return {'z': [], 'x_edges': [], 'y_edges': []}
                 return {
                     'z': h.T.tolist(), 
                     'x_edges': x_edges.tolist(),
@@ -4830,8 +4930,13 @@ def get_simulation_analysis(version_id, job_id):
                     analysis_data['particle_breakdown'] = {'names': [], 'counts': []}
             else:
                 analysis_data['particle_breakdown'] = {'names': [], 'counts': []}
-            
+
             analysis_data['total_hits'] = len(edep)
+            analysis_data['filtering'] = {
+                'sensitive_detector_supported': supports_sensitive_detector_filter,
+                'available_sensitive_detectors': available_sensitive_detectors,
+                'selected_sensitive_detector': selected_sensitive_detector,
+            }
 
         return jsonify({"success": True, "analysis": analysis_data})
 
@@ -6024,6 +6129,45 @@ def save_version_route():
 def get_version_dir(project_name, version_id):
     return os.path.join(PROJECTS_BASE_DIR, project_name, "versions", version_id)
 
+
+def _resolve_version_dir_for_mutation(pm: ProjectManager, project_name: Any, version_id: Any) -> tuple[str, str, str, str]:
+    project_name_norm = str(project_name or pm.project_name or '').strip()
+    version_id_norm = str(version_id or '').strip()
+
+    if not project_name_norm:
+        raise ValueError("project_name is required.")
+    if not version_id_norm:
+        raise ValueError("version_id is required.")
+
+    projects_root = os.path.realpath(pm.projects_dir)
+    project_root = os.path.realpath(os.path.join(projects_root, project_name_norm))
+    versions_root = os.path.realpath(os.path.join(project_root, "versions"))
+    version_dir = os.path.realpath(os.path.join(versions_root, version_id_norm))
+
+    if not _is_path_within_root(project_root, projects_root):
+        raise ValueError(f"Invalid project_name '{project_name_norm}'.")
+    if not _is_path_within_root(version_dir, versions_root):
+        raise ValueError(f"Invalid version_id '{version_id_norm}'.")
+
+    return project_name_norm, version_id_norm, versions_root, version_dir
+
+
+def _resolve_sim_run_dir_for_mutation(pm: ProjectManager, project_name: Any, version_id: Any, job_id: Any) -> tuple[str, str, str, str, str]:
+    project_name_norm, version_id_norm, versions_root, version_dir = _resolve_version_dir_for_mutation(
+        pm, project_name, version_id
+    )
+    job_id_norm = str(job_id or '').strip()
+    if not job_id_norm:
+        raise ValueError("job_id is required.")
+
+    sim_runs_root = os.path.realpath(os.path.join(version_dir, "sim_runs"))
+    run_dir = os.path.realpath(os.path.join(sim_runs_root, job_id_norm))
+
+    if not _is_path_within_root(run_dir, sim_runs_root):
+        raise ValueError(f"Invalid job_id '{job_id_norm}'.")
+
+    return project_name_norm, version_id_norm, versions_root, version_dir, run_dir
+
 @app.route('/api/get_project_history', methods=['GET'])
 def get_project_history_route():
     pm = get_project_manager_for_session()
@@ -6146,6 +6290,78 @@ def rename_version_route():
         return jsonify({"success": True, "message": "Version renamed.", "version_id": new_version_id})
     except Exception as e:
         return jsonify({"success": False, "error": f"Failed to rename version: {e}"}), 500
+
+
+@app.route('/api/delete_version', methods=['POST'])
+def delete_version_route():
+    pm = get_project_manager_for_session()
+
+    data = request.get_json() or {}
+    project_name = data.get('project_name') or pm.project_name
+    version_id = data.get('version_id')
+
+    if version_id == AUTOSAVE_VERSION_ID:
+        return jsonify({"success": False, "error": "Autosave entry cannot be deleted from History."}), 400
+
+    try:
+        _, version_id_norm, _, version_dir = _resolve_version_dir_for_mutation(pm, project_name, version_id)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    if not os.path.isdir(version_dir):
+        return jsonify({"success": False, "error": f"Version '{version_id_norm}' not found."}), 404
+
+    sim_runs_path = os.path.join(version_dir, "sim_runs")
+    deleted_run_count = len([
+        entry for entry in os.listdir(sim_runs_path)
+        if os.path.isdir(os.path.join(sim_runs_path, entry))
+    ]) if os.path.isdir(sim_runs_path) else 0
+
+    try:
+        shutil.rmtree(version_dir)
+        if pm.current_version_id == version_id_norm:
+            pm.current_version_id = None
+            pm.is_changed = True
+        return jsonify({
+            "success": True,
+            "message": f"Deleted version '{version_id_norm}' and {deleted_run_count} simulation run(s).",
+            "version_id": version_id_norm,
+            "deleted_run_count": deleted_run_count,
+        })
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Failed to delete version: {exc}"}), 500
+
+
+@app.route('/api/delete_simulation_run', methods=['POST'])
+def delete_simulation_run_route():
+    pm = get_project_manager_for_session()
+
+    data = request.get_json() or {}
+    project_name = data.get('project_name') or pm.project_name
+    version_id = data.get('version_id')
+    job_id = data.get('job_id')
+
+    if version_id == AUTOSAVE_VERSION_ID:
+        return jsonify({"success": False, "error": "Autosave does not contain simulation runs."}), 400
+
+    try:
+        _, version_id_norm, _, _, run_dir = _resolve_sim_run_dir_for_mutation(pm, project_name, version_id, job_id)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    if not os.path.isdir(run_dir):
+        return jsonify({"success": False, "error": f"Simulation run '{job_id}' not found."}), 404
+
+    try:
+        shutil.rmtree(run_dir)
+        return jsonify({
+            "success": True,
+            "message": f"Deleted simulation run '{job_id}'.",
+            "version_id": version_id_norm,
+            "job_id": str(job_id),
+        })
+    except Exception as exc:
+        return jsonify({"success": False, "error": f"Failed to delete simulation run: {exc}"}), 500
 
 @app.route('/api/get_project_list', methods=['GET'])
 def get_project_list_route():
@@ -7791,9 +8007,16 @@ def get_project_state_route():
 
     # Always return a valid state
     return jsonify({
+        "success": True,
+        "message": "Project state loaded.",
         "project_state": state,
         "scene_update": scene,
-        "project_name": project_name
+        "project_name": project_name,
+        "response_type": "full",
+        "history_status": {
+            "can_undo": pm.history_index > 0,
+            "can_redo": pm.history_index < len(pm.history) - 1,
+        }
     })
 
 @app.route('/get_object_details', methods=['GET'])
@@ -8440,6 +8663,7 @@ def ai_health_check_route():
     if gemini_client:
         try:
             allowed_model_names = {
+                "models/gemini-3.1-flash-lite-preview",
                 "models/gemini-3-flash-preview",
                 "models/gemini-2.5-flash",
                 "models/gemini-2.5-pro",
@@ -8759,6 +8983,24 @@ AI_TOOL_ARG_ALIASES = {
         "gps": "gps_commands",
         "commands": "gps_commands"
     },
+    "configure_incident_beam": {
+        "name": "source_name",
+        "source": "source_name",
+        "target_name": "target",
+        "target_pv_name": "target",
+        "target_pv_id": "target",
+        "target_lv": "target",
+        "target_lv_name": "target",
+        "target_volume": "target",
+        "volume": "target",
+        "axis": "incident_axis",
+        "beam_axis": "incident_axis",
+        "distance": "offset",
+        "margin": "offset",
+        "make_target_sensitive": "mark_target_sensitive",
+        "record_hits": "mark_target_sensitive",
+        "set_target_sensitive": "mark_target_sensitive",
+    },
     "set_active_source": {
         "id": "source_id"
     },
@@ -8821,6 +9063,15 @@ AI_TOOL_DEFAULTS = {
         "position": {"x": "0", "y": "0", "z": "0"},
         "rotation": {"x": "0", "y": "0", "z": "0"},
         "activity": 1.0
+    },
+    "configure_incident_beam": {
+        "source_name": "incident_beam",
+        "incident_axis": "+z",
+        "offset": "1*mm",
+        "activity": 1.0,
+        "mark_target_sensitive": True,
+        "activate": True,
+        "exclusive_activation": True,
     },
     "process_lors": {
         "coincidence_window_ns": 4.0,
@@ -9420,8 +9671,8 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
         """Call an existing Flask route function with a synthetic JSON request context."""
         route_args = route_args or []
 
-        current_user_id = session.get('user_id')
-        current_api_key = session.get('gemini_api_key')
+        current_user_id = session.get('user_id') if has_request_context() else None
+        current_api_key = session.get('gemini_api_key') if has_request_context() else None
 
         with app.test_request_context(json=payload, query_string=query_params):
             if current_user_id is not None:
@@ -9561,7 +9812,6 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 return {"success": False, "error": error}
                 
             except Exception as e:
-                import traceback
                 print(f"  [create_primitive_solid] EXCEPTION: {e}", flush=True, file=sys.stderr)
                 traceback.print_exc(file=sys.stderr)
                 return {"success": False, "error": str(e)}
@@ -9593,6 +9843,7 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             name = args.get('name')
             solid_ref = args.get('solid_ref')
             material_ref = args.get('material_ref')
+            is_sensitive_provided = 'is_sensitive' in args
             is_sensitive = args.get('is_sensitive', False)
 
             color_str = args.get('color')
@@ -9600,6 +9851,9 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             vis_attrs = parse_color_to_rgba(color_str, opacity)
 
             if name in pm.current_geometry_state.logical_volumes:
+                if not is_sensitive_provided:
+                    existing_lv = pm.current_geometry_state.logical_volumes.get(name)
+                    is_sensitive = bool(existing_lv.is_sensitive) if existing_lv else False
                 success, error = pm.update_logical_volume(
                     name, solid_ref, material_ref,
                     new_vis_attributes=vis_attrs,
@@ -10213,6 +10467,16 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             }
 
         elif tool_name == "run_simulation":
+            preflight_report = pm.run_preflight_checks()
+            preflight_summary = preflight_report.get("summary", {})
+            if not preflight_summary.get("can_run", False):
+                return {
+                    "success": False,
+                    "error": "Preflight checks failed. Resolve errors before running simulation.",
+                    "preflight_report": preflight_report,
+                    "preflight_summary": preflight_summary,
+                }
+
             job_id = str(uuid.uuid4())
             try:
                 events = int(args.get("events", 1000))
@@ -10242,7 +10506,12 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             thread = threading.Thread(target=run_g4_simulation, args=(job_id, run_dir, GEANT4_EXECUTABLE, sim_params))
             thread.start()
 
-            return {"success": True, "job_id": job_id, "message": f"Simulation started (ID: {job_id})."}
+            return {
+                "success": True,
+                "job_id": job_id,
+                "message": f"Simulation started (ID: {job_id}).",
+                "preflight_summary": preflight_summary,
+            }
 
         elif tool_name == "get_simulation_status":
             job_id = args['job_id']
@@ -10635,6 +10904,30 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
 
             return {"success": False, "error": f"Invalid action '{action}' for manage_particle_source."}
 
+        elif tool_name == "configure_incident_beam":
+            result, error = pm.configure_incident_beam(
+                target=args.get('target'),
+                source_name=args.get('source_name', 'incident_beam'),
+                particle=args.get('particle'),
+                energy=args.get('energy'),
+                incident_axis=args.get('incident_axis', '+z'),
+                offset=args.get('offset', '1*mm'),
+                activity=args.get('activity', 1.0),
+                mark_target_sensitive=args.get('mark_target_sensitive', True),
+                activate=args.get('activate', True),
+                exclusive_activation=args.get('exclusive_activation', True),
+            )
+            if result:
+                return {
+                    "success": True,
+                    "message": f"Incident beam '{result['name']}' configured for target '{result['target_pv_name']}'.",
+                    "source": result,
+                    "source_id": result.get('id'),
+                    "target_pv_id": result.get('target_pv_id'),
+                    "target_pv_name": result.get('target_pv_name'),
+                }
+            return {"success": False, "error": error}
+
         elif tool_name == "set_active_source":
             source_id = args.get('source_id')
             if isinstance(source_id, str) and source_id.strip().lower() in ('', 'none', 'null'):
@@ -10943,7 +11236,8 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
 
         return {"success": False, "error": f"Unknown tool: {tool_name}"}
     except Exception as e:
-        traceback.print_exc()
+        import traceback as tb
+        tb.print_exc()
         return {"success": False, "error": str(e)}
 
 
@@ -11207,6 +11501,146 @@ def _build_local_adapter_message_history(chat_history: List[Dict[str, Any]]) -> 
         messages.append(TextMessage(role=role, content=content, **kwargs))
 
     return messages
+
+
+def _normalize_gemini_history_role(role: Any) -> Optional[str]:
+    normalized = str(role or "").strip().lower()
+    if normalized in {"assistant", "model"}:
+        return "model"
+    if normalized in {"user", "tool", "function", "system"}:
+        return "user"
+    return None
+
+
+def _build_gemini_history_parts(msg: Dict[str, Any]) -> List[Any]:
+    if not isinstance(msg, dict):
+        return []
+
+    existing_parts = msg.get("parts")
+    if isinstance(existing_parts, list) and existing_parts:
+        return existing_parts
+
+    role = str(msg.get("role") or "").strip().lower()
+    parts: List[Any] = []
+
+    content = msg.get("content")
+    if isinstance(content, str) and content.strip() and role not in {"tool", "function"}:
+        parts.append({"text": content})
+
+    if role in {"assistant", "model"} and isinstance(msg.get("tool_calls"), list):
+        for call in _normalize_tool_calls_payload(msg.get("tool_calls")):
+            tool_name = call.get("name")
+            if not isinstance(tool_name, str) or not tool_name:
+                continue
+            arguments = call.get("arguments")
+            if not isinstance(arguments, dict):
+                arguments = _coerce_tool_arguments(arguments)
+            parts.append({
+                "function_call": {
+                    "name": tool_name,
+                    "args": arguments,
+                }
+            })
+
+    if role in {"tool", "function"}:
+        tool_name = msg.get("name")
+        if isinstance(tool_name, str) and tool_name.strip():
+            raw_response = msg.get("response", msg.get("content"))
+            response_payload: Any = raw_response
+            if isinstance(raw_response, str):
+                try:
+                    response_payload = json.loads(raw_response)
+                except Exception:
+                    response_payload = {"text": raw_response}
+            elif raw_response is None:
+                response_payload = {}
+
+            parts = [{
+                "function_response": {
+                    "name": tool_name.strip(),
+                    "response": response_payload,
+                }
+            }]
+        elif isinstance(content, str) and content.strip():
+            parts = [{"text": content}]
+
+    return parts
+
+
+def _build_gemini_sdk_history(chat_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    sanitized_history: List[Dict[str, Any]] = []
+
+    for msg in chat_history:
+        if not isinstance(msg, dict):
+            continue
+
+        role = _normalize_gemini_history_role(msg.get("role"))
+        if role is None:
+            continue
+
+        parts = _build_gemini_history_parts(msg)
+        if not parts:
+            continue
+
+        sanitized_history.append({
+            "role": role,
+            "parts": parts,
+        })
+
+    return sanitized_history
+
+
+def _persist_final_stream_reply(
+    chat_history: List[Dict[str, Any]],
+    *,
+    role: str,
+    final_text: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Persist the final assistant/model reply for streamed chat turns."""
+    def _message_has_tool_activity(msg: Dict[str, Any]) -> bool:
+        if not isinstance(msg, dict):
+            return False
+
+        if isinstance(msg.get("tool_calls"), list) and msg.get("tool_calls"):
+            return True
+
+        parts = msg.get("parts")
+        if isinstance(parts, list):
+            for part in parts:
+                if isinstance(part, dict) and part.get("function_call"):
+                    return True
+
+        return False
+
+    normalized_role = str(role or "assistant").strip().lower() or "assistant"
+    if normalized_role not in {"assistant", "model"}:
+        normalized_role = "assistant"
+
+    last_msg = chat_history[-1] if chat_history else None
+    if isinstance(last_msg, dict) and str(last_msg.get("role") or "").strip().lower() == normalized_role:
+        last_metadata = dict(last_msg.get("metadata") or {})
+        if last_metadata.pop("_intermediate", None) and not _message_has_tool_activity(last_msg):
+            merged_metadata = {**last_metadata, **(metadata or {})}
+            if normalized_role == "assistant":
+                last_msg["content"] = str(final_text or "")
+                last_msg.pop("tool_calls", None)
+            else:
+                last_msg["parts"] = [{"text": str(final_text or "")}]
+            if merged_metadata:
+                last_msg["metadata"] = merged_metadata
+            else:
+                last_msg.pop("metadata", None)
+            return
+
+    reply_entry: Dict[str, Any] = {"role": normalized_role}
+    if normalized_role == "assistant":
+        reply_entry["content"] = str(final_text or "")
+    else:
+        reply_entry["parts"] = [{"text": str(final_text or "")}]
+    if metadata:
+        reply_entry["metadata"] = dict(metadata)
+    chat_history.append(reply_entry)
 
 
 def _build_executable_tool_calls(parsed_tool_calls: List[Dict[str, Any]], turn: int) -> List[Dict[str, Any]]:
@@ -13148,6 +13582,15 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
                     final_text = assistant_text or adapter_response.text or "Done."
                     local_extra_payload = dict(chat_extra_payload or {})
                     local_extra_payload["backend_execution"] = last_execution_payload
+                    _persist_final_stream_reply(
+                        pm.chat_history,
+                        role="assistant",
+                        final_text=final_text,
+                        metadata={
+                            "resolved_backend_id": adapter_response.backend_id,
+                            "provider_model": adapter_response.model,
+                        },
+                    )
 
                     pm.end_transaction(f"AI: {user_message[:50]}")
                     print(f"  Stream Complete", flush=True)
@@ -13202,9 +13645,18 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
                         )
                     )
 
+            turn_limit_text = "Turn limit reached. Please try a more specific request."
+            _persist_final_stream_reply(
+                pm.chat_history,
+                role="assistant",
+                final_text=turn_limit_text,
+                metadata=({
+                    "resolved_backend_id": selected_backend_id,
+                } if selected_backend_id else None),
+            )
             pm.end_transaction(f"AI: {user_message[:50]}")
             print(f"  Stream Complete (turn limit)", flush=True)
-            yield f"data: {json.dumps({'type': 'complete', 'message': 'Turn limit reached. Please try a more specific request.', 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id, 'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True), 'scene_update': pm.get_threejs_description(), 'response_type': 'full_with_exclusions', 'project_name': pm.project_name, 'success': True, 'history_status': {'can_undo': pm.history_index > 0, 'can_redo': pm.history_index < len(pm.history) - 1}})}\n\n"
+            yield f"data: {json.dumps({'type': 'complete', 'message': turn_limit_text, 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id, 'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True), 'scene_update': pm.get_threejs_description(), 'response_type': 'full_with_exclusions', 'project_name': pm.project_name, 'success': True, 'history_status': {'can_undo': pm.history_index > 0, 'can_redo': pm.history_index < len(pm.history) - 1}})}\n\n"
         except Exception as stream_err:
             print(f"  Stream Error (local backend): {stream_err}", flush=True)
             import traceback
@@ -13256,10 +13708,7 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
         pm.begin_transaction()
         
         try:
-            sanitized_history = []
-            for msg in pm.chat_history:
-                sanitized_msg = {"role": msg["role"], "parts": msg["parts"]}
-                sanitized_history.append(sanitized_msg)
+            sanitized_history = _build_gemini_sdk_history(pm.chat_history)
             
             job_id = None
             version_id = None
@@ -13349,12 +13798,16 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
                     time.sleep(1.5)
                 
                 if not has_tool_call:
-                    pm.end_transaction(f"AI: {user_message[:50]}")
-                    
                     final_text = getattr(response, 'text', None)
                     if not final_text:
                         text_parts = [p.get('text') for p in assistant_parts if isinstance(p, dict) and p.get('text')]
                         final_text = "\n".join(text_parts) if text_parts else "Done."
+                    _persist_final_stream_reply(
+                        pm.chat_history,
+                        role=response_role,
+                        final_text=final_text,
+                    )
+                    pm.end_transaction(f"AI: {user_message[:50]}")
                     
                     print(f"  Stream Complete", flush=True)
                     complete_payload = {
@@ -13380,9 +13833,15 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
                 sanitized_history.append(tool_response_msg)
                 pm.chat_history.append(tool_response_msg)
             
+            turn_limit_text = "Turn limit reached. Please try a more specific request."
+            _persist_final_stream_reply(
+                pm.chat_history,
+                role="model",
+                final_text=turn_limit_text,
+            )
             pm.end_transaction(f"AI: {user_message[:50]}")
             print(f"  Stream Complete (turn limit)", flush=True)
-            yield f"data: {json.dumps({'type': 'complete', 'message': 'Turn limit reached. Please try a more specific request.', 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id, 'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True), 'scene_update': pm.get_threejs_description(), 'response_type': 'full_with_exclusions', 'project_name': pm.project_name, 'success': True, 'history_status': {'can_undo': pm.history_index > 0, 'can_redo': pm.history_index < len(pm.history) - 1}})}\n\n"
+            yield f"data: {json.dumps({'type': 'complete', 'message': turn_limit_text, 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id, 'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True), 'scene_update': pm.get_threejs_description(), 'response_type': 'full_with_exclusions', 'project_name': pm.project_name, 'success': True, 'history_status': {'can_undo': pm.history_index > 0, 'can_redo': pm.history_index < len(pm.history) - 1}})}\n\n"
         except Exception as stream_err:
             print(f"  Stream Error (Gemini): {stream_err}", flush=True)
             import traceback
@@ -13403,7 +13862,7 @@ def ai_chat_stream_route():
     data = request.get_json() or {}
     user_message = data.get('message')
     model_id = data.get('model', 'models/gemini-2.0-flash-exp')
-    turn_limit = data.get('turn_limit', 20)  # Increased from 10 to give AI more chances for complex tasks
+    turn_limit = data.get('turn_limit', 50)
 
     if not user_message:
         return Response(f"data: {json.dumps({'type': 'error', 'message': 'No message provided.'})}\n\n", mimetype='text/event-stream')
@@ -13550,7 +14009,7 @@ def ai_chat_route():
     data = request.get_json() or {}
     user_message = data.get('message')
     model_id = data.get('model', 'models/gemini-2.0-flash-exp')
-    turn_limit = data.get('turn_limit', 20)  # Increased from 10 to give AI more chances for complex tasks
+    turn_limit = data.get('turn_limit', 50)
     print(f"[CHAT] Received turn_limit: {turn_limit}", flush=True, file=sys.stderr)
 
     if not user_message:
@@ -13930,13 +14389,7 @@ def ai_chat_route():
 
         try:
             # Sanitize history for Gemini API (remove our custom metadata)
-            sanitized_history = []
-            for msg in pm.chat_history:
-                sanitized_msg = {
-                    "role": msg["role"],
-                    "parts": msg["parts"]
-                }
-                sanitized_history.append(sanitized_msg)
+            sanitized_history = _build_gemini_sdk_history(pm.chat_history)
 
             job_id = None
             version_id = None
