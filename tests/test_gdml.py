@@ -140,6 +140,67 @@ def test_gdml_material_density_units_round_trip(value, unit, expected_density_ex
     assert f'<D value="{expected_export_value}" unit="g/cm3"/>' in gdml_str
 
 
+def test_gdml_entity_declarations_raise_clear_error(capsys):
+    gdml = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE gdml [
+  <!ENTITY shared SYSTEM "shared.gdml">
+]>
+<gdml>
+  <materials />
+</gdml>
+"""
+
+    parser = GDMLParser()
+
+    with pytest.raises(ValueError) as excinfo:
+        parser.parse_gdml_string(gdml)
+
+    captured = capsys.readouterr()
+    expected_message = (
+        "GDML entity declarations (`<!ENTITY ...>`) are not supported by this importer. "
+        "Inline the entity definitions or export a single self-contained GDML file."
+    )
+
+    assert expected_message in str(excinfo.value)
+    assert expected_message in captured.out
+    assert parser.import_warnings == [expected_message]
+
+
+def test_gdml_file_in_physvol_emits_clear_warning(capsys):
+    gdml = """<?xml version="1.0" encoding="UTF-8"?>
+<gdml>
+  <solids>
+    <box name="world_solid" x="100" y="100" z="100" lunit="mm"/>
+  </solids>
+  <structure>
+    <volume name="world_lv">
+      <materialref ref="G4_Galactic"/>
+      <solidref ref="world_solid"/>
+      <physvol name="include_module">
+        <file name="module_piece.gdml"/>
+      </physvol>
+    </volume>
+  </structure>
+  <setup>
+    <world ref="world_lv"/>
+  </setup>
+</gdml>
+"""
+
+    parser = GDMLParser()
+    state = parser.parse_gdml_string(gdml)
+    captured = capsys.readouterr()
+    expected_message = (
+        "GDML <file> include 'module_piece.gdml' inside physvol 'include_module' under logical "
+        "volume 'world_lv' is not supported yet. That placement will be ignored; inline the "
+        "referenced GDML or merge the files before importing."
+    )
+
+    assert expected_message in captured.out
+    assert parser.import_warnings == [expected_message]
+    assert state.logical_volumes["world_lv"].content == []
+
+
 def test_parameterised_trd_dimensions_are_mapped_on_import(capsys):
     gdml = """<?xml version="1.0" encoding="UTF-8"?>
 <gdml>
@@ -192,6 +253,56 @@ def test_parameterised_trd_dimensions_are_mapped_on_import(capsys):
         "y2": "4.4",
         "z": "5.5",
     }
+
+
+def test_unmapped_parameterised_dimensions_emit_clear_warning(capsys):
+    gdml = """<?xml version="1.0" encoding="UTF-8"?>
+<gdml>
+  <solids>
+    <box name="world_solid" x="100" y="100" z="100" lunit="mm"/>
+    <box name="child_solid" x="10" y="10" z="10" lunit="mm"/>
+  </solids>
+  <structure>
+    <volume name="child_lv">
+      <materialref ref="G4_Si"/>
+      <solidref ref="child_solid"/>
+    </volume>
+    <volume name="world_lv">
+      <materialref ref="G4_Galactic"/>
+      <solidref ref="world_solid"/>
+      <paramvol name="mystery_param" ncopies="1">
+        <volumeref ref="child_lv"/>
+        <parameterised_position_size>
+          <parameters number="0">
+            <mystery_dimensions foo="1.1" bar="2.2" lunit="mm"/>
+          </parameters>
+        </parameterised_position_size>
+      </paramvol>
+    </volume>
+  </structure>
+  <setup>
+    <world ref="world_lv"/>
+  </setup>
+</gdml>
+"""
+
+    parser = GDMLParser()
+    state = parser.parse_gdml_string(gdml)
+    captured = capsys.readouterr()
+    expected_message = (
+        "No parameter mapping found for <mystery_dimensions> in <paramvol> 'mystery_param' "
+        "referencing volume 'child_lv'. Keeping the raw GDML attribute names; this parameterised "
+        "solid will import without AIRPET normalization yet."
+    )
+
+    assert expected_message in captured.out
+    assert parser.import_warnings == [expected_message]
+
+    param_vol = state.logical_volumes["world_lv"].content
+    assert param_vol.type == "parameterised"
+    assert len(param_vol.parameters) == 1
+    assert param_vol.parameters[0].dimensions_type == "mystery_dimensions"
+    assert param_vol.parameters[0].dimensions == {"foo": "1.1", "bar": "2.2"}
 
 
 def test_parameterised_trap_dimensions_are_mapped_on_import(capsys):

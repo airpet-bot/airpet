@@ -17,6 +17,7 @@ class GDMLParser:
     def __init__(self):
         self.geometry_state = GeometryState()
         self.aeval = create_configured_asteval()
+        self.import_warnings = []
 
     def _strip_namespace(self, gdml_content_string):
         it = ET.iterparse(io.StringIO(gdml_content_string))
@@ -24,6 +25,10 @@ class GDMLParser:
             if '}' in el.tag:
                 el.tag = el.tag.split('}', 1)[1]
         return it.root
+
+    def _record_import_warning(self, message):
+        self.import_warnings.append(message)
+        print(f"Warning: {message}")
 
     def _evaluate_name(self, name_expr):
         """
@@ -98,11 +103,16 @@ class GDMLParser:
     def parse_gdml_string(self, gdml_content_string):
         self.aeval = create_configured_asteval()
         self.geometry_state = GeometryState()
+        self.import_warnings = []
 
         # --- Pre-parse check for unsupported <!ENTITY> tags ---
         if "<!ENTITY" in gdml_content_string:
-            raise ValueError("GDML files with external entity references (<!ENTITY ...>) are not supported. "
-                             "Please use a single, self-contained GDML file.")
+            message = (
+                "GDML entity declarations (`<!ENTITY ...>`) are not supported by this importer. "
+                "Inline the entity definitions or export a single self-contained GDML file."
+            )
+            self._record_import_warning(message)
+            raise ValueError(message)
 
         try:
             root = self._strip_namespace(gdml_content_string)
@@ -924,9 +934,11 @@ class GDMLParser:
         file_el = pv_el.find('file')
         if file_el is not None:
             file_name = file_el.get('name', 'unknown')
-            print(f"WARNING: GDML <file> tag found for '{file_name}'. "
-                  f"Modular file references are not supported. "
-                  f"This physical volume placement ('{name}') will be ignored.")
+            self._record_import_warning(
+                f"GDML <file> include '{file_name}' inside physvol '{name}' under logical volume "
+                f"'{parent_name}' is not supported yet. That placement will be ignored; inline the "
+                f"referenced GDML or merge the files before importing."
+            )
             return None # Skip this physical volume
 
         # Get the volumeref
@@ -1168,7 +1180,11 @@ class GDMLParser:
                     # Get the correct mapping for this dimension type
                     current_map = PARAM_MAP.get(dimensions_type, {})
                     if not current_map:
-                        print(f"Warning: No parameter mapping found for '{dimensions_type}'. Using raw names.")
+                        self._record_import_warning(
+                            f"No parameter mapping found for <{dimensions_type}> in <paramvol> '{name}' "
+                            f"referencing volume '{volume_ref}'. Keeping the raw GDML attribute names; "
+                            "this parameterised solid will import without AIRPET normalization yet."
+                        )
                         dimensions = raw_dims
                     else:
                         # Translate the keys from GDML names to our internal names

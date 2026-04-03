@@ -59,10 +59,10 @@ A task is only `DONE` when all of the following are true:
 
 ## Current NEXT Task
 
-`GDML-006` Improve unsupported-construct feedback for `<!ENTITY>`, `<file>`, and unmapped parameterised solids.
+`GDML-007` Evaluate modular GDML `<file>` include support, or formalize explicit non-support in the product/import UX.
 
 Reason:
-- highest-priority pending P2 after closing `AI-004`
+- next highest-priority unblocked P2 after closing `GDML-006`
 
 ## Backlog
 
@@ -84,8 +84,8 @@ Statuses:
 | GDML-005 | P1 | GDML | Create a representative AIRPET-authored GDML round-trip corpus and smoke-test suite | DONE | Added a three-file GDML corpus plus a smoke-test suite; parser/writer now preserves procedural-volume names on export, and the round-trip path covers materials, booleans, tessellated solids, assemblies, and parameterised placements |
 | AI-003 | P1 | AI | Build an AI benchmark corpus with representative prompts and expected tool traces/results | DONE | Added a five-case prompt/trace corpus plus regression harness for slab+beam, define update, simulation launch, analysis filter, and param-study setup; the test module includes local import shims so it runs in the stripped interpreter here |
 | AI-004 | P1 | AI | Add targeted AI parity regressions for advanced simulation options and analysis filters | DONE | Added parity regressions that compare AI dispatch and HTTP handling for advanced `run_simulation` options plus `sensitive_detector` analysis filtering |
-| GDML-006 | P2 | GDML | Improve unsupported-construct feedback for `<!ENTITY>`, `<file>`, and unmapped parameterised solids | NEXT | Clear user-facing diagnostics are valuable even before deeper compatibility work |
-| GDML-007 | P2 | GDML | Evaluate modular GDML `<file>` include support, or formalize explicit non-support in the product/import UX | PENDING | Decide based on value vs complexity after the core corpus is stable |
+| GDML-006 | P2 | GDML | Improve unsupported-construct feedback for `<!ENTITY>`, `<file>`, and unmapped parameterised solids | DONE | Parser now emits clearer `<!ENTITY>`, `<file>`, and unmapped parameterised-solid diagnostics, and it records import warnings for downstream surfaces; added regressions for the fatal entity case, the skipped `<file>` placement, and the unmapped dimensions warning |
+| GDML-007 | P2 | GDML | Evaluate modular GDML `<file>` include support, or formalize explicit non-support in the product/import UX | NEXT | Decide based on value vs complexity after the diagnostics path is stable |
 | AI-005 | P2 | AI | Review remaining UI features against AI tool coverage and close the highest-value gaps | PENDING | Keep this scoped and data-driven; do not chase low-value parity for its own sake |
 
 ## Cycle Log
@@ -102,6 +102,7 @@ Statuses:
 | 2026-04-03 | GDML-005 | DONE | Files: `src/gdml_writer.py`, `tests/test_gdml_corpus.py`, `tests/fixtures/gdml/corpus/materials_boolean.gdml`, `tests/fixtures/gdml/corpus/assembly_tessellated.gdml`, `tests/fixtures/gdml/corpus/parameterised_placements.gdml`; tests: `conda run --no-capture-output -n virtualpet pytest /Users/jrenner/local/jerenner/airpet/tests/test_gdml_corpus.py -q` (`3 passed`); outcome: added a representative AIRPET-authored GDML corpus and smoke-test suite covering materials, booleans, tessellated solids, assemblies, and parameterised placements, and the writer now preserves procedural-volume names on export so round-trips stay stable |
 | 2026-04-03 18:53:45 CEST | AI-003 | DONE | Files: `tests/fixtures/ai/benchmark_corpus.json`, `tests/test_ai_benchmark_corpus.py`, `docs/AI_GDML_REFINEMENTS_TRACKER.md`; tests: `pytest /Volumes/nvme/projects/airpet/tests/test_ai_benchmark_corpus.py -q` (`5 passed`); outcome: created a five-case AI benchmark corpus with expected tool traces/results plus a focused regression harness, recorded the next task as `AI-004`, and committed the change as `17aa302` locally, but push to `origin dev` is blocked here because `github.com` does not resolve |
 | 2026-04-03 20:05:37 CEST | AI-004 | DONE | Files: `tests/test_ai_api.py`; tests: `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda run -n airpet python -m pytest /Volumes/nvme/projects/airpet/tests/test_ai_api.py -q -k 'ai_and_http_run_simulation_share_advanced_option_payload or ai_and_http_simulation_analysis_share_sensitive_detector_filter'` (`2 passed`); outcome: added parity regressions that lock advanced simulation option forwarding and `sensitive_detector` analysis filtering across both AI dispatch and HTTP routes, then promoted `GDML-006` to `NEXT` |
+| 2026-04-03 22:06:10 CEST | GDML-006 | DONE | Files: `src/gdml_parser.py`, `tests/test_gdml.py`; tests: `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda run -n airpet python -m pytest /Volumes/nvme/projects/airpet/tests/test_gdml.py -q` (`18 passed`); outcome: the parser now emits clearer diagnostics for `<!ENTITY>`, `<file>`, and unmapped parameterised-solid imports, records import warnings for downstream use, and the regression suite covers all three unsupported-construct paths |
 
 ## Notes For Future Reordering
 
