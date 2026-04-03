@@ -59,10 +59,10 @@ A task is only `DONE` when all of the following are true:
 
 ## Current NEXT Task
 
-`GDML-005` Create a representative AIRPET-authored GDML round-trip corpus and smoke-test suite.
+`AI-003` Build an AI benchmark corpus with representative prompts and expected tool traces/results.
 
 Reason:
-- highest-priority pending P1 after closing `GDML-004`
+- highest-priority pending P1 after closing `GDML-005`
 
 ## Backlog
 
@@ -81,8 +81,8 @@ Statuses:
 | GDML-002 | P1 | GDML | Add parameterised solid import mapping for `trd_dimensions` | DONE | Parser now maps `trd_dimensions` to `x1/x2/y1/y2/z`; added a representative import regression for a parameterised `trd` volume |
 | GDML-003 | P1 | GDML | Add parameterised solid import mapping for `trap_dimensions` | DONE | Parser now maps `trap_dimensions` onto the internal trap parameter shape keys; added a representative import regression that asserts the mapping warning is not emitted |
 | GDML-004 | P1 | GDML | Extend parameterised-solid import mappings for additional AIRPET-supported primitives found in the corpus | DONE | Parser now maps the additional flat AIRPET primitives used in the review: sphere, orb, torus, ellipsoid, para, and hype; added regressions to lock in the no-warning import path |
-| GDML-005 | P1 | GDML | Create a representative AIRPET-authored GDML round-trip corpus and smoke-test suite | NEXT | Include materials, booleans, tessellated solids, assemblies, and parameterised placements |
-| AI-003 | P1 | AI | Build an AI benchmark corpus with representative prompts and expected tool traces/results | PENDING | Start with slab + beam, define update, run simulation, analysis filter, and param-study setup |
+| GDML-005 | P1 | GDML | Create a representative AIRPET-authored GDML round-trip corpus and smoke-test suite | DONE | Added a three-file GDML corpus plus a smoke-test suite; parser/writer now preserves procedural-volume names on export, and the round-trip path covers materials, booleans, tessellated solids, assemblies, and parameterised placements |
+| AI-003 | P1 | AI | Build an AI benchmark corpus with representative prompts and expected tool traces/results | NEXT | Start with slab + beam, define update, run simulation, analysis filter, and param-study setup |
 | AI-004 | P1 | AI | Add targeted AI parity regressions for advanced simulation options and analysis filters | PENDING | This should lock in work from AI-001 and AI-002 |
 | GDML-006 | P2 | GDML | Improve unsupported-construct feedback for `<!ENTITY>`, `<file>`, and unmapped parameterised solids | PENDING | Clear user-facing diagnostics are valuable even before deeper compatibility work |
 | GDML-007 | P2 | GDML | Evaluate modular GDML `<file>` include support, or formalize explicit non-support in the product/import UX | PENDING | Decide based on value vs complexity after the core corpus is stable |
@@ -99,6 +99,7 @@ Statuses:
 | 2026-04-03 | GDML-002 | DONE | Files: `src/gdml_parser.py`, `tests/test_gdml.py`; tests: `conda run --no-capture-output -n virtualpet pytest /Users/jrenner/local/jerenner/airpet/tests/test_gdml.py -q` (`8 passed`); outcome: `trd_dimensions` now maps onto the internal `Parameterisation` shape keys during import, and the new regression covers a representative parameterised `trd` GDML file |
 | 2026-04-03 | GDML-003 | DONE | Files: `src/gdml_parser.py`, `tests/test_gdml.py`; tests: `conda run --no-capture-output -n virtualpet pytest /Users/jrenner/local/jerenner/airpet/tests/test_gdml.py -q -k 'parameterised_trd_dimensions_are_mapped_on_import or parameterised_trap_dimensions_are_mapped_on_import'` (`2 passed`); outcome: `trap_dimensions` now maps onto the internal trap parameter keys during import, and the new regression covers a representative parameterised `trap` GDML file |
 | 2026-04-03 | GDML-004 | DONE | Files: `src/gdml_parser.py`, `tests/test_gdml.py`; tests: `conda run --no-capture-output -n virtualpet pytest /Users/jrenner/local/jerenner/airpet/tests/test_gdml.py -q -k 'parameterised_'` (`8 passed, 7 deselected`); outcome: parameterised import now covers the additional flat AIRPET primitives used in the review (`sphere`, `orb`, `torus`, `ellipsoid`, `para`, `hype`), and the regressions lock in the no-warning path |
+| 2026-04-03 | GDML-005 | DONE | Files: `src/gdml_writer.py`, `tests/test_gdml_corpus.py`, `tests/fixtures/gdml/corpus/materials_boolean.gdml`, `tests/fixtures/gdml/corpus/assembly_tessellated.gdml`, `tests/fixtures/gdml/corpus/parameterised_placements.gdml`; tests: `conda run --no-capture-output -n virtualpet pytest /Users/jrenner/local/jerenner/airpet/tests/test_gdml_corpus.py -q` (`3 passed`); outcome: added a representative AIRPET-authored GDML corpus and smoke-test suite covering materials, booleans, tessellated solids, assemblies, and parameterised placements, and the writer now preserves procedural-volume names on export so round-trips stay stable |
 
 ## Notes For Future Reordering
 

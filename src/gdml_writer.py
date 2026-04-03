@@ -722,6 +722,7 @@ class GDMLWriter:
 
     def _write_divisionvol(self, parent_el, div_obj):
         attrs = {
+            "name": div_obj.name,
             "axis": div_obj.axis,
             "unit": div_obj.unit
         }
@@ -733,7 +734,14 @@ class GDMLWriter:
         ET.SubElement(div_el, "volumeref", {"ref": div_obj.volume_ref})
 
     def _write_replicavol(self, parent_el, rep_obj):
-        rep_el = ET.SubElement(parent_el, "replicavol", {"number": str(rep_obj.number)})
+        rep_el = ET.SubElement(
+            parent_el,
+            "replicavol",
+            {
+                "name": rep_obj.name,
+                "number": str(rep_obj.number),
+            },
+        )
         ET.SubElement(rep_el, "volumeref", {"ref": rep_obj.volume_ref})
         
         algo_el = ET.SubElement(rep_el, "replicate_along_axis")
@@ -742,7 +750,14 @@ class GDMLWriter:
         ET.SubElement(algo_el, "offset", {"value": str(rep_obj.offset)})
 
     def _write_paramvol(self, parent_el, param_obj):
-        param_el = ET.SubElement(parent_el, "paramvol", {"ncopies": str(param_obj.ncopies)})
+        param_el = ET.SubElement(
+            parent_el,
+            "paramvol",
+            {
+                "name": param_obj.name,
+                "ncopies": str(param_obj.ncopies),
+            },
+        )
         ET.SubElement(param_el, "volumeref", {"ref": param_obj.volume_ref})
         
         algo_el = ET.SubElement(param_el, "parameterised_position_size")
