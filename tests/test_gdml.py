@@ -1,8 +1,13 @@
+import io
+from unittest.mock import patch
+
 import pytest
+from app import app as flask_app
 from src.geometry_types import GeometryState, LogicalVolume, PhysicalVolumePlacement, Material
 from src.expression_evaluator import ExpressionEvaluator
 from src.gdml_parser import GDMLParser
 from src.gdml_writer import GDMLWriter
+from src.project_manager import ProjectManager
 
 
 def _attrs_to_xml(attrs):
@@ -199,6 +204,57 @@ def test_gdml_file_in_physvol_emits_clear_warning(capsys):
     assert expected_message in captured.out
     assert parser.import_warnings == [expected_message]
     assert state.logical_volumes["world_lv"].content == []
+
+
+@pytest.mark.parametrize(
+    ("route_path", "file_field"),
+    [
+        ("/process_gdml", "gdmlFile"),
+        ("/import_gdml_part", "partFile"),
+    ],
+)
+def test_gdml_import_routes_surface_file_include_warnings(route_path, file_field):
+    gdml = """<?xml version="1.0" encoding="UTF-8"?>
+<gdml>
+  <solids>
+    <box name="world_solid" x="100" y="100" z="100" lunit="mm"/>
+  </solids>
+  <structure>
+    <volume name="world_lv">
+      <materialref ref="G4_Galactic"/>
+      <solidref ref="world_solid"/>
+      <physvol name="include_module">
+        <file name="module_piece.gdml"/>
+      </physvol>
+    </volume>
+  </structure>
+  <setup>
+    <world ref="world_lv"/>
+  </setup>
+</gdml>
+"""
+
+    expected_message = (
+        "GDML <file> include 'module_piece.gdml' inside physvol 'include_module' under logical "
+        "volume 'world_lv' is not supported yet. That placement will be ignored; inline the "
+        "referenced GDML or merge the files before importing."
+    )
+
+    pm = ProjectManager(ExpressionEvaluator())
+    pm.create_empty_project()
+
+    flask_app.config["TESTING"] = True
+    with flask_app.test_client() as client, patch("app.get_project_manager_for_session", return_value=pm):
+        response = client.post(
+            route_path,
+            data={file_field: (io.BytesIO(gdml.encode("utf-8")), "module_piece.gdml")},
+            content_type="multipart/form-data",
+        )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["import_warnings"] == [expected_message]
 
 
 def test_parameterised_trd_dimensions_are_mapped_on_import(capsys):

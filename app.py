@@ -6564,10 +6564,15 @@ def import_gdml_part_route():
         gdml_content_str = file.read().decode('utf-8')
         # Parse into a temporary state object
         temp_state = pm.gdml_parser.parse_gdml_string(gdml_content_str)
+        import_warnings = list(pm.gdml_parser.import_warnings)
         # Call the new merge method
         success, error_msg = pm.merge_from_state(temp_state)
         if success:
-            return create_success_response(pm, "GDML part(s) imported successfully.")
+            return create_success_response(
+                pm,
+                "GDML part(s) imported successfully.",
+                extra_payload={"import_warnings": import_warnings},
+            )
         else:
             return jsonify({"success": False, "error": error_msg or "Failed to merge GDML part."}), 500
     except Exception as e:
@@ -6617,7 +6622,13 @@ def process_gdml_route():
         gdml_content_str = file.read().decode('utf-8')
         try:
             pm.load_gdml_from_string(gdml_content_str)
-            return create_success_response(pm, "GDML file processed successfully.",exclude_unchanged_tessellated=False)
+            import_warnings = list(pm.gdml_parser.import_warnings)
+            return create_success_response(
+                pm,
+                "GDML file processed successfully.",
+                exclude_unchanged_tessellated=False,
+                extra_payload={"import_warnings": import_warnings},
+            )
         except Exception as e:
             import traceback
             traceback.print_exc()

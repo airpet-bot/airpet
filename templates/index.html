@@ -2964,13 +2964,13 @@
                         <button id="newProjectButton">New Geometry</button>
                         <hr>
                         <!-- Open entire projects -->
-                        <button id="openGdmlButton">Load Geometry (GDML)...</button>
+                        <button id="openGdmlButton" title="Loads a single self-contained GDML file. Modular &lt;file&gt; includes are not supported.">Load Geometry (GDML, self-contained only)...</button>
                         <input type="file" id="gdmlFile" accept=".gdml,.xml" style="display: none;">
                         <button id="openProjectButton">Load Geometry (JSON)...</button>
                         <input type="file" id="projectFile" accept=".json" style="display: none;">
                         <hr style="margin: 5px 0;">
                         <!-- Import functionality -->
-                        <button id="importGdmlButton">Import Part(s) (GDML)...</button>
+                        <button id="importGdmlButton" title="Imports self-contained GDML only. Modular &lt;file&gt; includes are not supported.">Import Part(s) (GDML, self-contained only)...</button>
                         <input type="file" id="gdmlPartFile" accept=".gdml,.xml" style="display: none;">
                         <button id="importProjectButton">Import Part(s) (JSON)...</button>
                         <input type="file" id="jsonPartFile" accept=".json" style="display: none;">
