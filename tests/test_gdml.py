@@ -4,6 +4,10 @@ from src.expression_evaluator import ExpressionEvaluator
 from src.gdml_parser import GDMLParser
 from src.gdml_writer import GDMLWriter
 
+
+def _attrs_to_xml(attrs):
+    return " ".join(f'{key}="{value}"' for key, value in attrs.items())
+
 def test_topological_sort():
     state = GeometryState()
     
@@ -248,3 +252,107 @@ def test_parameterised_trap_dimensions_are_mapped_on_import(capsys):
         "x4": "14.5",
         "alpha2": "15.6",
     }
+
+
+@pytest.mark.parametrize(
+    "dimensions_tag,solid_attrs,parameter_attrs,expected_dimensions",
+    [
+        (
+            "sphere_dimensions",
+            {"rmin": "1", "rmax": "2", "startphi": "3", "deltaphi": "4", "starttheta": "5", "deltatheta": "6", "lunit": "mm", "aunit": "deg"},
+            {"rmin": "1.1", "rmax": "2.2", "startphi": "3.3", "deltaphi": "4.4", "starttheta": "5.5", "deltatheta": "6.6", "lunit": "mm", "aunit": "deg"},
+            {
+                "rmin": "1.1",
+                "rmax": "2.2",
+                "startphi": "3.3",
+                "deltaphi": "4.4",
+                "starttheta": "5.5",
+                "deltatheta": "6.6",
+            },
+        ),
+        (
+            "orb_dimensions",
+            {"r": "5", "lunit": "mm"},
+            {"r": "7.5", "lunit": "mm"},
+            {"r": "7.5"},
+        ),
+        (
+            "torus_dimensions",
+            {"rmin": "1", "rmax": "2", "rtor": "3", "startphi": "4", "deltaphi": "5", "lunit": "mm", "aunit": "deg"},
+            {"rmin": "1.25", "rmax": "2.5", "rtor": "3.75", "startphi": "4.5", "deltaphi": "5.5", "lunit": "mm", "aunit": "deg"},
+            {"rmin": "1.25", "rmax": "2.5", "rtor": "3.75", "startphi": "4.5", "deltaphi": "5.5"},
+        ),
+        (
+            "ellipsoid_dimensions",
+            {"ax": "1", "by": "2", "cz": "3", "zcut1": "4", "zcut2": "5", "lunit": "mm"},
+            {"ax": "1.5", "by": "2.5", "cz": "3.5", "zcut1": "4.5", "zcut2": "5.5", "lunit": "mm"},
+            {"ax": "1.5", "by": "2.5", "cz": "3.5", "zcut1": "4.5", "zcut2": "5.5"},
+        ),
+        (
+            "para_dimensions",
+            {"x": "1", "y": "2", "z": "3", "alpha": "4", "theta": "5", "phi": "6", "lunit": "mm", "aunit": "deg"},
+            {"x": "1.1", "y": "2.2", "z": "3.3", "alpha": "4.4", "theta": "5.5", "phi": "6.6", "lunit": "mm", "aunit": "deg"},
+            {"x": "1.1", "y": "2.2", "z": "3.3", "alpha": "4.4", "theta": "5.5", "phi": "6.6"},
+        ),
+        (
+            "hype_dimensions",
+            {"rmin": "1", "rmax": "2", "inst": "3", "outst": "4", "z": "5", "lunit": "mm", "aunit": "deg"},
+            {"rmin": "1.25", "rmax": "2.5", "inst": "3.75", "outst": "4.5", "z": "5.25", "lunit": "mm", "aunit": "deg"},
+            {"rmin": "1.25", "rmax": "2.5", "inst": "3.75", "outst": "4.5", "z": "5.25"},
+        ),
+    ],
+)
+def test_parameterised_additional_dimensions_are_mapped_on_import(
+    dimensions_tag,
+    solid_attrs,
+    parameter_attrs,
+    expected_dimensions,
+    capsys,
+):
+    solid_tag = dimensions_tag.replace("_dimensions", "")
+
+    gdml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<gdml>
+  <solids>
+    <box name="world_solid" x="100" y="100" z="100" lunit="mm"/>
+    <{solid_tag} name="{solid_tag}_solid" {_attrs_to_xml(solid_attrs)}/>
+  </solids>
+  <structure>
+    <volume name="child_lv">
+      <materialref ref="G4_Si"/>
+      <solidref ref="{solid_tag}_solid"/>
+    </volume>
+    <volume name="world_lv">
+      <materialref ref="G4_Galactic"/>
+      <solidref ref="world_solid"/>
+      <paramvol name="{solid_tag}_param" ncopies="1">
+        <volumeref ref="child_lv"/>
+        <parameterised_position_size>
+          <parameters number="0">
+            <{dimensions_tag} {_attrs_to_xml(parameter_attrs)}/>
+          </parameters>
+        </parameterised_position_size>
+      </paramvol>
+    </volume>
+  </structure>
+  <setup>
+    <world ref="world_lv"/>
+  </setup>
+</gdml>
+"""
+
+    parser = GDMLParser()
+    state = parser.parse_gdml_string(gdml)
+    captured = capsys.readouterr()
+
+    assert f"No parameter mapping found for '{dimensions_tag}'" not in captured.out
+    assert f"No parameter mapping found for '{dimensions_tag}'" not in captured.err
+
+    param_vol = state.logical_volumes["world_lv"].content
+    assert param_vol.type == "parameterised"
+    assert param_vol.volume_ref == "child_lv"
+    assert len(param_vol.parameters) == 1
+
+    param_set = param_vol.parameters[0]
+    assert param_set.dimensions_type == dimensions_tag
+    assert param_set.dimensions == expected_dimensions

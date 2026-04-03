@@ -1078,6 +1078,27 @@ class GDMLParser:
                 'rmin1': 'rmin1', 'rmax1': 'rmax1', 'rmin2': 'rmin2', 'rmax2': 'rmax2',
                 'z': 'z', 'startphi': 'startphi', 'deltaphi': 'deltaphi'
             },
+            'sphere_dimensions': {
+                'rmin': 'rmin', 'rmax': 'rmax', 'startphi': 'startphi',
+                'deltaphi': 'deltaphi', 'starttheta': 'starttheta', 'deltatheta': 'deltatheta'
+            },
+            'orb_dimensions': {'r': 'r'},
+            'torus_dimensions': {
+                'rmin': 'rmin', 'rmax': 'rmax', 'rtor': 'rtor',
+                'startphi': 'startphi', 'deltaphi': 'deltaphi'
+            },
+            'ellipsoid_dimensions': {
+                'ax': 'ax', 'by': 'by', 'cz': 'cz',
+                'zcut1': 'zcut1', 'zcut2': 'zcut2'
+            },
+            'para_dimensions': {
+                'x': 'x', 'y': 'y', 'z': 'z',
+                'alpha': 'alpha', 'theta': 'theta', 'phi': 'phi'
+            },
+            'hype_dimensions': {
+                'rmin': 'rmin', 'rmax': 'rmax', 'inst': 'inst',
+                'outst': 'outst', 'z': 'z'
+            },
             'trd_dimensions': {'x1': 'x1', 'x2': 'x2', 'y1': 'y1', 'y2': 'y2', 'z': 'z'},
             'trap_dimensions': {
                 'z': 'z', 'theta': 'theta', 'phi': 'phi', 'y1': 'y1',
