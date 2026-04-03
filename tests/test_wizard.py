@@ -9,8 +9,8 @@ import sys
 import tempfile
 import shutil
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add the project root to the path so app/src imports work from tests/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import app
 from src.project_manager import ProjectManager

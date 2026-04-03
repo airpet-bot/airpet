@@ -12,19 +12,34 @@ Tests:
 import requests
 import json
 import time
+import socket
+
+import pytest
 
 BASE_URL = "http://127.0.0.1:5003"
+
+
+def _server_available(host="127.0.0.1", port=5003, timeout=0.2):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        return sock.connect_ex((host, port)) == 0
+
+
+pytestmark = pytest.mark.skipif(
+    not _server_available(),
+    reason="requires a running AIRPET server on 127.0.0.1:5003",
+)
 
 def create_project():
     """Create a new project."""
     print("Creating new project...")
     response = requests.post(f"{BASE_URL}/new_project", json={})
-    if response.status_code != 200:
-        raise Exception(f"Failed to create project: {response.text}")
+    assert response.status_code == 200, f"Failed to create project: {response.text}"
     return response.json()
 
 def test_boolean_union_direct():
     """Test 50: Union of two boxes via direct API."""
+    create_project()
     print("\n" + "="*70)
     print("Test 50 Direct API: Union of two boxes")
     print("="*70)
@@ -51,16 +66,13 @@ def test_boolean_union_direct():
         ]
     }).json()
     
-    if union.get("success"):
-        print("✅ Boolean solid 'union_ab' created successfully")
-        print(f"   Recipe: {union.get('solid', {}).get('raw_parameters', {}).get('recipe')}")
-        return True
-    else:
-        print(f"❌ Failed: {union.get('error')}")
-        return False
+    assert union.get("success"), f"Failed to create union_ab: {union.get('error')}"
+    print("✅ Boolean solid 'union_ab' created successfully")
+    print(f"   Recipe: {union.get('solid', {}).get('raw_parameters', {}).get('recipe')}")
 
 def test_boolean_union_ai():
     """Test 50: Union of two boxes via AI chat."""
+    create_project()
     print("\n" + "="*70)
     print("Test 50 AI Chat: Union of two boxes")
     print("="*70)
@@ -81,32 +93,27 @@ where box_b is positioned at x=50mm relative to box_a."""
     
     print(f"Response time: {elapsed:.1f}s")
     print(f"Status: {response.status_code}")
+    assert response.status_code == 200, f"HTTP Error {response.status_code}: {response.text[:200]}"
     
-    if response.status_code == 200:
-        data = response.json()
-        print(f"\nAI Response: {data.get('text', 'N/A')[:200]}")
-        
-        # Check if solids were created
-        state = requests.get(f"{BASE_URL}/get_project_state").json()
-        solids = state.get('project_state', {}).get('solids', {})
-        
-        if 'union_ab' in solids or any('union' in s.lower() for s in solids.keys()):
-            print("✅ Boolean union solid created successfully")
-            for name, solid in solids.items():
-                if solid.get('type') == 'boolean':
-                    print(f"   Solid: {name}, Type: {solid.get('type')}")
-                    print(f"   Recipe: {solid.get('raw_parameters', {}).get('recipe')}")
-            return True
-        else:
-            print("❌ Boolean solid not found in project state")
-            print(f"Available solids: {list(solids.keys())}")
-            return False
-    else:
-        print(f"❌ HTTP Error {response.status_code}: {response.text[:200]}")
-        return False
+    data = response.json()
+    print(f"\nAI Response: {data.get('text', 'N/A')[:200]}")
+    
+    # Check if solids were created
+    state = requests.get(f"{BASE_URL}/get_project_state").json()
+    solids = state.get('project_state', {}).get('solids', {})
+    
+    assert 'union_ab' in solids or any('union' in s.lower() for s in solids.keys()), (
+        f"Boolean solid not found in project state. Available solids: {list(solids.keys())}"
+    )
+    print("✅ Boolean union solid created successfully")
+    for name, solid in solids.items():
+        if solid.get('type') == 'boolean':
+            print(f"   Solid: {name}, Type: {solid.get('type')}")
+            print(f"   Recipe: {solid.get('raw_parameters', {}).get('recipe')}")
 
 def test_boolean_subtraction_direct():
     """Test 51: Subtraction (box with cylindrical hole) via direct API."""
+    create_project()
     print("\n" + "="*70)
     print("Test 51 Direct API: Box with cylindrical hole")
     print("="*70)
@@ -134,16 +141,13 @@ def test_boolean_subtraction_direct():
         ]
     }).json()
     
-    if subtraction.get("success"):
-        print("✅ Boolean solid 'box_with_hole' created successfully")
-        print(f"   Recipe: {subtraction.get('solid', {}).get('raw_parameters', {}).get('recipe')}")
-        return True
-    else:
-        print(f"❌ Failed: {subtraction.get('error')}")
-        return False
+    assert subtraction.get("success"), f"Failed to create box_with_hole: {subtraction.get('error')}"
+    print("✅ Boolean solid 'box_with_hole' created successfully")
+    print(f"   Recipe: {subtraction.get('solid', {}).get('raw_parameters', {}).get('recipe')}")
 
 def test_boolean_subtraction_ai():
     """Test 51: Subtraction via AI chat."""
+    create_project()
     print("\n" + "="*70)
     print("Test 51 AI Chat: Box with cylindrical hole")
     print("="*70)
@@ -164,32 +168,27 @@ Create a boolean subtraction solid named box_with_hole that subtracts hole_tube 
     
     print(f"Response time: {elapsed:.1f}s")
     print(f"Status: {response.status_code}")
+    assert response.status_code == 200, f"HTTP Error {response.status_code}: {response.text[:200]}"
     
-    if response.status_code == 200:
-        data = response.json()
-        print(f"\nAI Response: {data.get('text', 'N/A')[:200]}")
-        
-        # Check if solids were created
-        state = requests.get(f"{BASE_URL}/get_project_state").json()
-        solids = state.get('project_state', {}).get('solids', {})
-        
-        if any('hole' in s.lower() or 'subtraction' in s.lower() for s in solids.keys()):
-            print("✅ Boolean subtraction solid created successfully")
-            for name, solid in solids.items():
-                if solid.get('type') == 'boolean':
-                    print(f"   Solid: {name}, Type: {solid.get('type')}")
-                    print(f"   Recipe: {solid.get('raw_parameters', {}).get('recipe')}")
-            return True
-        else:
-            print("❌ Boolean solid not found in project state")
-            print(f"Available solids: {list(solids.keys())}")
-            return False
-    else:
-        print(f"❌ HTTP Error {response.status_code}: {response.text[:200]}")
-        return False
+    data = response.json()
+    print(f"\nAI Response: {data.get('text', 'N/A')[:200]}")
+    
+    # Check if solids were created
+    state = requests.get(f"{BASE_URL}/get_project_state").json()
+    solids = state.get('project_state', {}).get('solids', {})
+    
+    assert any('hole' in s.lower() or 'subtraction' in s.lower() for s in solids.keys()), (
+        f"Boolean solid not found in project state. Available solids: {list(solids.keys())}"
+    )
+    print("✅ Boolean subtraction solid created successfully")
+    for name, solid in solids.items():
+        if solid.get('type') == 'boolean':
+            print(f"   Solid: {name}, Type: {solid.get('type')}")
+            print(f"   Recipe: {solid.get('raw_parameters', {}).get('recipe')}")
 
 def test_boolean_intersection_direct():
     """Test 52: Intersection of two solids via direct API."""
+    create_project()
     print("\n" + "="*70)
     print("Test 52 Direct API: Intersection of box and tube")
     print("="*70)
@@ -217,16 +216,15 @@ def test_boolean_intersection_direct():
         ]
     }).json()
     
-    if intersection.get("success"):
-        print("✅ Boolean solid 'box_tube_intersection' created successfully")
-        print(f"   Recipe: {intersection.get('solid', {}).get('raw_parameters', {}).get('recipe')}")
-        return True
-    else:
-        print(f"❌ Failed: {intersection.get('error')}")
-        return False
+    assert intersection.get("success"), (
+        f"Failed to create box_tube_intersection: {intersection.get('error')}"
+    )
+    print("✅ Boolean solid 'box_tube_intersection' created successfully")
+    print(f"   Recipe: {intersection.get('solid', {}).get('raw_parameters', {}).get('recipe')}")
 
 def test_boolean_intersection_ai():
     """Test 52: Intersection via AI chat."""
+    create_project()
     print("\n" + "="*70)
     print("Test 52 AI Chat: Intersection of box and tube")
     print("="*70)
@@ -246,65 +244,18 @@ Create a boolean intersection solid that shows only the overlapping region of th
     
     print(f"Response time: {elapsed:.1f}s")
     print(f"Status: {response.status_code}")
+    assert response.status_code == 200, f"HTTP Error {response.status_code}: {response.text[:200]}"
     
-    if response.status_code == 200:
-        data = response.json()
-        print(f"\nAI Response: {data.get('text', 'N/A')[:200]}")
-        
-        # Check if solids were created
-        state = requests.get(f"{BASE_URL}/get_project_state").json()
-        solids = state.get('project_state', {}).get('solids', {})
-        
-        boolean_solids = {k: v for k, v in solids.items() if v.get('type') == 'boolean'}
-        if boolean_solids:
-            print("✅ Boolean intersection solid created successfully")
-            for name, solid in boolean_solids.items():
-                print(f"   Solid: {name}, Type: {solid.get('type')}")
-                print(f"   Recipe: {solid.get('raw_parameters', {}).get('recipe')}")
-            return True
-        else:
-            print("❌ Boolean solid not found in project state")
-            print(f"Available solids: {list(solids.keys())}")
-            return False
-    else:
-        print(f"❌ HTTP Error {response.status_code}: {response.text[:200]}")
-        return False
-
-def main():
-    """Run all tests."""
-    results = {}
+    data = response.json()
+    print(f"\nAI Response: {data.get('text', 'N/A')[:200]}")
     
-    # Test 50: Union
-    create_project()
-    results['50_direct'] = test_boolean_union_direct()
-    create_project()
-    results['50_ai'] = test_boolean_union_ai()
+    # Check if solids were created
+    state = requests.get(f"{BASE_URL}/get_project_state").json()
+    solids = state.get('project_state', {}).get('solids', {})
     
-    # Test 51: Subtraction
-    create_project()
-    results['51_direct'] = test_boolean_subtraction_direct()
-    create_project()
-    results['51_ai'] = test_boolean_subtraction_ai()
-    
-    # Test 52: Intersection
-    create_project()
-    results['52_direct'] = test_boolean_intersection_direct()
-    create_project()
-    results['52_ai'] = test_boolean_intersection_ai()
-    
-    # Summary
-    print("\n" + "="*70)
-    print("SUMMARY")
-    print("="*70)
-    for test, passed in results.items():
-        status = "✅ PASS" if passed else "❌ FAIL"
-        print(f"{test}: {status}")
-    
-    all_passed = all(results.values())
-    print(f"\nOverall: {'✅ ALL TESTS PASSED' if all_passed else '❌ SOME TESTS FAILED'}")
-    
-    return all_passed
-
-if __name__ == "__main__":
-    success = main()
-    exit(0 if success else 1)
+    boolean_solids = {k: v for k, v in solids.items() if v.get('type') == 'boolean'}
+    assert boolean_solids, f"Boolean solid not found in project state. Available solids: {list(solids.keys())}"
+    print("✅ Boolean intersection solid created successfully")
+    for name, solid in boolean_solids.items():
+        print(f"   Solid: {name}, Type: {solid.get('type')}")
+        print(f"   Recipe: {solid.get('raw_parameters', {}).get('recipe')}")

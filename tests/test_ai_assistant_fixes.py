@@ -7,11 +7,11 @@ Headless tests for AI assistant fixes:
 import sys
 import os
 
-# Add the src directory to the path
-src_dir = os.path.join(os.path.dirname(__file__), 'src')
-sys.path.insert(0, src_dir)
+# Add the project root to the path so `src` imports keep working from tests/.
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT_DIR)
 
-from geometry_types import GeometryState, Material, ParticleSource
+from src.geometry_types import GeometryState, Material, ParticleSource
 
 
 def test_nist_material_creation():
@@ -21,9 +21,7 @@ def test_nist_material_creation():
     # Test 1a: Create a NIST material directly
     nist_mat = Material("G4_PLASTIC_SCINTILLATOR", mat_type='nist')
     
-    if nist_mat.mat_type != 'nist':
-        print(f"FAIL: Expected mat_type='nist', got '{nist_mat.mat_type}'")
-        return False
+    assert nist_mat.mat_type == 'nist', f"Expected mat_type='nist', got '{nist_mat.mat_type}'"
     
     print(f"PASS: NIST material created with mat_type='{nist_mat.mat_type}'")
     
@@ -31,9 +29,9 @@ def test_nist_material_creation():
     std_mat = Material("custom_material", mat_type='standard', 
                        Z_expr='6', A_expr='12', density_expr='1.5')
     
-    if std_mat.mat_type != 'standard':
-        print(f"FAIL: Expected mat_type='standard', got '{std_mat.mat_type}'")
-        return False
+    assert std_mat.mat_type == 'standard', (
+        f"Expected mat_type='standard', got '{std_mat.mat_type}'"
+    )
     
     print(f"PASS: Standard material created with mat_type='{std_mat.mat_type}'")
     
@@ -48,9 +46,9 @@ def test_nist_material_creation():
     }
     
     nist_from_dict = Material.from_dict(nist_dict)
-    if nist_from_dict.mat_type != 'nist':
-        print(f"FAIL: Expected mat_type='nist' from dict, got '{nist_from_dict.mat_type}'")
-        return False
+    assert nist_from_dict.mat_type == 'nist', (
+        f"Expected mat_type='nist' from dict, got '{nist_from_dict.mat_type}'"
+    )
     
     print(f"PASS: NIST material from_dict with mat_type='{nist_from_dict.mat_type}'")
     
@@ -65,13 +63,11 @@ def test_nist_material_creation():
     }
     
     nist_auto = Material.from_dict(nist_auto_dict)
-    if nist_auto.mat_type != 'nist':
-        print(f"FAIL: Expected auto-detection of NIST material, got '{nist_auto.mat_type}'")
-        return False
+    assert nist_auto.mat_type == 'nist', (
+        f"Expected auto-detection of NIST material, got '{nist_auto.mat_type}'"
+    )
     
     print(f"PASS: NIST material auto-detected from_dict with mat_type='{nist_auto.mat_type}'")
-    
-    return True
 
 
 def test_gps_command_normalization():
@@ -119,13 +115,12 @@ def test_gps_command_normalization():
     # Test 2a: Empty commands get defaults
     result = normalize_gps_commands({})
     
-    if result.get('particle') != 'gamma':
-        print(f"FAIL: Expected default particle='gamma', got '{result.get('particle')}'")
-        return False
-    
-    if result.get('ang/type') != 'Direction':
-        print(f"FAIL: Expected default ang/type='Direction', got '{result.get('ang/type')}'")
-        return False
+    assert result.get('particle') == 'gamma', (
+        f"Expected default particle='gamma', got '{result.get('particle')}'"
+    )
+    assert result.get('ang/type') == 'Direction', (
+        f"Expected default ang/type='Direction', got '{result.get('ang/type')}'"
+    )
     
     print(f"PASS: Defaults applied - particle='{result.get('particle')}', ang/type='{result.get('ang/type')}'")
     
@@ -140,16 +135,14 @@ def test_gps_command_normalization():
     for input_cmds, expected_energy in test_cases:
         result = normalize_gps_commands(input_cmds)
         actual_energy = result.get('energy', '')
-        if actual_energy != expected_energy:
-            print(f"FAIL: Expected '{expected_energy}', got '{actual_energy}'")
-            return False
+        assert actual_energy == expected_energy, f"Expected '{expected_energy}', got '{actual_energy}'"
         print(f"PASS: Energy '{input_cmds['energy']}' -> '{actual_energy}'")
     
     # Test 2c: Already correct format preserved
     result = normalize_gps_commands({'energy': '511*keV'})
-    if result.get('energy') != '511*keV':
-        print(f"FAIL: Expected '511*keV' to be preserved, got '{result.get('energy')}'")
-        return False
+    assert result.get('energy') == '511*keV', (
+        f"Expected '511*keV' to be preserved, got '{result.get('energy')}'"
+    )
     print(f"PASS: Correct format preserved - energy='{result.get('energy')}'")
     
     # Test 2d: Explicit values preserved
@@ -170,9 +163,7 @@ def test_gps_command_normalization():
     
     for key, expected in checks:
         actual = result.get(key, '')
-        if actual != expected:
-            print(f"FAIL: Expected {key}='{expected}', got '{actual}'")
-            return False
+        assert actual == expected, f"Expected {key}='{expected}', got '{actual}'"
     
     print(f"PASS: Explicit values preserved")
     
@@ -181,12 +172,10 @@ def test_gps_command_normalization():
         'energy': {'value': 100, 'unit': 'keV'}
     }
     result = normalize_gps_commands(dict_format)
-    if result.get('energy') != '100*keV':
-        print(f"FAIL: Expected '100*keV' from dict, got '{result.get('energy')}'")
-        return False
+    assert result.get('energy') == '100*keV', (
+        f"Expected '100*keV' from dict, got '{result.get('energy')}'"
+    )
     print(f"PASS: Dict format converted and normalized - energy='{result.get('energy')}'")
-    
-    return True
 
 
 def test_material_from_dict_nist_detection():
@@ -213,9 +202,7 @@ def test_material_from_dict_nist_detection():
         }
         
         mat = Material.from_dict(mat_dict)
-        if mat.mat_type != 'nist':
-            print(f"FAIL: {name} should be detected as NIST, got '{mat.mat_type}'")
-            return False
+        assert mat.mat_type == 'nist', f"{name} should be detected as NIST, got '{mat.mat_type}'"
         
         print(f"PASS: {name} detected as NIST material")
     
@@ -229,13 +216,11 @@ def test_material_from_dict_nist_detection():
     }
     
     std_mat = Material.from_dict(std_dict)
-    if std_mat.mat_type != 'standard':
-        print(f"FAIL: custom_material should be 'standard', got '{std_mat.mat_type}'")
-        return False
+    assert std_mat.mat_type == 'standard', (
+        f"custom_material should be 'standard', got '{std_mat.mat_type}'"
+    )
     
     print(f"PASS: custom_material correctly set as 'standard'")
-    
-    return True
 
 
 def main():
@@ -253,7 +238,8 @@ def main():
     results = []
     for test_name, test_func in tests:
         try:
-            success = test_func()
+            test_func()
+            success = True
             results.append((test_name, success))
         except Exception as e:
             print(f"\nERROR in {test_name}: {e}")

@@ -8,9 +8,24 @@ It tests basic state persistence across 2-3 messages.
 
 import requests
 import time
+import socket
+
+import pytest
 
 BASE_URL = "http://127.0.0.1:5003"
 MODEL = "llama_cpp::Qwen3.5-27B-Q6_K"
+
+
+def _server_available(host="127.0.0.1", port=5003, timeout=0.2):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        return sock.connect_ex((host, port)) == 0
+
+
+pytestmark = pytest.mark.skipif(
+    not _server_available(),
+    reason="requires a running AIRPET server on 127.0.0.1:5003",
+)
 
 def test_multistep_basic():
     """Test basic multi-step conversation."""
@@ -89,8 +104,4 @@ def test_multistep_basic():
     
     success = resp.status_code == 200
     print(f"\n{'✅ TEST PASSED' if success else '❌ TEST FAILED'}")
-    
-    return 0 if success else 1
-
-if __name__ == "__main__":
-    exit(test_multistep_basic())
+    assert success, "Final AI request did not succeed"
