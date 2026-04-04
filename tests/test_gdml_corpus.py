@@ -240,6 +240,41 @@ CORPUS_CASES = [
         },
         id="parameterised-placements",
     ),
+    pytest.param(
+        "parameterised_polycone_polyhedra.gdml",
+        {
+            "materials": {"Air": "gas", "Aluminum": "solid", "Silicon": "solid"},
+            "solids": {
+                "world_box": "box",
+                "polycone_host_box": "box",
+                "polycone_solid": "polycone",
+                "polyhedra_host_box": "box",
+                "polyhedra_solid": "polyhedra",
+            },
+            "world_children": ("polycone_container_pv", "polyhedra_container_pv"),
+            "parameterised_lvs": {
+                "polycone_container_lv": {
+                    "volume_ref": "polycone_lv",
+                    "ncopies": 2,
+                    "dimensions_types": (
+                        "polycone_dimensions",
+                        "polycone_dimensions",
+                    ),
+                    "numbers": ("0", "1"),
+                },
+                "polyhedra_container_lv": {
+                    "volume_ref": "polyhedra_lv",
+                    "ncopies": 2,
+                    "dimensions_types": (
+                        "polyhedra_dimensions",
+                        "polyhedra_dimensions",
+                    ),
+                    "numbers": ("0", "1"),
+                },
+            },
+        },
+        id="parameterised-polycone-polyhedra",
+    ),
 ]
 
 
