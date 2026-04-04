@@ -8,6 +8,7 @@ from src.project_manager import ProjectManager
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "gdml" / "corpus"
+AIRPET_EXAMPLE_DIR = Path(__file__).resolve().parents[1] / "geom"
 
 
 def _normalize(value):
@@ -286,3 +287,54 @@ def test_gdml_corpus_round_trips(fixture_name, expected):
     assert _state_signature(original_state) == _state_signature(roundtrip_state)
     _assert_case_expectations(original_state, expected)
     _assert_case_expectations(roundtrip_state, expected)
+
+
+@pytest.mark.parametrize(
+    "fixture_name, dimensions_type",
+    [
+        pytest.param("parameterized.gdml", "box_dimensions", id="airpet-parameterized-box"),
+        pytest.param("pTube.gdml", "tube_dimensions", id="airpet-parameterized-tube"),
+    ],
+)
+def test_airpet_parameterized_examples_round_trip_warning_free(fixture_name, dimensions_type):
+    fixture_path = AIRPET_EXAMPLE_DIR / fixture_name
+    pm, original_state = _load_state(fixture_path.read_text(encoding="utf-8"))
+
+    assert pm.gdml_parser.import_warnings == []
+
+    param_volume = original_state.logical_volumes["Tracker"].content
+    assert param_volume.volume_ref == "Chamber"
+    assert int(param_volume.ncopies) == 5
+    assert len(param_volume.parameters) == 5
+    assert tuple(param.number for param in param_volume.parameters) == ("1", "2", "3", "4", "5")
+    assert tuple(param.dimensions_type for param in param_volume.parameters) == (
+        dimensions_type,
+        dimensions_type,
+        dimensions_type,
+        dimensions_type,
+        dimensions_type,
+    )
+
+    roundtrip_pm, roundtrip_state = _load_state(pm.export_to_gdml_string())
+
+    roundtrip_param_volume = roundtrip_state.logical_volumes["Tracker"].content
+    assert roundtrip_param_volume.volume_ref == "Chamber"
+    assert int(roundtrip_param_volume.ncopies) == 5
+    assert len(roundtrip_param_volume.parameters) == 5
+    assert tuple(param.number for param in roundtrip_param_volume.parameters) == (
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+    )
+    assert tuple(param.dimensions_type for param in roundtrip_param_volume.parameters) == (
+        dimensions_type,
+        dimensions_type,
+        dimensions_type,
+        dimensions_type,
+        dimensions_type,
+    )
+
+    assert pm.gdml_parser.import_warnings == []
+    assert roundtrip_pm.gdml_parser.import_warnings == []

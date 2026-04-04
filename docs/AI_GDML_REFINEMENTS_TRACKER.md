@@ -53,13 +53,13 @@ A task is only `DONE` when all of the following are true:
 
 ## Current Status
 
-- Overall phase: backlog complete
-- Release posture: conditional pass, with the parameterised polycone/polyhedra corpus gap, twisted parameterised-solid importer gap, and remaining AIRPET primitive parameterised-import gap now closed
-- Current priority: none; all tracked tasks are DONE
+- Overall phase: post-release audit follow-up
+- Release posture: conditional pass, with the parameterised polycone/polyhedra corpus gap, twisted parameterised-solid importer gap, and remaining AIRPET primitive parameterised-import gap now closed; additional real-example corpus coverage is being extended
+- Current priority: GDML-013
 
 ## Current NEXT Task
 
-None; backlog exhausted.
+GDML-013: Add AIRPET `test_polycones.gdml` corpus coverage for genericPolycone/polycone solids.
 
 ## Backlog
 
@@ -89,6 +89,8 @@ Statuses:
 | GDML-010 | P2 | GDML | Add parameterised solid import mapping for twistedbox/twistedtrd/twistedtrap/twistedtubs | DONE | Parser now normalizes the AIRPET twisted parameterised solids that the writer/project manager already support, and focused regressions cover all four shapes |
 | AI-006 | P2 | AI | Preserve source provenance in downloaded param-study JSON | DONE | Added `tests/js/param_study_export_summary.test.mjs` to lock in run-result provenance, launch-payload fallback, and preview-sweep no-source handling for the export summary helper that feeds downloaded study JSON |
 | GDML-011 | P2 | GDML | Add parameterised import mappings for eltube/elcone/paraboloid | DONE | Parser now normalizes the remaining AIRPET primitive parameter blocks that were still imported raw, and the GDML regression table now locks all three shapes warning-free |
+| GDML-012 | P2 | GDML | Add AIRPET example corpus coverage for parameterized box/tube GDML | DONE | Added warning-free round-trip coverage for the checked-in `geom/parameterized.gdml` and `geom/pTube.gdml` examples; the parser preserves `box_dimensions` and `tube_dimensions` parameter sets across export/import |
+| GDML-013 | P2 | GDML | Add AIRPET `test_polycones.gdml` corpus coverage for genericPolycone/polycone solids | NEXT | Promote the checked-in real example into the corpus smoke suite and verify the generic polycone path stays warning-free |
 
 ## Cycle Log
 
@@ -112,6 +114,7 @@ Statuses:
 | 2026-04-04 17:04:48 CEST | GDML-010 | DONE | Files: `src/gdml_parser.py`, `tests/test_gdml.py`, `docs/AI_GDML_REFINEMENTS_TRACKER.md`; tests: `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda run -n airpet python -m pytest tests/test_gdml.py -q -k 'twisted_dimensions'` (`4 passed, 22 deselected`); outcome: normalized twistedbox/twistedtrd/twistedtrap/twistedtubs parameterised imports so they no longer fall back to raw GDML names, and focused regressions now lock the four AIRPET-supported twisted shapes; local commit `d61dae6` created, but `git push origin dev` is blocked here because `github.com` does not resolve; backlog remains exhausted and there is still no NEXT task |
 | 2026-04-04 15:05:17 CEST | AI-006 | DONE | Files: `tests/js/param_study_export_summary.test.mjs`, `docs/AI_GDML_REFINEMENTS_TRACKER.md`; tests: `node --test tests/js/param_study_export_summary.test.mjs` (`3 passed`); outcome: added regression coverage that keeps source provenance in the downloaded param-study JSON summary helper aligned with run-result provenance, launch-payload fallback, and preview-sweep behavior; backlog remains exhausted and there is still no NEXT task |
 | 2026-04-04 19:06:54 CEST | GDML-011 | DONE | Files: `src/gdml_parser.py`, `tests/test_gdml.py`, `docs/AI_GDML_REFINEMENTS_TRACKER.md`; tests: `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda run -n airpet python -m pytest tests/test_gdml.py -q -k 'parameterised_additional_dimensions_are_mapped_on_import'` (`9 passed, 20 deselected`); outcome: normalized `eltube_dimensions`, `elcone_dimensions`, and `paraboloid_dimensions` during parameterised import, and the regression table now keeps those AIRPET primitives warning-free; backlog remains exhausted and there is still no NEXT task |
+| 2026-04-04 | GDML-012 | DONE | Files: `tests/test_gdml_corpus.py`, `docs/AI_GDML_REFINEMENTS_TRACKER.md`; tests: `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda run -n airpet python -m pytest tests/test_gdml_corpus.py -q` (`6 passed`); outcome: added warning-free round-trip coverage for the checked-in `geom/parameterized.gdml` and `geom/pTube.gdml` examples, preserving their `box_dimensions` and `tube_dimensions` parameter sets across export/import, and queued `GDML-013` as the next corpus hardening task |
 
 ## Notes For Future Reordering
 
