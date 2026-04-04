@@ -780,7 +780,12 @@ class GDMLWriter:
                     ET.SubElement(params_el, "rotation", rot)
 
             # Dimensions
-            ET.SubElement(params_el, param_set.dimensions_type, param_set.dimensions)
+            dim_attrs = {k: str(v) for k, v in param_set.dimensions.items() if k != "zplanes"}
+            dim_el = ET.SubElement(params_el, param_set.dimensions_type, dim_attrs)
+
+            if param_set.dimensions_type in {"polycone_dimensions", "polyhedra_dimensions"}:
+                for zplane in param_set.dimensions.get("zplanes", []):
+                    ET.SubElement(dim_el, "zplane", {k: str(v) for k, v in zplane.items()})
 
     def _write_skin_surface(self, parent_el, surf_obj):
         surf_el = ET.SubElement(parent_el, "skinsurface", {

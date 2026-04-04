@@ -517,6 +517,36 @@ class ProjectManager:
                         evaluated_dict[axis] = default_val.get(axis, 0)
                 return evaluated_dict
             return default_val
+
+        def evaluate_param_dimension_part(raw_value, owner_name, path):
+            """Recursively evaluate parameterised dimension payloads."""
+            if isinstance(raw_value, dict):
+                return {
+                    key: evaluate_param_dimension_part(
+                        value,
+                        owner_name,
+                        f"{path}.{key}" if path else key,
+                    )
+                    for key, value in raw_value.items()
+                }
+            if isinstance(raw_value, list):
+                return [
+                    evaluate_param_dimension_part(
+                        item,
+                        owner_name,
+                        f"{path}[{index}]" if path else f"[{index}]",
+                    )
+                    for index, item in enumerate(raw_value)
+                ]
+            if isinstance(raw_value, (int, float)):
+                return float(raw_value)
+
+            try:
+                return float(evaluator.evaluate(str(raw_value))[1])
+            except Exception as e:
+                label = path or "parameter"
+                print(f"Warning: Could not eval param dimension '{label}' for '{owner_name}': {e}")
+                return 0.0
         
         # --- Stage 1: Iteratively resolve all defines ---
         unresolved_defines = list(state.defines.values())
@@ -882,11 +912,7 @@ class ProjectManager:
                             # Evaluate each dimension expression for this instance
                             evaluated_dims = {}
                             for key, raw_expr in param_set.dimensions.items():
-                                try:
-                                    evaluated_dims[key] = float(evaluator.evaluate(str(raw_expr))[1])
-                                except Exception as e:
-                                    print(f"Warning: Could not eval param dimension '{key}' for '{lv.name}': {e}")
-                                    evaluated_dims[key] = 0.0
+                                evaluated_dims[key] = evaluate_param_dimension_part(raw_expr, lv.name, key)
                             param_set._evaluated_dimensions = evaluated_dims
 
 
@@ -3960,10 +3986,18 @@ class ProjectManager:
                     # Check parameterised volume dimensions
                     if hasattr(proc_obj, 'parameters'):
                         for param_set in proc_obj.parameters:
-                            for dim_val in param_set.dimensions.values():
-                                if isinstance(dim_val, str) and re.search(r'\b' + re.escape(search_str) + r'\b', dim_val):
-                                    dependencies.append(f"Parameterised Volume in '{lv.name}' (dimensions)")
-                                    break
+                            def _dimension_contains_search(value):
+                                if isinstance(value, str):
+                                    return re.search(r'\b' + re.escape(search_str) + r'\b', value) is not None
+                                if isinstance(value, dict):
+                                    return any(_dimension_contains_search(item) for item in value.values())
+                                if isinstance(value, list):
+                                    return any(_dimension_contains_search(item) for item in value)
+                                return False
+
+                            if any(_dimension_contains_search(dim_val) for dim_val in param_set.dimensions.values()):
+                                dependencies.append(f"Parameterised Volume in '{lv.name}' (dimensions)")
+                                break
                             if param_set.position == search_str:
                                 dependencies.append(f"Parameterised Volume in '{lv.name}' (position ref)")
                             if param_set.rotation == search_str:

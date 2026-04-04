@@ -54,12 +54,12 @@ A task is only `DONE` when all of the following are true:
 ## Current Status
 
 - Overall phase: backlog bootstrapping complete
-- Release posture: conditional pass, with known bounded gaps in AI/UI parity and GDML import breadth
-- Current priority: all tracked backlog items are complete; add new work only as new gaps are discovered
+- Release posture: conditional pass, with a newly reopened GDML gap around parameterised polycone/polyhedra corpus coverage
+- Current priority: GDML-008 is complete; GDML-009 is next
 
 ## Current NEXT Task
 
-None. No pending backlog tasks remain.
+GDML-009: Add a representative corpus fixture for parameterised polycone/polyhedra volumes.
 
 ## Backlog
 
@@ -84,6 +84,8 @@ Statuses:
 | GDML-006 | P2 | GDML | Improve unsupported-construct feedback for `<!ENTITY>`, `<file>`, and unmapped parameterised solids | DONE | Parser now emits clearer `<!ENTITY>`, `<file>`, and unmapped parameterised-solid diagnostics, and it records import warnings for downstream surfaces; added regressions for the fatal entity case, the skipped `<file>` placement, and the unmapped dimensions warning |
 | GDML-007 | P2 | GDML | Evaluate modular GDML `<file>` include support, or formalize explicit non-support in the product/import UX | DONE | GDML load/import now surfaces unsupported `<file>` include warnings in the browser, and the file-menu labels/tooltips make the self-contained-only limitation explicit |
 | AI-005 | P2 | AI | Review remaining UI features against AI tool coverage and close the highest-value gaps | DONE | Added source-selection parity for `setup_param_study` and simulation-in-loop `run_optimization`; the AI schema now advertises study/run source subsets, dispatch persists and forwards selected source ids, and focused regressions cover schema exposure plus payload forwarding |
+| GDML-008 | P1 | GDML | Preserve nested `polycone_dimensions` and `polyhedra_dimensions` through import/export | DONE | Parser now carries nested `zplane` arrays for parameterised polycone/polyhedra volumes, the writer emits them back out, recursive evaluation preserves nested parameter payloads, and focused round-trip coverage passes |
+| GDML-009 | P2 | GDML | Add a representative corpus fixture for parameterised polycone/polyhedra volumes | NEXT | Promote the synthetic regression into the GDML corpus smoke suite |
 
 ## Cycle Log
 
@@ -102,6 +104,7 @@ Statuses:
 | 2026-04-03 22:06:10 CEST | GDML-006 | DONE | Files: `src/gdml_parser.py`, `tests/test_gdml.py`; tests: `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda run -n airpet python -m pytest /Volumes/nvme/projects/airpet/tests/test_gdml.py -q` (`18 passed`); outcome: the parser now emits clearer diagnostics for `<!ENTITY>`, `<file>`, and unmapped parameterised-solid imports, records import warnings for downstream use, and the regression suite covers all three unsupported-construct paths |
 | 2026-04-04 00:05:46 CEST | GDML-007 | DONE | Files: `app.py`, `static/main.js`, `templates/index.html`, `tests/test_gdml.py`; tests: `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda run -n airpet python -m pytest /Volumes/nvme/projects/airpet/tests/test_gdml.py -q` (`20 passed`); outcome: GDML open/import responses now propagate parser warnings, the browser surfaces unsupported `<file>` includes as an explicit warning, and the menu labels/tooltips now call out self-contained-only GDML imports; local commit `e766bf7` created, but `git push origin dev` is still blocked here because `github.com` does not resolve; next task is `AI-005` |
 | 2026-04-04 02:06:19 CEST | AI-005 | DONE | Files: `src/ai_tools.py`, `app.py`, `tests/test_ai_integration.py`, `tests/test_ai_api.py`, `docs/AI_GDML_REFINEMENTS_TRACKER.md`; tests: `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda run -n airpet python -m pytest tests/test_ai_integration.py -q -k 'param_study_ai_schema_exposes_simulation_source_selection'` (`1 passed`) and `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda run -n airpet python -m pytest tests/test_ai_api.py -q -k 'setup_param_study_persists_simulation_source_ids or run_optimization_forwards_selected_source_ids_to_simulation_in_loop_route'` (`2 passed`); outcome: AI param-study and simulation-in-loop optimization now accept source-subset selection, the schema advertises the new fields, dispatch persists study sources and forwards selected source ids to the launch route, the remaining tracked backlog is empty, and local commit `534c31d` is ready while `git push origin dev` is blocked because `github.com` does not resolve here |
+| 2026-04-04 11:40:31 CEST | GDML-008 | DONE | Files: `src/gdml_parser.py`, `src/gdml_writer.py`, `src/project_manager.py`, `tests/test_gdml.py`; tests: `source /Users/marth/miniconda/etc/profile.d/conda.sh && conda run -n airpet python -m pytest tests/test_gdml.py -q -k 'parameterised_'` (`11 passed, 11 deselected`); outcome: parameterised polycone/polyhedra GDML now imports with nested `zplane` payloads intact, exports them back out, and preserves nested evaluation/dependency handling; next task is `GDML-009` |
 
 ## Notes For Future Reordering
 

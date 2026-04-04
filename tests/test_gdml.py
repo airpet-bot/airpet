@@ -523,3 +523,188 @@ def test_parameterised_additional_dimensions_are_mapped_on_import(
     param_set = param_vol.parameters[0]
     assert param_set.dimensions_type == dimensions_tag
     assert param_set.dimensions == expected_dimensions
+
+
+@pytest.mark.parametrize(
+    (
+        "solid_tag",
+        "solid_attrs",
+        "dimensions_tag",
+        "parameter_attrs",
+        "parameter_zplanes",
+        "expected_dimensions",
+        "expected_evaluated_dimensions",
+    ),
+    [
+        (
+            "polycone",
+            {
+                "startphi": "0",
+                "deltaphi": "180",
+                "lunit": "mm",
+                "aunit": "deg",
+            },
+            "polycone_dimensions",
+            {
+                "numRZ": "2",
+                "startPhi": "15",
+                "openPhi": "90",
+                "lunit": "mm",
+                "aunit": "deg",
+            },
+            [
+                {"z": "-12", "rmin": "0", "rmax": "20"},
+                {"z": "12", "rmin": "5", "rmax": "25"},
+            ],
+            {
+                "numRZ": "2",
+                "startPhi": "15",
+                "openPhi": "90",
+                "zplanes": [
+                    {"z": "-12", "rmin": "0", "rmax": "20"},
+                    {"z": "12", "rmin": "5", "rmax": "25"},
+                ],
+            },
+            {
+                "numRZ": 2.0,
+                "startPhi": 15.0,
+                "openPhi": 90.0,
+                "zplanes": [
+                    {"z": -12.0, "rmin": 0.0, "rmax": 20.0},
+                    {"z": 12.0, "rmin": 5.0, "rmax": 25.0},
+                ],
+            },
+        ),
+        (
+            "polyhedra",
+            {
+                "numsides": "8",
+                "startphi": "30",
+                "deltaphi": "270",
+                "lunit": "mm",
+                "aunit": "deg",
+            },
+            "polyhedra_dimensions",
+            {
+                "numRZ": "2",
+                "numSide": "8",
+                "startPhi": "30",
+                "openPhi": "120",
+                "lunit": "mm",
+                "aunit": "deg",
+            },
+            [
+                {"z": "-8", "rmin": "1", "rmax": "9"},
+                {"z": "8", "rmin": "2", "rmax": "10"},
+            ],
+            {
+                "numRZ": "2",
+                "numSide": "8",
+                "startPhi": "30",
+                "openPhi": "120",
+                "zplanes": [
+                    {"z": "-8", "rmin": "1", "rmax": "9"},
+                    {"z": "8", "rmin": "2", "rmax": "10"},
+                ],
+            },
+            {
+                "numRZ": 2.0,
+                "numSide": 8.0,
+                "startPhi": 30.0,
+                "openPhi": 120.0,
+                "zplanes": [
+                    {"z": -8.0, "rmin": 1.0, "rmax": 9.0},
+                    {"z": 8.0, "rmin": 2.0, "rmax": 10.0},
+                ],
+            },
+        ),
+    ],
+)
+def test_parameterised_polycone_and_polyhedra_dimensions_round_trip(
+    solid_tag,
+    solid_attrs,
+    dimensions_tag,
+    parameter_attrs,
+    parameter_zplanes,
+    expected_dimensions,
+    expected_evaluated_dimensions,
+    capsys,
+):
+    solid_zplanes = "\n".join(
+        f'      <zplane {_attrs_to_xml(zplane)}/>' for zplane in parameter_zplanes
+    )
+    parameter_zplanes_xml = "\n".join(
+        f'            <zplane {_attrs_to_xml(zplane)}/>' for zplane in parameter_zplanes
+    )
+
+    gdml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<gdml>
+  <solids>
+    <box name="world_solid" x="200" y="200" z="200" lunit="mm"/>
+    <box name="container_solid" x="80" y="80" z="80" lunit="mm"/>
+    <{solid_tag} name="{solid_tag}_solid" {_attrs_to_xml(solid_attrs)}>
+{solid_zplanes}
+    </{solid_tag}>
+  </solids>
+  <structure>
+    <volume name="child_lv">
+      <materialref ref="G4_Si"/>
+      <solidref ref="{solid_tag}_solid"/>
+    </volume>
+    <volume name="container_lv">
+      <materialref ref="G4_Galactic"/>
+      <solidref ref="container_solid"/>
+      <paramvol name="{dimensions_tag}_param" ncopies="1">
+        <volumeref ref="child_lv"/>
+        <parameterised_position_size>
+          <parameters number="0">
+            <{dimensions_tag} {_attrs_to_xml(parameter_attrs)}>
+{parameter_zplanes_xml}
+            </{dimensions_tag}>
+          </parameters>
+        </parameterised_position_size>
+      </paramvol>
+    </volume>
+    <volume name="world_lv">
+      <materialref ref="G4_Galactic"/>
+      <solidref ref="world_solid"/>
+      <physvol name="container_pv">
+        <volumeref ref="container_lv"/>
+        <position x="0" y="0" z="0" unit="mm"/>
+      </physvol>
+    </volume>
+  </structure>
+  <setup>
+    <world ref="world_lv"/>
+  </setup>
+</gdml>
+"""
+
+    pm = ProjectManager(ExpressionEvaluator())
+    state = pm.load_gdml_from_string(gdml)
+    capsys.readouterr()
+
+    assert pm.gdml_parser.import_warnings == []
+
+    param_vol = state.logical_volumes["container_lv"].content
+    assert param_vol.type == "parameterised"
+    assert param_vol.volume_ref == "child_lv"
+    assert len(param_vol.parameters) == 1
+
+    param_set = param_vol.parameters[0]
+    assert param_set.dimensions_type == dimensions_tag
+    assert param_set.dimensions == expected_dimensions
+    assert param_set._evaluated_dimensions == expected_evaluated_dimensions
+
+    exported = pm.export_to_gdml_string()
+    roundtrip_pm = ProjectManager(ExpressionEvaluator())
+    roundtrip_state = roundtrip_pm.load_gdml_from_string(exported)
+    capsys.readouterr()
+
+    assert roundtrip_pm.gdml_parser.import_warnings == []
+
+    roundtrip_param_vol = roundtrip_state.logical_volumes["container_lv"].content
+    roundtrip_param_set = roundtrip_param_vol.parameters[0]
+    assert roundtrip_param_set.dimensions_type == dimensions_tag
+    assert roundtrip_param_set.dimensions == expected_dimensions
+    assert roundtrip_param_set._evaluated_dimensions == expected_evaluated_dimensions

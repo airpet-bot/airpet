@@ -1111,6 +1111,13 @@ class GDMLParser:
                 'rmin': 'rmin', 'rmax': 'rmax', 'inst': 'inst',
                 'outst': 'outst', 'z': 'z'
             },
+            'polycone_dimensions': {
+                'numRZ': 'numRZ', 'startPhi': 'startPhi', 'openPhi': 'openPhi'
+            },
+            'polyhedra_dimensions': {
+                'numRZ': 'numRZ', 'numSide': 'numSide',
+                'startPhi': 'startPhi', 'openPhi': 'openPhi'
+            },
             'trd_dimensions': {'x1': 'x1', 'x2': 'x2', 'y1': 'y1', 'y2': 'y2', 'z': 'z'},
             'trap_dimensions': {
                 'z': 'z', 'theta': 'theta', 'phi': 'phi', 'y1': 'y1',
@@ -1191,6 +1198,12 @@ class GDMLParser:
                         for gdml_key, internal_key in current_map.items():
                             if gdml_key in raw_dims:
                                 dimensions[internal_key] = raw_dims[gdml_key]
+
+                        if dimensions_type in {'polycone_dimensions', 'polyhedra_dimensions'}:
+                            dimensions['zplanes'] = [
+                                {k: v for k, v in zplane_el.attrib.items()}
+                                for zplane_el in child.findall('zplane')
+                            ]
                     
                     break # Found it, stop searching
 
