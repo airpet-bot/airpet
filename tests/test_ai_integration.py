@@ -61,6 +61,30 @@ def test_get_simulation_analysis_ai_schema_exposes_sensitive_detector_filter():
     assert "sensitive_detector" in analysis_tool["description"]
 
 
+def test_param_study_ai_schema_exposes_simulation_source_selection():
+    setup_tool = next(
+        tool for tool in AI_GEOMETRY_TOOLS
+        if tool["name"] == "setup_param_study"
+    )
+    setup_properties = setup_tool["parameters"]["properties"]
+
+    assert "simulation_source_ids" in setup_properties
+    assert setup_properties["simulation_source_ids"]["type"] == "array"
+    assert setup_properties["simulation_source_ids"]["items"]["type"] == "string"
+    assert "simulation-in-loop runs" in setup_properties["simulation_source_ids"]["description"]
+
+    run_tool = next(
+        tool for tool in AI_GEOMETRY_TOOLS
+        if tool["name"] == "run_optimization"
+    )
+    run_properties = run_tool["parameters"]["properties"]
+
+    assert "selected_source_ids" in run_properties
+    assert run_properties["selected_source_ids"]["type"] == "array"
+    assert run_properties["selected_source_ids"]["items"]["type"] == "string"
+    assert "simulation-in-loop" in run_properties["selected_source_ids"]["description"]
+
+
 def test_ai_chat_flow_mocked(client):
     """Verify that the AI can trigger a simulation via chat using test_client."""
     from google.genai import types

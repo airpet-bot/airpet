@@ -48,6 +48,18 @@ def _build_multi_cycle_lv_triangle(pm):
         assert err is None
 
 
+def _add_basic_particle_source(pm, name):
+    source, err = pm.add_source(
+        name,
+        {"particle": "gamma", "energy": "511 keV"},
+        {"x": "0", "y": "0", "z": "0"},
+        {"x": "0", "y": "0", "z": "0"},
+        activity=1.0,
+    )
+    assert source is not None and err is None
+    return source
+
+
 def _assert_single_cycle_truncation_issue(issues):
     truncation_issues = [
         issue
@@ -6040,6 +6052,78 @@ def test_ai_tool_stop_simulation(pm):
 
     assert res['success'], res
     assert fake_proc.terminate.called
+
+
+def test_ai_tool_setup_param_study_persists_simulation_source_ids(pm):
+    define_obj, err = pm.add_define("study_scale", "constant", "1", "mm", "geometry")
+    assert define_obj is not None and err is None
+
+    registry_entry, err = pm.upsert_parameter_registry_entry("study_scale_param", {
+        "target_type": "define",
+        "target_ref": {"name": define_obj["name"]},
+        "bounds": {"min": 0.5, "max": 2.0},
+        "default": 1.0,
+        "units": "mm",
+        "enabled": True,
+    })
+    assert registry_entry is not None and err is None
+
+    source_a = _add_basic_particle_source(pm, "source_a")
+    source_b = _add_basic_particle_source(pm, "source_b")
+
+    res = dispatch_ai_tool(pm, "setup_param_study", {
+        "study_name": "source_subset_study",
+        "mode": "random",
+        "parameters": ["study_scale_param"],
+        "objectives": [
+            {"metric": "success_flag", "name": "success", "direction": "maximize"}
+        ],
+        "random": {"samples": 2, "seed": 7},
+        "simulation_source_ids": [f"  {source_b['id']}  ", source_b["id"]],
+    })
+
+    assert res["success"], res
+    assert res["study"]["simulation_source_ids"] == [source_b["id"]]
+    assert pm.current_geometry_state.param_studies["source_subset_study"]["simulation_source_ids"] == [source_b["id"]]
+
+
+def test_ai_tool_run_optimization_forwards_selected_source_ids_to_simulation_in_loop_route(pm):
+    source_a = _add_basic_particle_source(pm, "source_a")
+    source_b = _add_basic_particle_source(pm, "source_b")
+
+    captured = {}
+
+    def fake_route():
+        captured["payload"] = request.get_json(silent=True) or {}
+        return jsonify({
+            "success": True,
+            "optimizer_result": {"run_id": "opt-1"},
+            "preflight_summary": {"can_run": True},
+        })
+
+    with patch("app.param_optimizer_run_simulation_in_loop_route", side_effect=fake_route):
+        res = dispatch_ai_tool(pm, "run_optimization", {
+            "study_name": "source_subset_run",
+            "method": "random_search",
+            "budget": 4,
+            "simulation_in_loop": True,
+            "sim_objectives": [
+                {
+                    "name": "edep_sum",
+                    "metric": "hdf5_reduce",
+                    "dataset_path": "default_ntuples/Hits/Edep",
+                    "reduce": "sum",
+                }
+            ],
+            "selected_source_ids": [f"  {source_b['id']}  ", source_b["id"], source_a["id"]],
+            "sim_params": {"events": 12, "threads": 1},
+        })
+
+    assert res["success"], res
+    assert res["optimization_result"]["run_id"] == "opt-1"
+    assert captured["payload"]["selected_source_ids"] == [source_b["id"], source_a["id"]]
+    assert captured["payload"]["sim_objectives"][0]["name"] == "edep_sum"
+    assert captured["payload"]["sim_params"] == {"events": 12, "threads": 1}
 
 
 def test_ai_tool_set_active_source(pm):

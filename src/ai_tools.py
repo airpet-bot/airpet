@@ -590,6 +590,11 @@ AI_GEOMETRY_TOOLS = [
                     },
                     "description": "Objectives to optimize. At least one required for optimizer runs."
                 },
+                "simulation_source_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional source ids to persist with the study so simulation-in-loop runs use the same selected source subset as the UI."
+                },
                 "grid": {"type": "object", "description": "Grid-specific settings (steps, per_parameter_steps)."},
                 "random": {"type": "object", "description": "Random-specific settings (samples, seed)."}
             },
@@ -615,6 +620,11 @@ AI_GEOMETRY_TOOLS = [
                 "sim_params": {"type": "object", "description": "Simulation runtime params (events, threads)."},
                 "sim_events": {"type": "integer", "description": "Legacy alias for sim_params.events."},
                 "sim_threads": {"type": "integer", "description": "Legacy alias for sim_params.threads."},
+                "selected_source_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional source ids to use for simulation-in-loop runs."
+                },
                 "max_wall_time_seconds": {"type": "integer", "description": "Optional run wall-time budget."},
                 "context": {"type": "object", "description": "Optional static context exposed to simulation objective extraction formulas."},
                 "keep_candidate_runs": {"type": "boolean", "description": "If true, persist per-candidate simulation output folders."},

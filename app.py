@@ -11276,6 +11276,16 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 'random': args.get('random') if isinstance(args.get('random'), dict) else {},
             }
 
+            requested_source_ids = args.get('simulation_source_ids')
+            if requested_source_ids is None:
+                requested_source_ids = args.get('selected_source_ids')
+            if requested_source_ids is None:
+                requested_source_ids = args.get('source_ids')
+            if requested_source_ids is not None:
+                if not isinstance(requested_source_ids, list):
+                    return {"success": False, "error": "simulation_source_ids must be a list when provided."}
+                config['simulation_source_ids'] = _normalize_selected_source_id_list(requested_source_ids)
+
             result, err = pm.upsert_param_study(study_name, config)
             if err:
                 return {"success": False, "error": err}
@@ -11328,6 +11338,16 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 payload['candidate_runs_root'] = args.get('candidate_runs_root')
             if args.get('keep_candidate_runs') is not None:
                 payload['keep_candidate_runs'] = bool(args.get('keep_candidate_runs'))
+
+            requested_source_ids = args.get('selected_source_ids')
+            if requested_source_ids is None:
+                requested_source_ids = args.get('simulation_source_ids')
+            if requested_source_ids is None:
+                requested_source_ids = args.get('source_ids')
+            if requested_source_ids is not None:
+                if not isinstance(requested_source_ids, list):
+                    return {"success": False, "error": "selected_source_ids must be a list when provided."}
+                payload['selected_source_ids'] = _normalize_selected_source_id_list(requested_source_ids)
 
             simulation_in_loop = bool(args.get('simulation_in_loop', False) or args.get('sim_objectives') is not None)
             if simulation_in_loop:
