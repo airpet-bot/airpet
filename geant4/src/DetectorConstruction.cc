@@ -1,6 +1,7 @@
 #include "DetectorConstruction.hh"
 #include "AirPetSensitiveDetector.hh"
 
+#include "G4GlobalMagFieldMessenger.hh"
 #include "G4RunManager.hh"
 #include "G4GenericMessenger.hh"
 #include "G4UIdirectory.hh"
@@ -17,15 +18,18 @@ DetectorConstruction::DetectorConstruction()
  : G4VUserDetectorConstruction(),
    fWorldVolume(nullptr),
    fMessenger(nullptr),
+   fMagFieldMessenger(nullptr),
    fGDMLFilename("default.gdml") // A default name
 {
   // The G4GDMLParser can be configured to check for overlaps
   fParser.SetOverlapCheck(true);
+  fMagFieldMessenger = new G4GlobalMagFieldMessenger(G4ThreeVector());
   DefineCommands();
 }
 
 DetectorConstruction::~DetectorConstruction()
 {
+  delete fMagFieldMessenger;
   delete fMessenger;
 }
 

@@ -9,6 +9,7 @@
 // Forward declarations to avoid including heavy headers
 class G4VPhysicalVolume;
 class G4GenericMessenger;
+class G4GlobalMagFieldMessenger;
 
 /// The DetectorConstruction class.
 ///
@@ -39,6 +40,7 @@ private:
   G4GDMLParser fParser;
   G4VPhysicalVolume* fWorldVolume;
   G4GenericMessenger* fMessenger;
+  G4GlobalMagFieldMessenger* fMagFieldMessenger;
 
   G4String fGDMLFilename;
   std::map<G4String, G4String> fSensitiveDetectorsMap;

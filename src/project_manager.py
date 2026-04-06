@@ -6610,12 +6610,9 @@ class ProjectManager:
             'job_id': job_id,
             'timestamp': datetime.now().isoformat(),
             'total_events': sim_params.get('events', 1),
-            'sim_options': sim_params 
+            'sim_options': sim_params,
         }
         metadata_path = os.path.join(run_dir, "metadata.json")
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-            
         macro_path = os.path.join(run_dir, "run.mac")
         version_json_path = os.path.join(version_dir, "version.json")
 
@@ -6627,6 +6624,9 @@ class ProjectManager:
             # The GDML writer needs a GeometryState object
             temp_state = GeometryState.from_dict(state_dict)
             gdml_string = GDMLWriter(temp_state).get_gdml_string()
+            metadata['environment'] = temp_state.environment.to_dict()
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
             
             gdml_output_path = os.path.join(run_dir, "geometry.gdml")
             with open(gdml_output_path, 'w') as f:
@@ -6655,6 +6655,22 @@ class ProjectManager:
 
         # --- Load Geometry ---
         macro_content.append(f"/g4pet/detector/readFile geometry.gdml")
+        macro_content.append("")
+
+        # --- Global Magnetic Field ---
+        global_field = temp_state.environment.global_uniform_magnetic_field
+        field_vector = (
+            global_field.field_vector_tesla
+            if global_field.enabled
+            else {'x': 0.0, 'y': 0.0, 'z': 0.0}
+        )
+        macro_content.append("# --- Global Magnetic Field ---")
+        macro_content.append(
+            "/globalField/setValue "
+            f"{float(field_vector['x']):.12g} "
+            f"{float(field_vector['y']):.12g} "
+            f"{float(field_vector['z']):.12g} tesla"
+        )
         macro_content.append("")
 
         # --- Configure Sensitive Detectors ---
