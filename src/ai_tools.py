@@ -354,17 +354,49 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "get_component_details",
-        "description": "Get the full JSON definition of a specific component to see its current parameters.",
+        "description": "Get the full JSON definition of a specific component to see its current parameters, including the saved environment and global magnetic field.",
         "parameters": {
             "type": "object",
             "properties": {
                 "component_type": {
                     "type": "string", 
-                    "enum": ["define", "material", "element", "solid", "logical_volume", "assembly", "particle_source", "physical_volume"]
+                    "enum": ["define", "material", "element", "solid", "logical_volume", "assembly", "particle_source", "physical_volume", "environment"]
                 },
                 "name": {"type": "string", "description": "The name of the component or its unique ID (for physical_volumes)."}
             },
             "required": ["component_type", "name"]
+        }
+    },
+    {
+        "name": "update_property",
+        "description": (
+            "Update a single property on a project object using the same path contract as the backend "
+            "/update_property route. For the global magnetic field, use object_type='environment', "
+            "object_id='global_uniform_magnetic_field', and property paths like 'enabled' or "
+            "'field_vector_tesla.x'."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "object_type": {
+                    "type": "string",
+                    "enum": ["define", "material", "solid", "logical_volume", "physical_volume", "environment"],
+                    "description": "Type of object to update."
+                },
+                "object_id": {
+                    "type": "string",
+                    "description": "Name or ID of the target object."
+                },
+                "property_path": {
+                    "type": "string",
+                    "description": "Dot-separated property path, for example 'enabled' or 'field_vector_tesla.z'."
+                },
+                "new_value": {
+                    "type": "string",
+                    "description": "New value to assign. Use JSON text or simple scalar strings such as 'true' or '1.5'."
+                }
+            },
+            "required": ["object_type", "object_id", "property_path", "new_value"]
         }
     },
     {

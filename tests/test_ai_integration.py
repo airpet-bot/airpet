@@ -85,6 +85,23 @@ def test_param_study_ai_schema_exposes_simulation_source_selection():
     assert "simulation-in-loop" in run_properties["selected_source_ids"]["description"]
 
 
+def test_environment_ai_schema_exposes_read_and_write_tools():
+    tool_dict = {tool["name"]: tool for tool in AI_GEOMETRY_TOOLS}
+
+    details_tool = tool_dict["get_component_details"]
+    details_enum = details_tool["parameters"]["properties"]["component_type"]["enum"]
+    assert "environment" in details_enum
+
+    update_tool = tool_dict["update_property"]
+    update_properties = update_tool["parameters"]["properties"]
+
+    assert "environment" in update_properties["object_type"]["enum"]
+    assert "object_id" in update_properties
+    assert "property_path" in update_properties
+    assert "new_value" in update_properties
+    assert "global magnetic field" in update_tool["description"]
+
+
 def test_ai_chat_flow_mocked(client):
     """Verify that the AI can trigger a simulation via chat using test_client."""
     from google.genai import types

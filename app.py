@@ -8192,7 +8192,7 @@ def get_object_details_route():
     if details:
         return jsonify(details)
     
-    error_key = "ID" if obj_type in ["physical_volume", "particle_source"] else "name"
+    error_key = "ID" if obj_type in ["physical_volume", "particle_source", "environment"] else "name"
     return jsonify({"error": f"{obj_type} with {error_key} '{obj_id}' not found"}), 404
 
 @app.route('/save_project_json', methods=['GET'])
@@ -8942,6 +8942,14 @@ AI_TOOL_ARG_ALIASES = {
     "manage_define": {
         "type": "define_type",
         "raw_expression": "value"
+    },
+    "update_property": {
+        "type": "object_type",
+        "id": "object_id",
+        "name": "object_id",
+        "path": "property_path",
+        "property": "property_path",
+        "value": "new_value",
     },
     "create_primitive_solid": {
         "dimensions": "params",
@@ -9880,6 +9888,23 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             if details:
                 return {"success": True, "result": details}
             return {"success": False, "error": f"Component '{args['name']}' not found."}
+
+        elif tool_name == "update_property":
+            success, error = pm.update_object_property(
+                args["object_type"],
+                args["object_id"],
+                args["property_path"],
+                args["new_value"],
+            )
+            if success:
+                return {
+                    "success": True,
+                    "message": (
+                        f"Property '{args['property_path']}' updated on "
+                        f"{args['object_type']} '{args['object_id']}'."
+                    ),
+                }
+            return {"success": False, "error": error}
 
         elif tool_name == "manage_define":
             name = args.get('name')

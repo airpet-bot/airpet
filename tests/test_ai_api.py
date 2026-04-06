@@ -604,6 +604,48 @@ def test_ai_tool_manage_define(pm):
     assert res['success']
     assert pm.current_geometry_state.defines['test_var'].value == 500
 
+
+def test_ai_tool_update_property_and_get_component_details_cover_environment_field(pm):
+    details = dispatch_ai_tool(pm, "get_component_details", {
+        "component_type": "environment",
+        "name": "global_uniform_magnetic_field",
+    })
+
+    assert details["success"], details
+    assert details["result"] == {
+        "global_uniform_magnetic_field": {
+            "enabled": False,
+            "field_vector_tesla": {"x": 0.0, "y": 0.0, "z": 0.0},
+        }
+    }
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "global_uniform_magnetic_field",
+        "property_path": "enabled",
+        "new_value": True,
+    })
+    assert res["success"], res
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "global_uniform_magnetic_field",
+        "property_path": "field_vector_tesla.z",
+        "new_value": "2.25",
+    })
+    assert res["success"], res
+
+    updated_details = dispatch_ai_tool(pm, "get_component_details", {
+        "component_type": "environment",
+        "name": "environment",
+    })
+    assert updated_details["success"], updated_details
+    assert updated_details["result"]["global_uniform_magnetic_field"] == {
+        "enabled": True,
+        "field_vector_tesla": {"x": 0.0, "y": 0.0, "z": 2.25},
+    }
+
+
 def test_ai_tool_create_primitive_solid(pm):
     res = dispatch_ai_tool(pm, "create_primitive_solid", {
         "name": "AI_Box",

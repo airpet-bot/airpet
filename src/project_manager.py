@@ -2814,7 +2814,7 @@ class ProjectManager:
     def get_object_details(self, object_type, object_name_or_id):
         """
         Get details for a specific object by its type and name/ID.
-        'object_type' can be 'define', 'material', 'solid', 'logical_volume', 'physical_volume'.
+        'object_type' can be 'define', 'material', 'solid', 'logical_volume', 'physical_volume', or 'environment'.
         For 'physical_volume', object_name_or_id would be its unique ID.
         """
         if not self.current_geometry_state: return None
@@ -2842,6 +2842,8 @@ class ProjectManager:
             obj = state.skin_surfaces.get(object_name_or_id)
         elif object_type == "border_surface":
             obj = state.border_surfaces.get(object_name_or_id)
+        elif object_type == "environment":
+            obj = state.environment
         elif object_type == "physical_volume":
             # Search through all logical volumes to find the PV
             all_lvs = list(state.logical_volumes.values())
@@ -2939,8 +2941,7 @@ class ProjectManager:
         elif object_type == "solid": target_obj = self.current_geometry_state.solids.get(object_id)
         elif object_type == "logical_volume": target_obj = self.current_geometry_state.logical_volumes.get(object_id)
         elif object_type == "environment":
-            if object_id in {"global_uniform_magnetic_field", "global_magnetic_field"}:
-                target_obj = self.current_geometry_state.environment.global_uniform_magnetic_field
+            target_obj = self.current_geometry_state.environment.global_uniform_magnetic_field
         elif object_type == "physical_volume":
 
             # Iterate through LVs and Assemblies
