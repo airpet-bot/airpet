@@ -2891,7 +2891,9 @@ class ProjectManager:
 
         return path_parts, None
 
-    def _normalize_environment_update_value(self, property_path, new_value):
+    def _normalize_environment_update_value(self, target_obj, property_path, new_value):
+        field_name = "environment.local_uniform_magnetic_field" if hasattr(target_obj, "target_volume_names") else "environment.global_uniform_magnetic_field"
+
         if property_path == 'enabled':
             if isinstance(new_value, bool):
                 return new_value, None
@@ -2903,7 +2905,32 @@ class ProjectManager:
                 if normalized in {'false', '0', 'no', 'off'}:
                     return False, None
 
-            return None, "environment.global_uniform_magnetic_field.enabled must be a boolean."
+            return None, f"{field_name}.enabled must be a boolean."
+
+        if property_path == 'target_volume_names':
+            if not hasattr(target_obj, "target_volume_names"):
+                return None, f"Invalid property path '{property_path}'"
+
+            if new_value is None:
+                return [], None
+
+            if isinstance(new_value, str):
+                raw_items = re.split(r"[,\n;]+", new_value)
+            elif isinstance(new_value, (list, tuple, set)):
+                raw_items = list(new_value)
+            else:
+                return None, f"{field_name}.target_volume_names must be an array of strings."
+
+            normalized = []
+            seen = set()
+            for raw_item in raw_items:
+                name = str(raw_item).strip()
+                if not name or name in seen:
+                    continue
+                normalized.append(name)
+                seen.add(name)
+
+            return normalized, None
 
         if property_path.startswith('field_vector_tesla.'):
             axis = property_path.split('.', 1)[1]
@@ -2913,10 +2940,10 @@ class ProjectManager:
             try:
                 numeric_value = float(new_value)
             except (TypeError, ValueError):
-                return None, f"environment.global_uniform_magnetic_field.field_vector_tesla.{axis} must be a finite number."
+                return None, f"{field_name}.field_vector_tesla.{axis} must be a finite number."
 
             if not math.isfinite(numeric_value):
-                return None, f"environment.global_uniform_magnetic_field.field_vector_tesla.{axis} must be a finite number."
+                return None, f"{field_name}.field_vector_tesla.{axis} must be a finite number."
 
             return numeric_value, None
 
@@ -2941,7 +2968,12 @@ class ProjectManager:
         elif object_type == "solid": target_obj = self.current_geometry_state.solids.get(object_id)
         elif object_type == "logical_volume": target_obj = self.current_geometry_state.logical_volumes.get(object_id)
         elif object_type == "environment":
-            target_obj = self.current_geometry_state.environment.global_uniform_magnetic_field
+            if object_id == "global_uniform_magnetic_field":
+                target_obj = self.current_geometry_state.environment.global_uniform_magnetic_field
+            elif object_id == "local_uniform_magnetic_field":
+                target_obj = self.current_geometry_state.environment.local_uniform_magnetic_field
+            else:
+                return False, f"Could not find object of type '{object_type}' with ID/Name '{object_id}'"
         elif object_type == "physical_volume":
 
             # Iterate through LVs and Assemblies
@@ -2972,7 +3004,7 @@ class ProjectManager:
 
         try:
             if object_type == "environment":
-                new_value, coercion_error = self._normalize_environment_update_value(property_path, new_value)
+                new_value, coercion_error = self._normalize_environment_update_value(target_obj, property_path, new_value)
                 if coercion_error:
                     return False, coercion_error
 
@@ -6711,6 +6743,25 @@ class ProjectManager:
             f"{float(field_vector['y']):.12g} "
             f"{float(field_vector['z']):.12g} tesla"
         )
+        macro_content.append("")
+
+        local_field = temp_state.environment.local_uniform_magnetic_field
+        macro_content.append("# --- Local Magnetic Field Assignments ---")
+        if local_field.enabled and local_field.target_volume_names:
+            for volume_name in local_field.target_volume_names:
+                macro_content.append(
+                    "/g4pet/detector/addLocalMagField "
+                    f"{volume_name}|"
+                    f"{float(local_field.field_vector_tesla['x']):.12g}|"
+                    f"{float(local_field.field_vector_tesla['y']):.12g}|"
+                    f"{float(local_field.field_vector_tesla['z']):.12g}"
+                )
+        elif local_field.enabled:
+            macro_content.append("# Local magnetic field is enabled, but no target volumes were configured.")
+        elif local_field.target_volume_names:
+            macro_content.append("# Local magnetic field assignment is disabled.")
+        else:
+            macro_content.append("# No local magnetic field assignments defined.")
         macro_content.append("")
 
         # --- Configure Sensitive Detectors ---

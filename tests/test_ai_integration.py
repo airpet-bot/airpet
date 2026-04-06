@@ -100,6 +100,8 @@ def test_environment_ai_schema_exposes_read_and_write_tools():
     assert "property_path" in update_properties
     assert "new_value" in update_properties
     assert "global magnetic field" in update_tool["description"]
+    assert "local magnetic field" in update_tool["description"]
+    assert "local_uniform_magnetic_field" in update_tool["description"]
 
 
 def test_ai_chat_flow_mocked(client):

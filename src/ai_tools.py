@@ -26,7 +26,7 @@ def get_project_summary(pm) -> Dict[str, Any]:
     }
 
 def get_component_details(pm, component_type: str, name: str) -> Optional[Dict[str, Any]]:
-    """Returns full details for a specific component (define, material, solid, lv, assembly)."""
+    """Returns full details for a specific component (define, material, solid, lv, assembly, environment)."""
     return pm.get_object_details(component_type, name)
 
 
@@ -373,7 +373,9 @@ AI_GEOMETRY_TOOLS = [
             "Update a single property on a project object using the same path contract as the backend "
             "/update_property route. For the global magnetic field, use object_type='environment', "
             "object_id='global_uniform_magnetic_field', and property paths like 'enabled' or "
-            "'field_vector_tesla.x'."
+            "'field_vector_tesla.x'. For local magnetic field assignments, use "
+            "object_id='local_uniform_magnetic_field' and property paths like 'enabled', "
+            "'target_volume_names', or 'field_vector_tesla.z'."
         ),
         "parameters": {
             "type": "object",

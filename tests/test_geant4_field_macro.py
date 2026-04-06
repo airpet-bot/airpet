@@ -16,7 +16,12 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "global_uniform_magnetic_field": {
             "enabled": True,
             "field_vector_tesla": {"x": 0.0, "y": 1.5, "z": -0.25},
-        }
+        },
+        "local_uniform_magnetic_field": {
+            "enabled": True,
+            "target_volume_names": ["box_LV"],
+            "field_vector_tesla": {"x": 0.0, "y": -0.5, "z": 0.25},
+        },
     }
 
     state = GeometryState()
@@ -37,7 +42,8 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
 
     read_file_idx = macro_text.index("/g4pet/detector/readFile geometry.gdml")
     field_idx = macro_text.index("/globalField/setValue 0 1.5 -0.25 tesla")
+    local_field_idx = macro_text.index("/g4pet/detector/addLocalMagField box_LV|0|-0.5|0.25")
     init_idx = macro_text.index("/run/initialize")
 
-    assert read_file_idx < field_idx < init_idx
+    assert read_file_idx < field_idx < local_field_idx < init_idx
     assert metadata["environment"] == saved_environment

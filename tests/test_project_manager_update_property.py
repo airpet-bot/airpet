@@ -113,3 +113,47 @@ def test_update_object_property_supports_global_uniform_magnetic_field_updates()
         "y": 1.5,
         "z": 0.0,
     }
+
+
+def test_update_object_property_supports_local_uniform_magnetic_field_updates():
+    pm = _make_pm()
+
+    success, error = pm.update_object_property(
+        "environment",
+        "local_uniform_magnetic_field",
+        "enabled",
+        "true",
+    )
+
+    assert success is True
+    assert error is None
+    assert pm.current_geometry_state.environment.local_uniform_magnetic_field.enabled is True
+
+    success, error = pm.update_object_property(
+        "environment",
+        "local_uniform_magnetic_field",
+        "target_volume_names",
+        "box_LV, detector_LV, box_LV",
+    )
+
+    assert success is True
+    assert error is None
+    assert pm.current_geometry_state.environment.local_uniform_magnetic_field.target_volume_names == [
+        "box_LV",
+        "detector_LV",
+    ]
+
+    success, error = pm.update_object_property(
+        "environment",
+        "local_uniform_magnetic_field",
+        "field_vector_tesla.z",
+        "-0.5",
+    )
+
+    assert success is True
+    assert error is None
+    assert pm.current_geometry_state.environment.local_uniform_magnetic_field.field_vector_tesla == {
+        "x": 0.0,
+        "y": 0.0,
+        "z": -0.5,
+    }

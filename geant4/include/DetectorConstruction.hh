@@ -3,13 +3,18 @@
 
 #include "G4VUserDetectorConstruction.hh"
 #include "G4GDMLParser.hh"
+#include "G4ThreeVector.hh"
 #include "globals.hh"
+#include <memory>
 #include <map>
+#include <vector>
 
 // Forward declarations to avoid including heavy headers
 class G4VPhysicalVolume;
 class G4GenericMessenger;
 class G4GlobalMagFieldMessenger;
+class G4FieldManager;
+class G4UniformMagField;
 
 /// The DetectorConstruction class.
 ///
@@ -32,6 +37,7 @@ public:
   // Messenger-callable methods
   void SetGDMLFile(G4String filename);
   void SetSensitiveDetector(G4String logicalVolumeName, G4String sdName);
+  void SetLocalMagneticField(G4String assignmentPayload);
 
 private:
   void DefineCommands();
@@ -41,6 +47,9 @@ private:
   G4VPhysicalVolume* fWorldVolume;
   G4GenericMessenger* fMessenger;
   G4GlobalMagFieldMessenger* fMagFieldMessenger;
+  std::map<G4String, G4ThreeVector> fLocalMagFieldAssignments;
+  std::vector<std::unique_ptr<G4UniformMagField>> fLocalMagneticFields;
+  std::vector<std::unique_ptr<G4FieldManager>> fLocalFieldManagers;
 
   G4String fGDMLFilename;
   std::map<G4String, G4String> fSensitiveDetectorsMap;

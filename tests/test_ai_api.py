@@ -616,7 +616,12 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
         "global_uniform_magnetic_field": {
             "enabled": False,
             "field_vector_tesla": {"x": 0.0, "y": 0.0, "z": 0.0},
-        }
+        },
+        "local_uniform_magnetic_field": {
+            "enabled": False,
+            "target_volume_names": [],
+            "field_vector_tesla": {"x": 0.0, "y": 0.0, "z": 0.0},
+        },
     }
 
     res = dispatch_ai_tool(pm, "update_property", {
@@ -629,7 +634,15 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
 
     res = dispatch_ai_tool(pm, "update_property", {
         "object_type": "environment",
-        "object_id": "global_uniform_magnetic_field",
+        "object_id": "local_uniform_magnetic_field",
+        "property_path": "target_volume_names",
+        "new_value": "box_LV, detector_LV",
+    })
+    assert res["success"], res
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "local_uniform_magnetic_field",
         "property_path": "field_vector_tesla.z",
         "new_value": "2.25",
     })
@@ -642,6 +655,11 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
     assert updated_details["success"], updated_details
     assert updated_details["result"]["global_uniform_magnetic_field"] == {
         "enabled": True,
+        "field_vector_tesla": {"x": 0.0, "y": 0.0, "z": 0.0},
+    }
+    assert updated_details["result"]["local_uniform_magnetic_field"] == {
+        "enabled": False,
+        "target_volume_names": ["box_LV", "detector_LV"],
         "field_vector_tesla": {"x": 0.0, "y": 0.0, "z": 2.25},
     }
 

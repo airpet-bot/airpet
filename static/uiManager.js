@@ -32,8 +32,14 @@ import {
     GLOBAL_UNIFORM_MAGNETIC_FIELD_OBJECT_ID,
     GLOBAL_UNIFORM_MAGNETIC_FIELD_OBJECT_TYPE,
     GLOBAL_UNIFORM_MAGNETIC_FIELD_VECTOR_AXES,
+    LOCAL_UNIFORM_MAGNETIC_FIELD_OBJECT_ID,
+    LOCAL_UNIFORM_MAGNETIC_FIELD_OBJECT_TYPE,
+    LOCAL_UNIFORM_MAGNETIC_FIELD_VECTOR_AXES,
     formatGlobalMagneticFieldSummary,
+    formatLocalMagneticFieldSummary,
+    normalizeLocalMagneticFieldState,
     normalizeGlobalMagneticFieldState,
+    normalizeTargetVolumeNames,
 } from './environmentFieldUi.js';
 
 // --- Module-level variables for DOM elements ---
@@ -1798,6 +1804,28 @@ function createEnvironmentFieldInput(parent, { labelText, id, value, onChange })
     parent.appendChild(fieldWrap);
 }
 
+function createEnvironmentTextInput(parent, { labelText, id, value, onChange, placeholder = '' }) {
+    const fieldWrap = document.createElement('div');
+    fieldWrap.className = 'environment-vector-field environment-targets-field';
+
+    const label = document.createElement('label');
+    label.htmlFor = id;
+    label.textContent = labelText;
+    fieldWrap.appendChild(label);
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = id;
+    input.placeholder = placeholder;
+    input.value = value;
+    input.addEventListener('change', () => {
+        onChange(normalizeTargetVolumeNames(input.value));
+    });
+    fieldWrap.appendChild(input);
+
+    parent.appendChild(fieldWrap);
+}
+
 function renderEnvironmentPanel(projectState) {
     if (!environmentPanelRoot) return;
 
@@ -1876,6 +1904,87 @@ function renderEnvironmentPanel(projectState) {
     card.appendChild(note);
 
     environmentPanelRoot.appendChild(card);
+
+    const localField = normalizeLocalMagneticFieldState(
+        projectState?.environment?.local_uniform_magnetic_field
+    );
+
+    const localCard = document.createElement('div');
+    localCard.className = 'environment-field-card';
+
+    const localTitle = document.createElement('div');
+    localTitle.className = 'environment-field-title';
+    localTitle.textContent = 'Local Magnetic Field';
+    localCard.appendChild(localTitle);
+
+    const localSummary = document.createElement('p');
+    localSummary.className = 'environment-summary';
+    localSummary.textContent = formatLocalMagneticFieldSummary(localField);
+    localCard.appendChild(localSummary);
+
+    const localToggleRow = document.createElement('div');
+    localToggleRow.className = 'environment-toggle-row';
+
+    const localEnabledInput = document.createElement('input');
+    localEnabledInput.type = 'checkbox';
+    localEnabledInput.id = 'local_magnetic_field_enabled';
+    localEnabledInput.checked = localField.enabled;
+    localEnabledInput.addEventListener('change', () => {
+        callbacks.onInspectorPropertyChanged(
+            LOCAL_UNIFORM_MAGNETIC_FIELD_OBJECT_TYPE,
+            LOCAL_UNIFORM_MAGNETIC_FIELD_OBJECT_ID,
+            'enabled',
+            localEnabledInput.checked
+        );
+    });
+
+    const localEnabledLabel = document.createElement('label');
+    localEnabledLabel.htmlFor = localEnabledInput.id;
+    localEnabledLabel.textContent = 'Enabled';
+
+    localToggleRow.appendChild(localEnabledInput);
+    localToggleRow.appendChild(localEnabledLabel);
+    localCard.appendChild(localToggleRow);
+
+    const targetRow = document.createElement('div');
+    targetRow.className = 'environment-vector-row';
+    createEnvironmentTextInput(targetRow, {
+        labelText: 'Target Volumes',
+        id: 'local_magnetic_field_target_volumes',
+        value: localField.target_volume_names.join(', '),
+        placeholder: 'box_LV, detector_LV',
+        onChange: (nextValue) => {
+            callbacks.onInspectorPropertyChanged(
+                LOCAL_UNIFORM_MAGNETIC_FIELD_OBJECT_TYPE,
+                LOCAL_UNIFORM_MAGNETIC_FIELD_OBJECT_ID,
+                'target_volume_names',
+                nextValue
+            );
+        },
+    });
+    LOCAL_UNIFORM_MAGNETIC_FIELD_VECTOR_AXES.forEach((axis) => {
+        createEnvironmentFieldInput(targetRow, {
+            labelText: `${axis.toUpperCase()} (T)`,
+            id: `local_magnetic_field_${axis}`,
+            value: localField.field_vector_tesla[axis],
+            onChange: (nextValue) => {
+                callbacks.onInspectorPropertyChanged(
+                    LOCAL_UNIFORM_MAGNETIC_FIELD_OBJECT_TYPE,
+                    LOCAL_UNIFORM_MAGNETIC_FIELD_OBJECT_ID,
+                    `field_vector_tesla.${axis}`,
+                    nextValue
+                );
+            },
+        });
+    });
+    localCard.appendChild(targetRow);
+
+    const localNote = document.createElement('p');
+    localNote.className = 'environment-note';
+    localNote.textContent = 'Targets are comma-separated logical volume names.';
+    localCard.appendChild(localNote);
+
+    environmentPanelRoot.appendChild(localCard);
 }
 
 /**
