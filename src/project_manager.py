@@ -129,6 +129,54 @@ def _build_step_import_provenance_record(temp_path, step_file_stream, options, i
     }
 
 
+def _build_step_import_smart_import_summary(smart_import_report):
+    if not isinstance(smart_import_report, dict):
+        return None
+
+    if not smart_import_report.get('enabled'):
+        return None
+
+    summary = smart_import_report.get('summary')
+    if not isinstance(summary, dict):
+        return None
+
+    normalized_summary = deepcopy(summary)
+    selected_mode_counts = normalized_summary.get('selected_mode_counts', {})
+    if not isinstance(selected_mode_counts, dict):
+        selected_mode_counts = {}
+
+    primitive_count = int(normalized_summary.get('primitive_count', 0) or 0)
+    selected_primitive_count = int(selected_mode_counts.get('primitive', 0) or 0)
+    selected_tessellated_count = int(selected_mode_counts.get('tessellated', 0) or 0)
+
+    fallback_reason_counts = {}
+    for candidate in smart_import_report.get('candidates', []) or []:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get('selected_mode') != 'tessellated':
+            continue
+
+        fallback_reason = candidate.get('fallback_reason') or 'no_primitive_match_v1'
+        fallback_reason = str(fallback_reason).strip() or 'no_primitive_match_v1'
+        fallback_reason_counts[fallback_reason] = fallback_reason_counts.get(fallback_reason, 0) + 1
+
+    top_fallback_reasons = [
+        {'reason': reason, 'count': count}
+        for reason, count in sorted(fallback_reason_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+    return {
+        'enabled': True,
+        'summary': normalized_summary,
+        'summary_text': f"{primitive_count} primitive candidates, {selected_tessellated_count} tessellated fallbacks",
+        'primitive_candidate_count': primitive_count,
+        'selected_primitive_count': selected_primitive_count,
+        'selected_tessellated_count': selected_tessellated_count,
+        'fallback_reason_counts': fallback_reason_counts,
+        'top_fallback_reasons': top_fallback_reasons,
+    }
+
+
 def _normalize_step_import_signature_value(value):
     if isinstance(value, dict):
         return {
@@ -5653,6 +5701,9 @@ class ProjectManager:
                 imported_state,
                 import_id=target_import_id,
             )
+            smart_import_summary = _build_step_import_smart_import_summary(getattr(imported_state, 'smart_import_report', None))
+            if smart_import_summary is not None:
+                cad_import_record['smart_import_summary'] = smart_import_summary
             if reimport_diff_summary is not None:
                 cad_import_record['reimport_diff_summary'] = reimport_diff_summary
             imported_state.cad_imports = list(getattr(imported_state, 'cad_imports', []) or [])

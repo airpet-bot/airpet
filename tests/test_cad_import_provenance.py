@@ -4,6 +4,8 @@ import hashlib
 import json
 from unittest.mock import patch
 
+from src.smart_cad_classifier import summarize_candidates
+
 
 class _DummyOccObject:
     def __init__(self, *args, **kwargs):
@@ -298,6 +300,88 @@ def test_step_import_provenance_roundtrips_through_saved_project_state():
     pm_round_tripped = ProjectManager(ExpressionEvaluator())
     pm_round_tripped.load_project_from_json_string(json.dumps(saved_payload))
     assert pm_round_tripped.current_geometry_state.cad_imports[0] == import_record
+
+
+def test_step_import_persists_compact_smart_import_outcome_summary():
+    payload_bytes = b'STEP-DATA-SMART-OUTCOME'
+    imported_state, solid, lv, assembly, assembly_child, top_level_pv = _build_fake_imported_state()
+    smart_candidates = [
+        {
+            'source_id': 'fixture_solid_0',
+            'classification': 'box',
+            'confidence': 0.95,
+            'params': {'x': 1, 'y': 2, 'z': 3},
+            'fallback_reason': None,
+            'selected_mode': 'primitive',
+        },
+        {
+            'source_id': 'fixture_solid_1',
+            'classification': 'cylinder',
+            'confidence': 0.55,
+            'params': {'rmin': 0.0, 'rmax': 5.0, 'z': 12.0},
+            'fallback_reason': 'below_confidence_threshold',
+            'selected_mode': 'tessellated',
+        },
+        {
+            'source_id': 'fixture_solid_2',
+            'classification': 'tessellated',
+            'confidence': 0.0,
+            'params': {},
+            'fallback_reason': 'no_primitive_match_v1',
+            'selected_mode': 'tessellated',
+        },
+    ]
+    smart_import_report = {
+        'enabled': True,
+        'policy': {
+            'primitive_confidence_threshold': 0.8,
+        },
+        'candidates': smart_candidates,
+        'summary': summarize_candidates(smart_candidates),
+    }
+    imported_state.smart_import_report = smart_import_report
+
+    pm = _make_pm()
+    upload = DummyStepUpload(payload_bytes, 'fixture.step')
+
+    with patch('src.project_manager.parse_step_file', return_value=imported_state):
+        success, error_msg, import_report = pm.import_step_with_options(
+            upload,
+            {
+                'groupingName': 'fixture_import',
+                'placementMode': 'assembly',
+                'parentLVName': 'World',
+                'offset': {'x': '0', 'y': '0', 'z': '0'},
+                'smartImport': True,
+            },
+        )
+
+    assert success is True
+    assert error_msg is None
+    assert import_report['summary'] == smart_import_report['summary']
+
+    assert len(pm.current_geometry_state.cad_imports) == 1
+    import_record = pm.current_geometry_state.cad_imports[0]
+    assert import_record['smart_import_summary']['summary'] == smart_import_report['summary']
+    assert import_record['smart_import_summary']['summary_text'] == '2 primitive candidates, 2 tessellated fallbacks'
+    assert import_record['smart_import_summary']['primitive_candidate_count'] == 2
+    assert import_record['smart_import_summary']['selected_primitive_count'] == 1
+    assert import_record['smart_import_summary']['selected_tessellated_count'] == 2
+    assert import_record['smart_import_summary']['fallback_reason_counts'] == {
+        'below_confidence_threshold': 1,
+        'no_primitive_match_v1': 1,
+    }
+    assert import_record['smart_import_summary']['top_fallback_reasons'] == [
+        {'reason': 'below_confidence_threshold', 'count': 1},
+        {'reason': 'no_primitive_match_v1', 'count': 1},
+    ]
+
+    saved_payload = json.loads(pm.save_project_to_json_string())
+    assert saved_payload['cad_imports'][0]['smart_import_summary'] == import_record['smart_import_summary']
+
+    pm_round_tripped = ProjectManager(ExpressionEvaluator())
+    pm_round_tripped.load_project_from_json_string(json.dumps(saved_payload))
+    assert pm_round_tripped.current_geometry_state.cad_imports[0]['smart_import_summary'] == import_record['smart_import_summary']
 
 
 def test_step_reimport_targets_existing_import_and_replaces_the_old_subsystem():

@@ -1,6 +1,6 @@
 # CAD Interoperability Refinement Tracker
 
-Last updated: 2026-04-07
+Last updated: 2026-04-08
 
 ## Mission
 
@@ -56,18 +56,18 @@ A task is only `DONE` when all of the following are true:
 ## Current Status
 
 - Overall phase: roadmap phase R2, ready to activate after physics-environment completion
-- Current priority: CIR-008
+- Current priority: CIR-009
 - Success metric: a user can revise an imported STEP-driven subsystem in CAD and update the AIRPET project without duplicating geometry or redoing key simulation annotations by hand
 
 ## Current NEXT Task
 
-CIR-008: Surface primitive-recognition and tessellated-fallback outcomes in saved metadata and user-visible summaries.
+CIR-009: Add a compact STEP import/reimport fixture corpus with focused regression coverage.
 
 Reason:
 
-- CIR-007 is done, so the next smallest slice is smart-import reporting
-- this keeps the CAD-interoperability phase moving toward deterministic import feedback without widening into cleanup yet
-- it stays within the same imported-CAD workflow surface and avoids mixing unrelated refactors
+- CIR-008 is done, so the next smallest slice is fixture-backed regression coverage
+- this locks in the new smart-import summary path with real fixture assets
+- it stays within the CAD-import workflow without widening the reimport contract
 
 ## Backlog
 
@@ -88,8 +88,8 @@ Statuses:
 | CIR-005 | P1 | Grouping | Improve imported assembly naming, grouping, and top-level selection ergonomics | DONE | Removed the extra placeholder assembly created during STEP parsing, recorded top-level placement ids in provenance, and added a CAD import panel shortcut to select top-level imported placements in the hierarchy |
 | CIR-006 | P1 | Editing | Add post-import batch helpers for material and sensitive-volume assignment on imported CAD geometry | DONE | Imported STEP cards now expose batch material and sensitivity helpers backed by an atomic logical-volume batch update path |
 | CIR-007 | P1 | Reporting | Add deterministic reimport diff summaries for added, removed, renamed, or changed imported parts | DONE | Users can now inspect deterministic part-level reimport diffs in saved CAD import provenance |
-| CIR-008 | P2 | Smart Import | Surface primitive-recognition and tessellated-fallback outcomes in saved metadata and user-visible summaries | NEXT | Reuse the existing smart-import classifier and fallback policy instead of creating a separate reporting path |
-| CIR-009 | P2 | Testing | Add a compact STEP import/reimport fixture corpus with focused regression coverage | PENDING | Keep fixtures small enough for fast import and reimport verification |
+| CIR-008 | P2 | Smart Import | Surface primitive-recognition and tessellated-fallback outcomes in saved metadata and user-visible summaries | DONE | Saved a compact smart-import outcome summary on STEP import records and surfaced it in the CAD import card summary/detail rows |
+| CIR-009 | P2 | Testing | Add a compact STEP import/reimport fixture corpus with focused regression coverage | NEXT | Keep fixtures small enough for fast import and reimport verification |
 | CIR-010 | P2 | Cleanup | Add explicit replace/remove policy for obsolete imported parts in supported reimport flows | PENDING | Make deletion behavior explicit rather than implicit when CAD revisions remove parts |
 
 ## Cycle Log
@@ -104,6 +104,7 @@ Statuses:
 | 2026-04-07 | CIR-005 imported assembly ergonomics | DONE | Removed the extra placeholder assembly from STEP parsing in [`/Volumes/nvme/projects/airpet/src/step_parser.py`](/Volumes/nvme/projects/airpet/src/step_parser.py), recorded `top_level_placement_ids` in provenance via [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py), and added a CAD import panel shortcut plus selection helpers in [`/Volumes/nvme/projects/airpet/static/cadImportUi.js`](/Volumes/nvme/projects/airpet/static/cadImportUi.js), [`/Volumes/nvme/projects/airpet/static/uiManager.js`](/Volumes/nvme/projects/airpet/static/uiManager.js), and [`/Volumes/nvme/projects/airpet/static/main.js`](/Volumes/nvme/projects/airpet/static/main.js); added regression coverage in [`/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py`](/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py) and [`/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs`](/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs); verified with `python3 -m pytest tests/test_cad_import_provenance.py -q`, `node --test tests/js/cad_import_ui.test.mjs`, `node --check static/cadImportUi.js`, and `node --check static/uiManager.js && node --check static/main.js`; next task is CIR-006 |
 | 2026-04-07 | CIR-006 post-import CAD batch helpers | DONE | Added an atomic logical-volume batch update path in [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py) with a matching route in [`/Volumes/nvme/projects/airpet/app.py`](/Volumes/nvme/projects/airpet/app.py), wired CAD-import panel material/sensitivity actions through [`/Volumes/nvme/projects/airpet/static/main.js`](/Volumes/nvme/projects/airpet/static/main.js), [`/Volumes/nvme/projects/airpet/static/uiManager.js`](/Volumes/nvme/projects/airpet/static/uiManager.js), [`/Volumes/nvme/projects/airpet/static/cadImportUi.js`](/Volumes/nvme/projects/airpet/static/cadImportUi.js), and [`/Volumes/nvme/projects/airpet/static/apiService.js`](/Volumes/nvme/projects/airpet/static/apiService.js), and added focused regression coverage in [`/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py`](/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py) and [`/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs`](/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs); verified with `python3 -m pytest tests/test_cad_import_provenance.py -q`, `node --test tests/js/cad_import_ui.test.mjs`, `python3 -m py_compile app.py src/project_manager.py`, and `node --check static/main.js && node --check static/uiManager.js && node --check static/cadImportUi.js && node --check static/apiService.js`; next task is CIR-007 |
 | 2026-04-07 | CIR-007 reimport diff summaries | DONE | Added deterministic leaf-part reimport diff summaries in [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py), surfaced them in the CAD Imports card formatter in [`/Volumes/nvme/projects/airpet/static/cadImportUi.js`](/Volumes/nvme/projects/airpet/static/cadImportUi.js), and added focused regression coverage in [`/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py`](/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py) and [`/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs`](/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs); verified with `python3 -m py_compile src/project_manager.py tests/test_cad_import_provenance.py`, `node --check static/cadImportUi.js && node --check tests/js/cad_import_ui.test.mjs`, `python3 -m pytest tests/test_cad_import_provenance.py -q`, and `node --test tests/js/cad_import_ui.test.mjs`; next task is CIR-008 |
+| 2026-04-08 | CIR-008 smart-import outcome summaries | DONE | Added compact smart-import outcome persistence in [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py) and surfaced it in the CAD import card formatter in [`/Volumes/nvme/projects/airpet/static/cadImportUi.js`](/Volumes/nvme/projects/airpet/static/cadImportUi.js); added backend regression coverage in [`/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py`](/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py) and UI regression coverage in [`/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs`](/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs); verified with `python3 -m pytest tests/test_cad_import_provenance.py -q`, `node --test tests/js/cad_import_ui.test.mjs`, and `node --check static/cadImportUi.js`; an extra `python3 -m pytest tests/test_step_import_integration.py -q` smoke check was blocked locally because the Python environment is missing `requests`; next task is CIR-009 |
 
 ## Notes For Future Reordering
 

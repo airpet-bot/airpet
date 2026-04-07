@@ -54,6 +54,118 @@ function normalizeReimportDiffSummary(rawSummary) {
     };
 }
 
+function normalizeCountMap(rawCounts) {
+    const counts = rawCounts && typeof rawCounts === 'object' ? rawCounts : {};
+    const normalized = {};
+
+    Object.entries(counts).forEach(([key, value]) => {
+        const count = Number(value);
+        if (Number.isFinite(count) && count > 0) {
+            normalized[String(key)] = count;
+        }
+    });
+
+    return normalized;
+}
+
+function formatSmartImportSummaryText(primitiveCount, tessellatedCount) {
+    return `${primitiveCount} primitive candidates, ${tessellatedCount} tessellated fallbacks`;
+}
+
+function normalizeSmartImportSummary(rawSummary) {
+    const summaryRecord = rawSummary && typeof rawSummary === 'object' ? rawSummary : {};
+    const reportSummary = summaryRecord.summary && typeof summaryRecord.summary === 'object'
+        ? summaryRecord.summary
+        : {};
+
+    const total = Number.isFinite(Number(reportSummary.total)) ? Number(reportSummary.total) : 0;
+    const primitiveCount = Number.isFinite(Number(reportSummary.primitive_count)) ? Number(reportSummary.primitive_count) : 0;
+    const tessellatedCount = Number.isFinite(Number(reportSummary.tessellated_count)) ? Number(reportSummary.tessellated_count) : 0;
+    const primitiveRatio = Number.isFinite(Number(reportSummary.primitive_ratio))
+        ? Number(reportSummary.primitive_ratio)
+        : (total > 0 ? primitiveCount / total : 0);
+    const selectedModeCountsRaw = reportSummary.selected_mode_counts && typeof reportSummary.selected_mode_counts === 'object'
+        ? reportSummary.selected_mode_counts
+        : {};
+    const selectedPrimitiveCount = Number.isFinite(Number(selectedModeCountsRaw.primitive)) ? Number(selectedModeCountsRaw.primitive) : 0;
+    const selectedTessellatedCount = Number.isFinite(Number(selectedModeCountsRaw.tessellated)) ? Number(selectedModeCountsRaw.tessellated) : 0;
+    const selectedPrimitiveRatio = Number.isFinite(Number(reportSummary.selected_primitive_ratio))
+        ? Number(reportSummary.selected_primitive_ratio)
+        : (total > 0 ? selectedPrimitiveCount / total : 0);
+
+    const countsByClassification = normalizeCountMap(reportSummary.counts_by_classification);
+    const fallbackReasonCounts = normalizeCountMap(summaryRecord.fallback_reason_counts);
+
+    let topFallbackReasons = Array.isArray(summaryRecord.top_fallback_reasons)
+        ? summaryRecord.top_fallback_reasons
+            .filter((entry) => entry && typeof entry === 'object')
+            .map((entry) => ({
+                reason: normalizeString(entry.reason, 'no_primitive_match_v1'),
+                count: Number.isFinite(Number(entry.count)) ? Number(entry.count) : 0,
+            }))
+            .filter((entry) => entry.reason && entry.count > 0)
+        : [];
+
+    if (topFallbackReasons.length === 0) {
+        topFallbackReasons = Object.entries(fallbackReasonCounts)
+            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+            .map(([reason, count]) => ({ reason, count }));
+    }
+
+    const summaryText = normalizeString(
+        summaryRecord.summary_text,
+        formatSmartImportSummaryText(primitiveCount, selectedTessellatedCount),
+    );
+
+    return {
+        enabled: Boolean(summaryRecord.enabled),
+        summary: {
+            total,
+            primitive_count: primitiveCount,
+            tessellated_count: tessellatedCount,
+            primitive_ratio: primitiveRatio,
+            selected_mode_counts: {
+                primitive: selectedPrimitiveCount,
+                tessellated: selectedTessellatedCount,
+            },
+            selected_primitive_ratio: selectedPrimitiveRatio,
+            counts_by_classification: countsByClassification,
+        },
+        summary_text: summaryText,
+        primitive_count: primitiveCount,
+        selected_primitive_count: selectedPrimitiveCount,
+        selected_tessellated_count: selectedTessellatedCount,
+        fallback_reason_counts: fallbackReasonCounts,
+        top_fallback_reasons: topFallbackReasons,
+    };
+}
+
+function formatSmartImportSummaryTitle(summary) {
+    const reportSummary = summary?.summary || {};
+    const total = Number.isFinite(Number(reportSummary.total)) ? Number(reportSummary.total) : 0;
+    const primitiveCount = Number.isFinite(Number(reportSummary.primitive_count)) ? Number(reportSummary.primitive_count) : 0;
+    const selectedPrimitiveCount = Number.isFinite(Number(summary?.selected_primitive_count)) ? Number(summary.selected_primitive_count) : 0;
+    const selectedTessellatedCount = Number.isFinite(Number(summary?.selected_tessellated_count)) ? Number(summary.selected_tessellated_count) : 0;
+    const topFallbackReasons = Array.isArray(summary?.top_fallback_reasons) ? summary.top_fallback_reasons : [];
+
+    const lines = [
+        `Total solids: ${total}`,
+        `Primitive candidates: ${primitiveCount}`,
+        `Selected primitive: ${selectedPrimitiveCount}`,
+        `Selected tessellated fallback: ${selectedTessellatedCount}`,
+    ];
+
+    if (topFallbackReasons.length > 0) {
+        const reasonText = topFallbackReasons
+            .slice(0, 3)
+            .map((entry) => `${entry.reason} x${entry.count}`)
+            .join(', ');
+        lines.push(`Top fallback reasons: ${reasonText}`);
+    }
+
+    return lines.join('\n');
+}
+
 function formatReimportDiffSummaryText(summary) {
     const normalizedSummary = summary && typeof summary === 'object' ? summary : {};
     const counts = [
@@ -110,6 +222,9 @@ function normalizeCadImportRecord(rawRecord) {
     const reimportDiffSummary = record.reimport_diff_summary && typeof record.reimport_diff_summary === 'object'
         ? normalizeReimportDiffSummary(record.reimport_diff_summary)
         : null;
+    const smartImportSummary = record.smart_import_summary && typeof record.smart_import_summary === 'object'
+        ? normalizeSmartImportSummary(record.smart_import_summary)
+        : null;
 
     const solidIds = Array.isArray(createdObjectIds.solid_ids) ? createdObjectIds.solid_ids.filter(Boolean) : [];
     const logicalVolumeIds = Array.isArray(createdObjectIds.logical_volume_ids) ? createdObjectIds.logical_volume_ids.filter(Boolean) : [];
@@ -159,6 +274,7 @@ function normalizeCadImportRecord(rawRecord) {
             logical_volume: normalizeString(createdGroupNames.logical_volume, ''),
             assembly: normalizeString(createdGroupNames.assembly, ''),
         },
+        smart_import_summary: smartImportSummary,
         reimport_diff_summary: reimportDiffSummary,
     };
 }
@@ -246,7 +362,16 @@ export function describeCadImportRecord(rawRecord) {
     const placementMode = getPlacementModeLabel(record.options.placement_mode);
     const sourceLabel = `${record.source.filename} (${record.import_id})`;
     const actionLabel = record.reimport_diff_summary ? 'reimport' : 'import';
-    const summary = `STEP ${actionLabel} from ${record.source.filename} · placement mode: ${placementMode} · smart CAD ${record.options.smart_import_enabled ? 'on' : 'off'}`;
+    const smartImportSummaryText = record.smart_import_summary?.summary_text || '';
+    const summaryParts = [
+        `STEP ${actionLabel} from ${record.source.filename}`,
+        `placement mode: ${placementMode}`,
+        `smart CAD ${record.options.smart_import_enabled ? 'on' : 'off'}`,
+    ];
+    if (smartImportSummaryText) {
+        summaryParts.push(smartImportSummaryText);
+    }
+    const summary = summaryParts.join(' · ');
 
     const detailRows = [
         { label: 'Import ID', value: record.import_id },
@@ -260,11 +385,18 @@ export function describeCadImportRecord(rawRecord) {
             value: `x=${record.options.offset.x}, y=${record.options.offset.y}, z=${record.options.offset.z}`,
         },
         { label: 'Smart CAD', value: record.options.smart_import_enabled ? 'Enabled' : 'Disabled' },
+        record.smart_import_summary ? {
+            label: 'Smart CAD Outcome',
+            value: {
+                text: record.smart_import_summary.summary_text,
+                title: formatSmartImportSummaryTitle(record.smart_import_summary),
+            },
+        } : null,
         { label: 'Created Objects', value: createdObjectSummary },
         { label: 'Created Groups', value: createdGroupSummary },
         { label: 'Imported Logical Volumes', value: batchContext.logicalVolumeSummary },
         { label: 'Top-Level Selection', value: selectionContext.selectionSummary },
-    ];
+    ].filter(Boolean);
 
     if (record.reimport_diff_summary) {
         detailRows.push({

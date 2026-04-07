@@ -24,6 +24,37 @@ test('cad import provenance helpers describe a full STEP import deterministicall
             offset: { x: '1', y: '2', z: '3' },
             smart_import_enabled: true,
         },
+        smart_import_summary: {
+            enabled: true,
+            summary: {
+                total: 3,
+                primitive_count: 2,
+                tessellated_count: 1,
+                primitive_ratio: 2 / 3,
+                selected_mode_counts: { primitive: 1, tessellated: 2 },
+                selected_primitive_ratio: 1 / 3,
+                counts_by_classification: {
+                    box: 1,
+                    cylinder: 1,
+                    sphere: 0,
+                    cone: 0,
+                    torus: 0,
+                    tessellated: 1,
+                },
+            },
+            summary_text: '2 primitive candidates, 2 tessellated fallbacks',
+            primitive_candidate_count: 2,
+            selected_primitive_count: 1,
+            selected_tessellated_count: 2,
+            fallback_reason_counts: {
+                below_confidence_threshold: 1,
+                no_primitive_match_v1: 1,
+            },
+            top_fallback_reasons: [
+                { reason: 'below_confidence_threshold', count: 1 },
+                { reason: 'no_primitive_match_v1', count: 1 },
+            ],
+        },
         created_object_ids: {
             solid_ids: ['solid-1'],
             logical_volume_ids: ['lv-1'],
@@ -43,7 +74,7 @@ test('cad import provenance helpers describe a full STEP import deterministicall
     assert.equal(described.title, 'fixture_import');
     assert.equal(
         described.summary,
-        'STEP import from fixture.step · placement mode: assembly · smart CAD on',
+        'STEP import from fixture.step · placement mode: assembly · smart CAD on · 2 primitive candidates, 2 tessellated fallbacks',
     );
     assert.equal(described.createdObjectSummary, '1 solid, 1 logical volume, 1 assembly, 2 placements');
     assert.equal(
@@ -63,11 +94,17 @@ test('cad import provenance helpers describe a full STEP import deterministicall
             'Parent LV',
             'Placement Offset',
             'Smart CAD',
+            'Smart CAD Outcome',
             'Created Objects',
             'Created Groups',
             'Imported Logical Volumes',
             'Top-Level Selection',
         ],
+    );
+    assert.equal(described.detailRows.find((row) => row.label === 'Smart CAD Outcome').value.text, '2 primitive candidates, 2 tessellated fallbacks');
+    assert.equal(
+        described.detailRows.find((row) => row.label === 'Smart CAD Outcome').value.title,
+        'Total solids: 3\nPrimitive candidates: 2\nSelected primitive: 1\nSelected tessellated fallback: 2\nTop fallback reasons: below_confidence_threshold x1, no_primitive_match_v1 x1',
     );
     assert.equal(described.detailRows[2].value.text, '0123456789ab...');
     assert.equal(described.detailRows[2].value.title, '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
