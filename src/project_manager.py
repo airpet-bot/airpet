@@ -28,6 +28,88 @@ from .objective_formula import evaluate_objective_formula
 
 AUTOSAVE_VERSION_ID = "autosave"
 
+
+def _normalize_step_import_offset(raw_offset):
+    if not isinstance(raw_offset, dict):
+        raw_offset = {}
+
+    return {
+        'x': str(raw_offset.get('x', '0')),
+        'y': str(raw_offset.get('y', '0')),
+        'z': str(raw_offset.get('z', '0')),
+    }
+
+
+def _collect_step_import_object_ids(imported_state):
+    placements = []
+    seen_placement_ids = set()
+
+    def add_placement(pv):
+        if pv and getattr(pv, 'id', None) and pv.id not in seen_placement_ids:
+            seen_placement_ids.add(pv.id)
+            placements.append(pv)
+
+    for pv in getattr(imported_state, 'placements_to_add', []) or []:
+        add_placement(pv)
+
+    for assembly in imported_state.assemblies.values():
+        for pv in getattr(assembly, 'placements', []) or []:
+            add_placement(pv)
+
+    for lv in imported_state.logical_volumes.values():
+        if getattr(lv, 'content_type', None) == 'physvol' and isinstance(getattr(lv, 'content', None), list):
+            for pv in lv.content:
+                add_placement(pv)
+
+    return {
+        'solid_ids': [solid.id for solid in imported_state.solids.values()],
+        'logical_volume_ids': [lv.id for lv in imported_state.logical_volumes.values()],
+        'assembly_ids': [assembly.id for assembly in imported_state.assemblies.values()],
+        'placement_ids': [pv.id for pv in placements],
+    }
+
+
+def _build_step_import_provenance_record(temp_path, step_file_stream, options, imported_state):
+    import uuid
+
+    source_filename = getattr(step_file_stream, 'filename', None)
+    if source_filename:
+        source_filename = os.path.basename(source_filename)
+    else:
+        source_filename = os.path.basename(temp_path)
+
+    sha256 = hashlib.sha256()
+    with open(temp_path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(65536), b''):
+            sha256.update(chunk)
+
+    grouping_name = getattr(imported_state, 'grouping_name', None) or options.get('groupingName', 'STEP_Import')
+    grouping_name = str(grouping_name)
+    object_ids = _collect_step_import_object_ids(imported_state)
+
+    return {
+        'import_id': f"step_import_{uuid.uuid4().hex}",
+        'source': {
+            'format': 'step',
+            'filename': source_filename,
+            'sha256': sha256.hexdigest(),
+            'size_bytes': os.path.getsize(temp_path),
+        },
+        'options': {
+            'grouping_name': grouping_name,
+            'placement_mode': str(options.get('placementMode', 'assembly')),
+            'parent_lv_name': options.get('parentLVName'),
+            'offset': _normalize_step_import_offset(options.get('offset', {})),
+            'smart_import_enabled': bool(options.get('smartImport', options.get('smart_import', False))),
+        },
+        'created_object_ids': object_ids,
+        'created_group_names': {
+            'solid': f"{grouping_name}_solids" if object_ids['solid_ids'] else None,
+            'logical_volume': f"{grouping_name}_lvs" if object_ids['logical_volume_ids'] else None,
+            'assembly': f"{grouping_name}_assemblies" if object_ids['assembly_ids'] else None,
+        },
+    }
+
 class ProjectManager:
     def __init__(self, expression_evaluator):
         self.current_geometry_state = GeometryState()
@@ -4309,6 +4391,14 @@ class ProjectManager:
             if old_id in incoming_state.active_source_ids:
                 self.current_geometry_state.active_source_ids.append(new_id)
 
+        incoming_cad_imports = getattr(incoming_state, 'cad_imports', None)
+        if incoming_cad_imports:
+            if not isinstance(getattr(self.current_geometry_state, 'cad_imports', None), list):
+                self.current_geometry_state.cad_imports = []
+            for cad_import in incoming_cad_imports:
+                if isinstance(cad_import, dict):
+                    self.current_geometry_state.cad_imports.append(deepcopy(cad_import))
+
         # --- Process and Add Placements ---
         # Combine explicitly requested placements with those extracted from the incoming world
         all_placements_to_add = (getattr(incoming_state, 'placements_to_add', []) or []) + extra_placements
@@ -4740,6 +4830,9 @@ class ProjectManager:
         try:
             # The STEP parser now takes the options dictionary
             imported_state = parse_step_file(temp_path, options)
+            cad_import_record = _build_step_import_provenance_record(temp_path, step_file_stream, options, imported_state)
+            imported_state.cad_imports = list(getattr(imported_state, 'cad_imports', []) or [])
+            imported_state.cad_imports.append(cad_import_record)
 
             # Set the new solids as "changed" so they will be sent to the front end
             newly_created_solid_names = set(imported_state.solids.keys())

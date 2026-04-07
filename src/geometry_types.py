@@ -4,6 +4,7 @@ import uuid # For unique IDs
 import math
 import re
 import numpy as np
+from copy import deepcopy
 
 # --- Periodic Table Lookup (element name -> Z) ---
 PERIODIC_TABLE = {
@@ -1582,6 +1583,9 @@ class GeometryState:
         # }
         self.optimizer_runs = {}
 
+        # Provenance records for imported CAD subsystems.
+        self.cad_imports = []
+
         # Stable project scope identifier used by policy/audit systems to
         # associate records with this project instance across save/load cycles.
         self.project_scope_id = str(uuid.uuid4())
@@ -1642,6 +1646,7 @@ class GeometryState:
             "parameter_registry": self.parameter_registry,
             "param_studies": self.param_studies,
             "optimizer_runs": self.optimizer_runs,
+            "cad_imports": deepcopy(self.cad_imports),
             "project_scope_id": self.project_scope_id,
             "ui_groups": self.ui_groups
         }
@@ -1712,6 +1717,12 @@ class GeometryState:
             instance.optimizer_runs = optimizer_runs
         else:
             instance.optimizer_runs = {}
+
+        cad_imports = data.get('cad_imports', [])
+        if isinstance(cad_imports, list):
+            instance.cad_imports = [deepcopy(entry) for entry in cad_imports if isinstance(entry, dict)]
+        else:
+            instance.cad_imports = []
 
         project_scope_id = data.get('project_scope_id')
         if isinstance(project_scope_id, str) and project_scope_id.strip():
