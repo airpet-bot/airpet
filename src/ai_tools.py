@@ -354,7 +354,7 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "get_component_details",
-        "description": "Get the full JSON definition of a specific component to see its current parameters, including the saved environment and magnetic/electric field state.",
+        "description": "Get the full JSON definition of a specific component to see its current parameters, including the saved environment, field state, and region cuts/limits state.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -379,7 +379,10 @@ AI_GEOMETRY_TOOLS = [
             "object_id='local_uniform_magnetic_field' and property paths like 'enabled', "
             "'target_volume_names', or 'field_vector_tesla.z'. For local electric field assignments, "
             "use object_id='local_uniform_electric_field' and property paths like 'enabled', "
-            "'target_volume_names', or 'field_vector_volt_per_meter.z'."
+            "'target_volume_names', or 'field_vector_volt_per_meter.z'. For region cuts and limits, use "
+            "object_id='region_cuts_and_limits' and property paths like 'enabled', "
+            "'region_name', 'target_volume_names', 'production_cut_mm', 'max_step_mm', "
+            "'max_track_length_mm', 'max_time_ns', 'min_kinetic_energy_mev', or 'min_range_mm'."
         ),
         "parameters": {
             "type": "object",

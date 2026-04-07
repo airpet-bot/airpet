@@ -6,10 +6,12 @@ import {
     formatGlobalMagneticFieldSummary,
     formatLocalElectricFieldSummary,
     formatLocalMagneticFieldSummary,
+    formatRegionCutsAndLimitsSummary,
     normalizeGlobalElectricFieldState,
     normalizeGlobalMagneticFieldState,
     normalizeLocalElectricFieldState,
     normalizeLocalMagneticFieldState,
+    normalizeRegionCutsAndLimitsState,
 } from '../../static/environmentFieldUi.js';
 
 test('global magnetic field ui helpers normalize malformed values deterministically', () => {
@@ -155,5 +157,49 @@ test('local electric field ui summary reflects saved enabled state, targets, and
             },
         }),
         'Local electric field: enabled (targets box_LV, detector_LV) (0, 2.5, -1.25) V/m',
+    );
+});
+
+test('region cuts and limits ui helpers normalize malformed values deterministically', () => {
+    assert.deepEqual(
+        normalizeRegionCutsAndLimitsState({
+            enabled: 'true',
+            region_name: '  tracker_region  ',
+            target_volume_names: 'box_LV, detector_LV; box_LV',
+            production_cut_mm: '0.5',
+            max_step_mm: 'bad-value',
+            max_track_length_mm: Infinity,
+            max_time_ns: '25',
+            min_kinetic_energy_mev: '0.002',
+            min_range_mm: null,
+        }),
+        {
+            enabled: true,
+            region_name: 'tracker_region',
+            target_volume_names: ['box_LV', 'detector_LV'],
+            production_cut_mm: 0.5,
+            max_step_mm: 0,
+            max_track_length_mm: 0,
+            max_time_ns: 25,
+            min_kinetic_energy_mev: 0.002,
+            min_range_mm: 0,
+        },
+    );
+});
+
+test('region cuts and limits ui summary reflects saved region and active limit values', () => {
+    assert.equal(
+        formatRegionCutsAndLimitsSummary({
+            enabled: true,
+            region_name: 'tracker_region',
+            target_volume_names: ['box_LV', 'detector_LV'],
+            production_cut_mm: 0.5,
+            max_step_mm: 0.1,
+            max_track_length_mm: 5.0,
+            max_time_ns: 20.0,
+            min_kinetic_energy_mev: 0.002,
+            min_range_mm: 0.05,
+        }),
+        'Region cuts and limits: enabled (region tracker_region) (targets box_LV, detector_LV) cut 0.5 mm, max step 0.1 mm, max track 5 mm, max time 20 ns, min Ek 0.002 MeV, min range 0.05 mm',
     );
 });

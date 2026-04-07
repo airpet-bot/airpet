@@ -631,6 +631,17 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
             "target_volume_names": [],
             "field_vector_volt_per_meter": {"x": 0.0, "y": 0.0, "z": 0.0},
         },
+        "region_cuts_and_limits": {
+            "enabled": False,
+            "region_name": "airpet_region",
+            "target_volume_names": [],
+            "production_cut_mm": 1.0,
+            "max_step_mm": 0.0,
+            "max_track_length_mm": 0.0,
+            "max_time_ns": 0.0,
+            "min_kinetic_energy_mev": 0.0,
+            "min_range_mm": 0.0,
+        },
     }
 
     res = dispatch_ai_tool(pm, "update_property", {
@@ -681,6 +692,78 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
     })
     assert res["success"], res
 
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "region_cuts_and_limits",
+        "property_path": "enabled",
+        "new_value": True,
+    })
+    assert res["success"], res
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "region_cuts_and_limits",
+        "property_path": "region_name",
+        "new_value": "tracker_region",
+    })
+    assert res["success"], res
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "region_cuts_and_limits",
+        "property_path": "target_volume_names",
+        "new_value": "box_LV, detector_LV",
+    })
+    assert res["success"], res
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "region_cuts_and_limits",
+        "property_path": "production_cut_mm",
+        "new_value": "0.5",
+    })
+    assert res["success"], res
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "region_cuts_and_limits",
+        "property_path": "max_step_mm",
+        "new_value": "0.1",
+    })
+    assert res["success"], res
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "region_cuts_and_limits",
+        "property_path": "max_track_length_mm",
+        "new_value": "4.5",
+    })
+    assert res["success"], res
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "region_cuts_and_limits",
+        "property_path": "max_time_ns",
+        "new_value": "25",
+    })
+    assert res["success"], res
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "region_cuts_and_limits",
+        "property_path": "min_kinetic_energy_mev",
+        "new_value": "0.002",
+    })
+    assert res["success"], res
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "environment",
+        "object_id": "region_cuts_and_limits",
+        "property_path": "min_range_mm",
+        "new_value": "0.05",
+    })
+    assert res["success"], res
+
     updated_details = dispatch_ai_tool(pm, "get_component_details", {
         "component_type": "environment",
         "name": "environment",
@@ -703,6 +786,17 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
         "enabled": False,
         "target_volume_names": ["box_LV"],
         "field_vector_volt_per_meter": {"x": 0.0, "y": -1.5, "z": 0.0},
+    }
+    assert updated_details["result"]["region_cuts_and_limits"] == {
+        "enabled": True,
+        "region_name": "tracker_region",
+        "target_volume_names": ["box_LV", "detector_LV"],
+        "production_cut_mm": 0.5,
+        "max_step_mm": 0.1,
+        "max_track_length_mm": 4.5,
+        "max_time_ns": 25.0,
+        "min_kinetic_energy_mev": 0.002,
+        "min_range_mm": 0.05,
     }
 
 

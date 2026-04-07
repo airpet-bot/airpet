@@ -6,6 +6,7 @@
 #include "G4ThreeVector.hh"
 #include "globals.hh"
 #include <map>
+#include <vector>
 
 // Forward declarations to avoid including heavy headers
 class G4VPhysicalVolume;
@@ -36,8 +37,20 @@ public:
   void SetGlobalElectricField(G4ThreeVector value);
   void SetLocalMagneticField(G4String assignmentPayload);
   void SetLocalElectricField(G4String assignmentPayload);
+  void SetRegionCutsAndLimits(G4String assignmentPayload);
 
 private:
+  struct RegionControlConfig
+  {
+    std::vector<G4String> targetVolumeNames;
+    G4double productionCutMm = 0.;
+    G4double maxStepMm = 0.;
+    G4double maxTrackLengthMm = 0.;
+    G4double maxTimeNs = 0.;
+    G4double minKineticEnergyMeV = 0.;
+    G4double minRangeMm = 0.;
+  };
+
   void DefineCommands();
 
   // Member variables
@@ -49,6 +62,7 @@ private:
   G4ThreeVector fGlobalElectricField;
   std::map<G4String, G4ThreeVector> fLocalMagFieldAssignments;
   std::map<G4String, G4ThreeVector> fLocalElecFieldAssignments;
+  std::map<G4String, RegionControlConfig> fRegionControlAssignments;
 
   G4String fGDMLFilename;
   std::map<G4String, G4String> fSensitiveDetectorsMap;

@@ -826,6 +826,54 @@ def _validate_uniform_field_vector(data, field_name, vector_field_name):
     return True, None
 
 
+def _coerce_target_volume_names(raw_names, field_name):
+    if raw_names is None:
+        return []
+
+    if isinstance(raw_names, str):
+        raw_items = re.split(r"[,\n;]+", raw_names)
+    elif isinstance(raw_names, (list, tuple, set)):
+        raw_items = list(raw_names)
+    else:
+        raise ValueError(f"{field_name}.target_volume_names must be an array of strings.")
+
+    normalized = []
+    seen = set()
+    for raw_item in raw_items:
+        name = str(raw_item).strip()
+        if not name or name in seen:
+            continue
+        normalized.append(name)
+        seen.add(name)
+
+    return normalized
+
+
+def _normalize_finite_number(raw_value, field_name, property_name):
+    try:
+        numeric_value = float(raw_value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name}.{property_name} must be a finite number.")
+
+    if not math.isfinite(numeric_value):
+        raise ValueError(f"{field_name}.{property_name} must be a finite number.")
+
+    return numeric_value
+
+
+def _validate_finite_number(data, field_name, property_name, default_value=0.0):
+    value = data.get(property_name, default_value)
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return False, f"{field_name}.{property_name} must be a finite number."
+
+    if not math.isfinite(numeric_value):
+        return False, f"{field_name}.{property_name} must be a finite number."
+
+    return True, None
+
+
 class GlobalUniformMagneticField:
     """Saved-project contract for a global uniform magnetic field."""
 
@@ -948,28 +996,10 @@ class LocalUniformMagneticField:
 
     @staticmethod
     def _coerce_target_volume_names(raw_names):
-        if raw_names is None:
-            return []
-
-        if isinstance(raw_names, str):
-            raw_items = re.split(r"[,\n;]+", raw_names)
-        elif isinstance(raw_names, (list, tuple, set)):
-            raw_items = list(raw_names)
-        else:
-            raise ValueError(
-                "environment.local_uniform_magnetic_field.target_volume_names must be an array of strings."
-            )
-
-        normalized = []
-        seen = set()
-        for raw_item in raw_items:
-            name = str(raw_item).strip()
-            if not name or name in seen:
-                continue
-            normalized.append(name)
-            seen.add(name)
-
-        return normalized
+        return _coerce_target_volume_names(
+            raw_names,
+            "environment.local_uniform_magnetic_field",
+        )
 
     @classmethod
     def _normalize_target_volume_names(cls, raw_names):
@@ -1038,28 +1068,10 @@ class LocalUniformElectricField:
 
     @staticmethod
     def _coerce_target_volume_names(raw_names):
-        if raw_names is None:
-            return []
-
-        if isinstance(raw_names, str):
-            raw_items = re.split(r"[,\n;]+", raw_names)
-        elif isinstance(raw_names, (list, tuple, set)):
-            raw_items = list(raw_names)
-        else:
-            raise ValueError(
-                "environment.local_uniform_electric_field.target_volume_names must be an array of strings."
-            )
-
-        normalized = []
-        seen = set()
-        for raw_item in raw_items:
-            name = str(raw_item).strip()
-            if not name or name in seen:
-                continue
-            normalized.append(name)
-            seen.add(name)
-
-        return normalized
+        return _coerce_target_volume_names(
+            raw_names,
+            "environment.local_uniform_electric_field",
+        )
 
     @classmethod
     def _normalize_target_volume_names(cls, raw_names):
@@ -1107,6 +1119,153 @@ class LocalUniformElectricField:
             field_vector_volt_per_meter=data.get('field_vector_volt_per_meter'),
         )
 
+
+class RegionCutsAndLimits:
+    """Saved-project contract for region-specific production cuts and user limits."""
+
+    ENVIRONMENT_FIELD_NAME = "environment.region_cuts_and_limits"
+    DEFAULT_REGION_NAME = "airpet_region"
+    ENVIRONMENT_STRING_PROPERTIES = {"region_name"}
+    ENVIRONMENT_NUMERIC_PROPERTIES = {
+        "production_cut_mm": 1.0,
+        "max_step_mm": 0.0,
+        "max_track_length_mm": 0.0,
+        "max_time_ns": 0.0,
+        "min_kinetic_energy_mev": 0.0,
+        "min_range_mm": 0.0,
+    }
+
+    def __init__(
+        self,
+        enabled=False,
+        region_name=None,
+        target_volume_names=None,
+        production_cut_mm=1.0,
+        max_step_mm=0.0,
+        max_track_length_mm=0.0,
+        max_time_ns=0.0,
+        min_kinetic_energy_mev=0.0,
+        min_range_mm=0.0,
+    ):
+        if not isinstance(enabled, bool):
+            raise ValueError("environment.region_cuts_and_limits.enabled must be a boolean.")
+
+        self.enabled = enabled
+        self.region_name = self._normalize_region_name(region_name)
+        self.target_volume_names = self._normalize_target_volume_names(target_volume_names)
+        self.production_cut_mm = _normalize_finite_number(
+            production_cut_mm,
+            self.ENVIRONMENT_FIELD_NAME,
+            "production_cut_mm",
+        )
+        self.max_step_mm = _normalize_finite_number(
+            max_step_mm,
+            self.ENVIRONMENT_FIELD_NAME,
+            "max_step_mm",
+        )
+        self.max_track_length_mm = _normalize_finite_number(
+            max_track_length_mm,
+            self.ENVIRONMENT_FIELD_NAME,
+            "max_track_length_mm",
+        )
+        self.max_time_ns = _normalize_finite_number(
+            max_time_ns,
+            self.ENVIRONMENT_FIELD_NAME,
+            "max_time_ns",
+        )
+        self.min_kinetic_energy_mev = _normalize_finite_number(
+            min_kinetic_energy_mev,
+            self.ENVIRONMENT_FIELD_NAME,
+            "min_kinetic_energy_mev",
+        )
+        self.min_range_mm = _normalize_finite_number(
+            min_range_mm,
+            self.ENVIRONMENT_FIELD_NAME,
+            "min_range_mm",
+        )
+
+    @staticmethod
+    def _normalize_region_name(raw_name):
+        if raw_name is None:
+            return RegionCutsAndLimits.DEFAULT_REGION_NAME
+
+        name = str(raw_name).strip()
+        return name or RegionCutsAndLimits.DEFAULT_REGION_NAME
+
+    @staticmethod
+    def _coerce_target_volume_names(raw_names):
+        return _coerce_target_volume_names(
+            raw_names,
+            RegionCutsAndLimits.ENVIRONMENT_FIELD_NAME,
+        )
+
+    @classmethod
+    def _normalize_target_volume_names(cls, raw_names):
+        return cls._coerce_target_volume_names(raw_names)
+
+    @classmethod
+    def validate(cls, data, field_name=ENVIRONMENT_FIELD_NAME):
+        if data is None:
+            return True, None
+        if not isinstance(data, dict):
+            return False, f"{field_name} must be an object."
+
+        enabled = data.get('enabled', False)
+        if not isinstance(enabled, bool):
+            return False, f"{field_name}.enabled must be a boolean."
+
+        region_name = data.get('region_name', cls.DEFAULT_REGION_NAME)
+        if not isinstance(region_name, str) or not region_name.strip():
+            return False, f"{field_name}.region_name must be a non-empty string."
+
+        target_names = data.get('target_volume_names')
+        if target_names is not None:
+            try:
+                cls._coerce_target_volume_names(target_names)
+            except ValueError:
+                return False, f"{field_name}.target_volume_names must be an array of strings."
+
+        for property_name, default_value in cls.ENVIRONMENT_NUMERIC_PROPERTIES.items():
+            ok, err = _validate_finite_number(data, field_name, property_name, default_value)
+            if not ok:
+                return ok, err
+
+        return True, None
+
+    def to_dict(self):
+        return {
+            "enabled": self.enabled,
+            "region_name": self.region_name,
+            "target_volume_names": list(self.target_volume_names),
+            "production_cut_mm": self.production_cut_mm,
+            "max_step_mm": self.max_step_mm,
+            "max_track_length_mm": self.max_track_length_mm,
+            "max_time_ns": self.max_time_ns,
+            "min_kinetic_energy_mev": self.min_kinetic_energy_mev,
+            "min_range_mm": self.min_range_mm,
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        if data is None:
+            return cls()
+
+        ok, err = cls.validate(data)
+        if not ok:
+            raise ValueError(err)
+
+        return cls(
+            enabled=data.get('enabled', False),
+            region_name=data.get('region_name', cls.DEFAULT_REGION_NAME),
+            target_volume_names=data.get('target_volume_names'),
+            production_cut_mm=data.get('production_cut_mm', 1.0),
+            max_step_mm=data.get('max_step_mm', 0.0),
+            max_track_length_mm=data.get('max_track_length_mm', 0.0),
+            max_time_ns=data.get('max_time_ns', 0.0),
+            min_kinetic_energy_mev=data.get('min_kinetic_energy_mev', 0.0),
+            min_range_mm=data.get('min_range_mm', 0.0),
+        )
+
 class EnvironmentState:
     """Saved-project environment state shared by UI, AI, and runtime plumbing."""
 
@@ -1116,6 +1275,7 @@ class EnvironmentState:
         global_uniform_electric_field=None,
         local_uniform_magnetic_field=None,
         local_uniform_electric_field=None,
+        region_cuts_and_limits=None,
     ):
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
@@ -1136,6 +1296,11 @@ class EnvironmentState:
             self.local_uniform_electric_field = local_uniform_electric_field
         else:
             self.local_uniform_electric_field = LocalUniformElectricField.from_dict(local_uniform_electric_field)
+
+        if isinstance(region_cuts_and_limits, RegionCutsAndLimits):
+            self.region_cuts_and_limits = region_cuts_and_limits
+        else:
+            self.region_cuts_and_limits = RegionCutsAndLimits.from_dict(region_cuts_and_limits)
 
     @classmethod
     def validate(cls, data, field_name="environment"):
@@ -1181,9 +1346,20 @@ class EnvironmentState:
         if local_electric_field_data is None and 'local_electric_field' in data:
             local_electric_field_data = data.get('local_electric_field')
 
-        return LocalUniformElectricField.validate(
+        ok, err = LocalUniformElectricField.validate(
             local_electric_field_data,
             field_name=f"{field_name}.local_uniform_electric_field",
+        )
+        if not ok:
+            return ok, err
+
+        region_controls_data = data.get('region_cuts_and_limits')
+        if region_controls_data is None and 'region_controls' in data:
+            region_controls_data = data.get('region_controls')
+
+        return RegionCutsAndLimits.validate(
+            region_controls_data,
+            field_name=f"{field_name}.region_cuts_and_limits",
         )
 
     def to_dict(self):
@@ -1192,6 +1368,7 @@ class EnvironmentState:
             "global_uniform_electric_field": self.global_uniform_electric_field.to_dict(),
             "local_uniform_magnetic_field": self.local_uniform_magnetic_field.to_dict(),
             "local_uniform_electric_field": self.local_uniform_electric_field.to_dict(),
+            "region_cuts_and_limits": self.region_cuts_and_limits.to_dict(),
         }
 
     @classmethod
@@ -1215,6 +1392,9 @@ class EnvironmentState:
         local_electric_field_data = data.get('local_uniform_electric_field')
         if local_electric_field_data is None and 'local_electric_field' in data:
             local_electric_field_data = data.get('local_electric_field')
+        region_controls_data = data.get('region_cuts_and_limits')
+        if region_controls_data is None and 'region_controls' in data:
+            region_controls_data = data.get('region_controls')
 
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
@@ -1240,7 +1420,13 @@ class EnvironmentState:
             print(f"Warning: Invalid local uniform electric field payload: {exc}. Using defaults.")
             local_electric_field = LocalUniformElectricField()
 
-        return cls(field, electric_field, local_field, local_electric_field)
+        try:
+            region_cuts_and_limits = RegionCutsAndLimits.from_dict(region_controls_data)
+        except ValueError as exc:
+            print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
+            region_cuts_and_limits = RegionCutsAndLimits()
+
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits)
 
 class GeometryState:
     """Holds the entire geometry definition."""
@@ -1396,6 +1582,7 @@ class GeometryState:
             'global_uniform_electric_field',
             'local_uniform_magnetic_field',
             'local_uniform_electric_field',
+            'region_cuts_and_limits',
         ):
             if data.get(legacy_key) is not None:
                 legacy_environment[legacy_key] = data.get(legacy_key)

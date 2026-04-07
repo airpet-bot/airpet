@@ -12,6 +12,7 @@ def test_environment_state_defaults_and_roundtrip():
     electric_field = state.environment.global_uniform_electric_field
     local_field = state.environment.local_uniform_magnetic_field
     local_electric_field = state.environment.local_uniform_electric_field
+    region_controls = state.environment.region_cuts_and_limits
     assert field.enabled is False
     assert field.field_vector_tesla == {"x": 0.0, "y": 0.0, "z": 0.0}
     assert electric_field.enabled is False
@@ -22,6 +23,15 @@ def test_environment_state_defaults_and_roundtrip():
     assert local_electric_field.enabled is False
     assert local_electric_field.target_volume_names == []
     assert local_electric_field.field_vector_volt_per_meter == {"x": 0.0, "y": 0.0, "z": 0.0}
+    assert region_controls.enabled is False
+    assert region_controls.region_name == "airpet_region"
+    assert region_controls.target_volume_names == []
+    assert region_controls.production_cut_mm == 1.0
+    assert region_controls.max_step_mm == 0.0
+    assert region_controls.max_track_length_mm == 0.0
+    assert region_controls.max_time_ns == 0.0
+    assert region_controls.min_kinetic_energy_mev == 0.0
+    assert region_controls.min_range_mm == 0.0
 
     payload = state.to_dict()
     assert payload["environment"] == {
@@ -42,6 +52,17 @@ def test_environment_state_defaults_and_roundtrip():
             "enabled": False,
             "target_volume_names": [],
             "field_vector_volt_per_meter": {"x": 0.0, "y": 0.0, "z": 0.0},
+        },
+        "region_cuts_and_limits": {
+            "enabled": False,
+            "region_name": "airpet_region",
+            "target_volume_names": [],
+            "production_cut_mm": 1.0,
+            "max_step_mm": 0.0,
+            "max_track_length_mm": 0.0,
+            "max_time_ns": 0.0,
+            "min_kinetic_energy_mev": 0.0,
+            "min_range_mm": 0.0,
         },
     }
 
@@ -68,6 +89,17 @@ def test_environment_state_validation_and_project_roundtrip():
             "enabled": True,
             "target_volume_names": ["box_LV"],
             "field_vector_volt_per_meter": {"x": 0.0, "y": 0.25, "z": -0.5},
+        },
+        "region_cuts_and_limits": {
+            "enabled": True,
+            "region_name": "tracker_region",
+            "target_volume_names": ["box_LV", "detector_LV"],
+            "production_cut_mm": 0.5,
+            "max_step_mm": 0.1,
+            "max_track_length_mm": 5.0,
+            "max_time_ns": 20.0,
+            "min_kinetic_energy_mev": 0.002,
+            "min_range_mm": 0.05,
         },
     }
 
@@ -102,6 +134,15 @@ def test_environment_state_validation_and_project_roundtrip():
         "y": 0.25,
         "z": -0.5,
     }
+    assert loaded.environment.region_cuts_and_limits.enabled is True
+    assert loaded.environment.region_cuts_and_limits.region_name == "tracker_region"
+    assert loaded.environment.region_cuts_and_limits.target_volume_names == ["box_LV", "detector_LV"]
+    assert loaded.environment.region_cuts_and_limits.production_cut_mm == 0.5
+    assert loaded.environment.region_cuts_and_limits.max_step_mm == 0.1
+    assert loaded.environment.region_cuts_and_limits.max_track_length_mm == 5.0
+    assert loaded.environment.region_cuts_and_limits.max_time_ns == 20.0
+    assert loaded.environment.region_cuts_and_limits.min_kinetic_energy_mev == 0.002
+    assert loaded.environment.region_cuts_and_limits.min_range_mm == 0.05
 
     electric_bad_payload = {
         "global_uniform_electric_field": {
@@ -113,6 +154,19 @@ def test_environment_state_validation_and_project_roundtrip():
     ok, err = EnvironmentState.validate(electric_bad_payload)
     assert ok is False
     assert "global_uniform_electric_field.field_vector_volt_per_meter.x" in err
+
+    region_bad_payload = {
+        "region_cuts_and_limits": {
+            "enabled": True,
+            "region_name": "tracker_region",
+            "target_volume_names": ["box_LV"],
+            "production_cut_mm": "not-a-number",
+        }
+    }
+
+    ok, err = EnvironmentState.validate(region_bad_payload)
+    assert ok is False
+    assert "region_cuts_and_limits.production_cut_mm" in err
 
     bad_payload = {
         "local_uniform_magnetic_field": {
@@ -143,6 +197,17 @@ def test_environment_state_validation_and_project_roundtrip():
         "target_volume_names": [],
         "field_vector_volt_per_meter": {"x": 0.0, "y": 0.0, "z": 0.0},
     }
+    assert defaulted.environment.region_cuts_and_limits.to_dict() == {
+        "enabled": False,
+        "region_name": "airpet_region",
+        "target_volume_names": [],
+        "production_cut_mm": 1.0,
+        "max_step_mm": 0.0,
+        "max_track_length_mm": 0.0,
+        "max_time_ns": 0.0,
+        "min_kinetic_energy_mev": 0.0,
+        "min_range_mm": 0.0,
+    }
 
     legacy_loaded = GeometryState.from_dict(
         {
@@ -153,6 +218,17 @@ def test_environment_state_validation_and_project_roundtrip():
             "global_uniform_electric_field": {
                 "enabled": True,
                 "field_vector_volt_per_meter": {"x": 0.0, "y": 0.0, "z": -3.0},
+            },
+            "region_cuts_and_limits": {
+                "enabled": True,
+                "region_name": "legacy_region",
+                "target_volume_names": ["box_LV"],
+                "production_cut_mm": 0.75,
+                "max_step_mm": 0.0,
+                "max_track_length_mm": 2.5,
+                "max_time_ns": 10.0,
+                "min_kinetic_energy_mev": 0.001,
+                "min_range_mm": 0.02,
             },
         }
     )
@@ -173,6 +249,17 @@ def test_environment_state_validation_and_project_roundtrip():
         "enabled": False,
         "target_volume_names": [],
         "field_vector_volt_per_meter": {"x": 0.0, "y": 0.0, "z": 0.0},
+    }
+    assert legacy_loaded.environment.region_cuts_and_limits.to_dict() == {
+        "enabled": True,
+        "region_name": "legacy_region",
+        "target_volume_names": ["box_LV"],
+        "production_cut_mm": 0.75,
+        "max_step_mm": 0.0,
+        "max_track_length_mm": 2.5,
+        "max_time_ns": 10.0,
+        "min_kinetic_energy_mev": 0.001,
+        "min_range_mm": 0.02,
     }
 
     pm = ProjectManager(ExpressionEvaluator())

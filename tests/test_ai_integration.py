@@ -105,6 +105,8 @@ def test_environment_ai_schema_exposes_read_and_write_tools():
     assert "local electric field" in update_tool["description"]
     assert "local_uniform_magnetic_field" in update_tool["description"]
     assert "local_uniform_electric_field" in update_tool["description"]
+    assert "region cuts and limits" in update_tool["description"]
+    assert "region_cuts_and_limits" in update_tool["description"]
 
 
 def test_physics_template_schema_exposes_field_probe_slab():

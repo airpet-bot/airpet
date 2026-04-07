@@ -2925,6 +2925,17 @@ class ProjectManager:
 
             return None, f"{field_name}.enabled must be a boolean."
 
+        string_properties = getattr(target_obj.__class__, "ENVIRONMENT_STRING_PROPERTIES", set())
+        if property_path in string_properties:
+            if new_value is None:
+                return None, f"{field_name}.{property_path} must be a non-empty string."
+
+            normalized = str(new_value).strip()
+            if not normalized:
+                return None, f"{field_name}.{property_path} must be a non-empty string."
+
+            return normalized, None
+
         if property_path == 'target_volume_names':
             if not hasattr(target_obj, "target_volume_names"):
                 return None, f"Invalid property path '{property_path}'"
@@ -2949,6 +2960,18 @@ class ProjectManager:
                 seen.add(name)
 
             return normalized, None
+
+        numeric_properties = getattr(target_obj.__class__, "ENVIRONMENT_NUMERIC_PROPERTIES", set())
+        if property_path in numeric_properties:
+            try:
+                numeric_value = float(new_value)
+            except (TypeError, ValueError):
+                return None, f"{field_name}.{property_path} must be a finite number."
+
+            if not math.isfinite(numeric_value):
+                return None, f"{field_name}.{property_path} must be a finite number."
+
+            return numeric_value, None
 
         if property_path.startswith(f'{vector_name}.'):
             axis = property_path.split('.', 1)[1]
@@ -2991,6 +3014,7 @@ class ProjectManager:
                 "global_uniform_electric_field": self.current_geometry_state.environment.global_uniform_electric_field,
                 "local_uniform_magnetic_field": self.current_geometry_state.environment.local_uniform_magnetic_field,
                 "local_uniform_electric_field": self.current_geometry_state.environment.local_uniform_electric_field,
+                "region_cuts_and_limits": self.current_geometry_state.environment.region_cuts_and_limits,
             }
             target_obj = environment_objects.get(object_id)
             if target_obj is None:
@@ -6816,6 +6840,28 @@ class ProjectManager:
             macro_content.append("# Local electric field assignment is disabled.")
         else:
             macro_content.append("# No local electric field assignments defined.")
+        macro_content.append("")
+
+        region_controls = temp_state.environment.region_cuts_and_limits
+        macro_content.append("# --- Region Cuts And Limits ---")
+        if region_controls.enabled and region_controls.target_volume_names:
+            macro_content.append(
+                "/g4pet/detector/addRegionCutsAndLimits "
+                f"{region_controls.region_name}|"
+                f"{','.join(region_controls.target_volume_names)}|"
+                f"{float(region_controls.production_cut_mm):.12g}|"
+                f"{float(region_controls.max_step_mm):.12g}|"
+                f"{float(region_controls.max_track_length_mm):.12g}|"
+                f"{float(region_controls.max_time_ns):.12g}|"
+                f"{float(region_controls.min_kinetic_energy_mev):.12g}|"
+                f"{float(region_controls.min_range_mm):.12g}"
+            )
+        elif region_controls.enabled:
+            macro_content.append("# Region cuts and limits are enabled, but no target volumes were configured.")
+        elif region_controls.target_volume_names:
+            macro_content.append("# Region cuts and limits are disabled.")
+        else:
+            macro_content.append("# No region cuts and limits defined.")
         macro_content.append("")
 
         # --- Configure Sensitive Detectors ---

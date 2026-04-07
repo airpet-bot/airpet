@@ -7,6 +7,9 @@
 #include "G4GeometryManager.hh"
 #include "G4LogicalVolume.hh"
 #include "G4LogicalVolumeStore.hh"
+#include "G4ProductionCuts.hh"
+#include "G4Region.hh"
+#include "G4RegionStore.hh"
 #include "G4RunManager.hh"
 #include "G4SDManager.hh"
 #include "G4PhysicalVolumeStore.hh"
@@ -14,11 +17,14 @@
 #include "G4UIcmdWith3VectorAndUnit.hh"
 #include "G4UIdirectory.hh"
 #include "G4UImessenger.hh"
+#include "G4UserLimits.hh"
 #include "G4SystemOfUnits.hh"
 
+#include <algorithm>
 #include <exception>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 namespace
 {
@@ -135,6 +141,112 @@ bool ParseFieldAssignmentPayload(const G4String& assignmentPayload,
   }
 }
 
+std::string TrimWhitespace(const std::string& value)
+{
+  const auto begin = value.find_first_not_of(" \t\r\n");
+  if (begin == std::string::npos) {
+    return "";
+  }
+
+  const auto end = value.find_last_not_of(" \t\r\n");
+  return value.substr(begin, end - begin + 1);
+}
+
+std::vector<G4String> ParseTargetVolumeNames(const std::string& rawText)
+{
+  std::vector<G4String> targetVolumeNames;
+  std::stringstream stream(rawText);
+  std::string rawName;
+
+  while (std::getline(stream, rawName, ',')) {
+    const std::string trimmed = TrimWhitespace(rawName);
+    if (trimmed.empty()) {
+      continue;
+    }
+
+    const G4String targetVolumeName = trimmed.c_str();
+    if (std::find(targetVolumeNames.begin(), targetVolumeNames.end(), targetVolumeName) !=
+        targetVolumeNames.end()) {
+      continue;
+    }
+
+    targetVolumeNames.push_back(targetVolumeName);
+  }
+
+  return targetVolumeNames;
+}
+
+bool ParseNumericPayload(const std::string& rawText, const G4String& fieldLabel, G4double& value)
+{
+  const std::string trimmed = TrimWhitespace(rawText);
+  if (trimmed.empty()) {
+    value = 0.0;
+    return true;
+  }
+
+  try {
+    value = std::stod(trimmed);
+    return true;
+  } catch (const std::exception&) {
+    G4cerr << "--> WARNING: Invalid numeric region control payload '" << rawText
+           << "' for field '" << fieldLabel << "'." << G4endl;
+    return false;
+  }
+}
+
+bool ParseRegionControlPayload(const G4String& assignmentPayload,
+                               G4String& regionName,
+                               std::vector<G4String>& targetVolumeNames,
+                               G4double& productionCutMm,
+                               G4double& maxStepMm,
+                               G4double& maxTrackLengthMm,
+                               G4double& maxTimeNs,
+                               G4double& minKineticEnergyMeV,
+                               G4double& minRangeMm)
+{
+  std::stringstream stream(assignmentPayload);
+  std::string regionNameText;
+  std::string targetVolumeText;
+  std::string productionCutText;
+  std::string maxStepText;
+  std::string maxTrackLengthText;
+  std::string maxTimeText;
+  std::string minKineticEnergyText;
+  std::string minRangeText;
+
+  if (!std::getline(stream, regionNameText, '|') ||
+      !std::getline(stream, targetVolumeText, '|') ||
+      !std::getline(stream, productionCutText, '|') ||
+      !std::getline(stream, maxStepText, '|') ||
+      !std::getline(stream, maxTrackLengthText, '|') ||
+      !std::getline(stream, maxTimeText, '|') ||
+      !std::getline(stream, minKineticEnergyText, '|') ||
+      !std::getline(stream, minRangeText, '|')) {
+    G4cerr << "--> WARNING: Invalid region control payload '" << assignmentPayload
+           << "'. Expected <RegionName>|<Volume1,Volume2>|<ProductionCutMm>|<MaxStepMm>|"
+              "<MaxTrackLengthMm>|<MaxTimeNs>|<MinKineticEnergyMeV>|<MinRangeMm>."
+           << G4endl;
+    return false;
+  }
+
+  const std::string trimmedRegionName = TrimWhitespace(regionNameText);
+  if (trimmedRegionName.empty()) {
+    G4cerr << "--> WARNING: Region control payload '" << assignmentPayload
+           << "' is missing a region name." << G4endl;
+    return false;
+  }
+
+  regionName = trimmedRegionName.c_str();
+  targetVolumeNames = ParseTargetVolumeNames(targetVolumeText);
+
+  return ParseNumericPayload(productionCutText, "productionCutMm", productionCutMm) &&
+         ParseNumericPayload(maxStepText, "maxStepMm", maxStepMm) &&
+         ParseNumericPayload(maxTrackLengthText, "maxTrackLengthMm", maxTrackLengthMm) &&
+         ParseNumericPayload(maxTimeText, "maxTimeNs", maxTimeNs) &&
+         ParseNumericPayload(minKineticEnergyText, "minKineticEnergyMeV", minKineticEnergyMeV) &&
+         ParseNumericPayload(minRangeText, "minRangeMm", minRangeMm);
+}
+
 bool HasNonZeroField(const G4ThreeVector& fieldVector)
 {
   return fieldVector.mag2() > 0.0;
@@ -205,6 +317,13 @@ void DetectorConstruction::DefineCommands()
     .SetParameterName("Assignment", false)
     .SetStates(G4State_PreInit, G4State_Idle)
     .SetToBeBroadcasted(false);
+
+  fMessenger->DeclareMethod("addRegionCutsAndLimits", &DetectorConstruction::SetRegionCutsAndLimits)
+    .SetGuidance("Assign region-specific production cuts and user limits to logical volumes.")
+    .SetGuidance("Usage: /g4pet/detector/addRegionCutsAndLimits <RegionName>|<Volume1,Volume2>|<ProductionCutMm>|<MaxStepMm>|<MaxTrackLengthMm>|<MaxTimeNs>|<MinKineticEnergyMeV>|<MinRangeMm>")
+    .SetParameterName("Assignment", false)
+    .SetStates(G4State_PreInit, G4State_Idle)
+    .SetToBeBroadcasted(false);
 }
 
 void DetectorConstruction::SetSensitiveDetector(G4String logicalVolumeName, G4String sdName)
@@ -262,6 +381,46 @@ void DetectorConstruction::SetLocalElectricField(G4String assignmentPayload)
   }
 
   fLocalElecFieldAssignments[logicalVolumeName] = fieldVector;
+
+  if (auto* runManager = G4RunManager::GetRunManager()) {
+    runManager->GeometryHasBeenModified();
+  }
+}
+
+void DetectorConstruction::SetRegionCutsAndLimits(G4String assignmentPayload)
+{
+  G4String regionName;
+  std::vector<G4String> targetVolumeNames;
+  G4double productionCutMm = 0.0;
+  G4double maxStepMm = 0.0;
+  G4double maxTrackLengthMm = 0.0;
+  G4double maxTimeNs = 0.0;
+  G4double minKineticEnergyMeV = 0.0;
+  G4double minRangeMm = 0.0;
+
+  if (!ParseRegionControlPayload(
+        assignmentPayload,
+        regionName,
+        targetVolumeNames,
+        productionCutMm,
+        maxStepMm,
+        maxTrackLengthMm,
+        maxTimeNs,
+        minKineticEnergyMeV,
+        minRangeMm)) {
+    return;
+  }
+
+  RegionControlConfig& config = fRegionControlAssignments[regionName];
+  config.targetVolumeNames = targetVolumeNames;
+  config.productionCutMm = productionCutMm;
+  config.maxStepMm = maxStepMm;
+  config.maxTrackLengthMm = maxTrackLengthMm;
+  config.maxTimeNs = maxTimeNs;
+  config.minKineticEnergyMeV = minKineticEnergyMeV;
+  config.minRangeMm = minRangeMm;
+
+  G4cout << "--> Requested region cuts and limits for region '" << regionName << "'" << G4endl;
 
   if (auto* runManager = G4RunManager::GetRunManager()) {
     runManager->GeometryHasBeenModified();
@@ -415,6 +574,69 @@ void DetectorConstruction::ConstructSDandField()
              << ", " << magneticField.z() << ") tesla and (" << electricField.x() << ", "
              << electricField.y() << ", " << electricField.z() << ") volt/m to logical volume '"
              << lvName << "'" << G4endl;
+    }
+  }
+
+  for (const auto& pair : fRegionControlAssignments) {
+    const G4String& regionName = pair.first;
+    const RegionControlConfig& config = pair.second;
+
+    if (config.targetVolumeNames.empty()) {
+      G4cerr << "--> WARNING: Region control assignment for region '" << regionName
+             << "' does not reference any logical volumes." << G4endl;
+      continue;
+    }
+
+    G4Region* region = G4RegionStore::GetInstance()->GetRegion(regionName, false);
+    if (!region) {
+      region = new G4Region(regionName);
+    }
+
+    for (const auto& lvName : config.targetVolumeNames) {
+      G4LogicalVolume* logicalVolume = lvStore->GetVolume(lvName);
+
+      if (!logicalVolume) {
+        G4cerr << "--> WARNING: Logical Volume '" << lvName
+               << "' not found in geometry. Cannot attach region control '" << regionName
+               << "'." << G4endl;
+        continue;
+      }
+
+      region->AddRootLogicalVolume(logicalVolume);
+      G4cout << "--> Attached logical volume '" << lvName
+             << "' to region control '" << regionName << "'" << G4endl;
+    }
+
+    if (config.productionCutMm > 0.0) {
+      auto* productionCuts = new G4ProductionCuts();
+      productionCuts->SetProductionCut(config.productionCutMm * mm);
+      region->SetProductionCuts(productionCuts);
+      G4cout << "--> Requested region production cut " << config.productionCutMm
+             << " mm for region '" << regionName << "'" << G4endl;
+    }
+
+    const bool hasUserLimits = config.maxStepMm > 0.0 || config.maxTrackLengthMm > 0.0 ||
+                               config.maxTimeNs > 0.0 || config.minKineticEnergyMeV > 0.0 ||
+                               config.minRangeMm > 0.0;
+    if (hasUserLimits) {
+      auto* userLimits = new G4UserLimits();
+      if (config.maxStepMm > 0.0) {
+        userLimits->SetMaxAllowedStep(config.maxStepMm * mm);
+      }
+      if (config.maxTrackLengthMm > 0.0) {
+        userLimits->SetUserMaxTrackLength(config.maxTrackLengthMm * mm);
+      }
+      if (config.maxTimeNs > 0.0) {
+        userLimits->SetUserMaxTime(config.maxTimeNs * ns);
+      }
+      if (config.minKineticEnergyMeV > 0.0) {
+        userLimits->SetUserMinEkine(config.minKineticEnergyMeV * MeV);
+      }
+      if (config.minRangeMm > 0.0) {
+        userLimits->SetUserMinRange(config.minRangeMm * mm);
+      }
+      region->SetUserLimits(userLimits);
+      G4cout << "--> Requested region user limits for region '" << regionName << "'" << G4endl;
     }
   }
 

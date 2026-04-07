@@ -41,14 +41,18 @@ import {
     LOCAL_UNIFORM_ELECTRIC_FIELD_OBJECT_ID,
     LOCAL_UNIFORM_ELECTRIC_FIELD_OBJECT_TYPE,
     LOCAL_UNIFORM_ELECTRIC_FIELD_VECTOR_AXES,
+    REGION_CUTS_AND_LIMITS_OBJECT_ID,
+    REGION_CUTS_AND_LIMITS_OBJECT_TYPE,
     formatGlobalMagneticFieldSummary,
     formatGlobalElectricFieldSummary,
     formatLocalMagneticFieldSummary,
     formatLocalElectricFieldSummary,
+    formatRegionCutsAndLimitsSummary,
     normalizeLocalMagneticFieldState,
     normalizeLocalElectricFieldState,
     normalizeGlobalMagneticFieldState,
     normalizeGlobalElectricFieldState,
+    normalizeRegionCutsAndLimitsState,
     normalizeTargetVolumeNames,
 } from './environmentFieldUi.js';
 
@@ -1836,6 +1840,35 @@ function createEnvironmentTextInput(parent, { labelText, id, value, onChange, pl
     parent.appendChild(fieldWrap);
 }
 
+function createEnvironmentPlainTextInput(parent, { labelText, id, value, onChange, placeholder = '' }) {
+    const fieldWrap = document.createElement('div');
+    fieldWrap.className = 'environment-vector-field environment-targets-field';
+
+    const label = document.createElement('label');
+    label.htmlFor = id;
+    label.textContent = labelText;
+    fieldWrap.appendChild(label);
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = id;
+    input.placeholder = placeholder;
+    input.value = value;
+    input.addEventListener('change', () => {
+        const nextValue = input.value.trim();
+        if (!nextValue) {
+            showError(`${labelText} must be a non-empty string.`);
+            input.value = value;
+            return;
+        }
+
+        onChange(nextValue);
+    });
+    fieldWrap.appendChild(input);
+
+    parent.appendChild(fieldWrap);
+}
+
 function renderEnvironmentFieldCard(parent, {
     title,
     summary,
@@ -1920,6 +1953,107 @@ function renderEnvironmentFieldCard(parent, {
         });
     });
     card.appendChild(vectorRow);
+
+    const note = document.createElement('p');
+    note.className = 'environment-note';
+    note.textContent = noteText;
+    card.appendChild(note);
+
+    parent.appendChild(card);
+}
+
+function renderEnvironmentRegionCard(parent, {
+    title,
+    summary,
+    enabledInputId,
+    enabled,
+    onEnabledChange,
+    fieldLabel,
+    regionNameInputId,
+    regionNameValue,
+    onRegionNameChange,
+    targetInputId,
+    targetValue,
+    targetPlaceholder = '',
+    onTargetChange,
+    numericFields = [],
+    objectType,
+    objectId,
+    noteText = '',
+}) {
+    const card = document.createElement('div');
+    card.className = 'environment-field-card';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'environment-field-title';
+    titleEl.textContent = title;
+    card.appendChild(titleEl);
+
+    const summaryEl = document.createElement('p');
+    summaryEl.className = 'environment-summary';
+    summaryEl.textContent = summary;
+    card.appendChild(summaryEl);
+
+    const toggleRow = document.createElement('div');
+    toggleRow.className = 'environment-toggle-row';
+
+    const enabledInput = document.createElement('input');
+    enabledInput.type = 'checkbox';
+    enabledInput.id = enabledInputId;
+    enabledInput.checked = Boolean(enabled);
+    enabledInput.addEventListener('change', () => {
+        onEnabledChange(enabledInput.checked);
+    });
+
+    const enabledLabel = document.createElement('label');
+    enabledLabel.htmlFor = enabledInput.id;
+    enabledLabel.textContent = 'Enabled';
+
+    toggleRow.appendChild(enabledInput);
+    toggleRow.appendChild(enabledLabel);
+    card.appendChild(toggleRow);
+
+    const regionRow = document.createElement('div');
+    regionRow.className = 'environment-vector-row';
+    createEnvironmentPlainTextInput(regionRow, {
+        labelText: 'Region Name',
+        id: regionNameInputId,
+        value: regionNameValue,
+        placeholder: 'airpet_region',
+        onChange: onRegionNameChange,
+    });
+    card.appendChild(regionRow);
+
+    const targetRow = document.createElement('div');
+    targetRow.className = 'environment-vector-row';
+    createEnvironmentTextInput(targetRow, {
+        labelText: 'Target Volumes',
+        id: targetInputId,
+        value: targetValue,
+        placeholder: targetPlaceholder,
+        onChange: onTargetChange,
+    });
+    card.appendChild(targetRow);
+
+    const numericRow = document.createElement('div');
+    numericRow.className = 'environment-vector-row';
+    numericFields.forEach((field) => {
+        createEnvironmentFieldInput(numericRow, {
+            labelText: `${field.labelText} (${field.unitLabel})`,
+            id: field.id,
+            value: field.value,
+            fieldLabel,
+            onChange: (nextValue) => {
+                callbacks.onInspectorPropertyChanged(
+                    objectType,
+                    objectId,
+                    field.propertyPath,
+                    nextValue
+                );
+            },
+        });
+    });
+    card.appendChild(numericRow);
 
     const note = document.createElement('p');
     note.className = 'environment-note';
@@ -2069,6 +2203,85 @@ function renderEnvironmentPanel(projectState) {
             );
         },
         noteText: 'Targets are comma-separated logical volume names.',
+    });
+
+    const regionCutsAndLimits = normalizeRegionCutsAndLimitsState(
+        projectState?.environment?.region_cuts_and_limits
+    );
+    renderEnvironmentRegionCard(environmentPanelRoot, {
+        title: 'Region Cuts and Limits',
+        summary: formatRegionCutsAndLimitsSummary(regionCutsAndLimits),
+        enabledInputId: 'region_cuts_and_limits_enabled',
+        enabled: regionCutsAndLimits.enabled,
+        fieldLabel: 'Region cuts and limits',
+        regionNameInputId: 'region_cuts_and_limits_region_name',
+        regionNameValue: regionCutsAndLimits.region_name,
+        onRegionNameChange: (nextValue) => {
+            callbacks.onInspectorPropertyChanged(
+                REGION_CUTS_AND_LIMITS_OBJECT_TYPE,
+                REGION_CUTS_AND_LIMITS_OBJECT_ID,
+                'region_name',
+                nextValue
+            );
+        },
+        targetInputId: 'region_cuts_and_limits_target_volumes',
+        targetValue: regionCutsAndLimits.target_volume_names.join(', '),
+        targetPlaceholder: 'tracker_region_LV, absorber_LV',
+        onTargetChange: (nextValue) => {
+            callbacks.onInspectorPropertyChanged(
+                REGION_CUTS_AND_LIMITS_OBJECT_TYPE,
+                REGION_CUTS_AND_LIMITS_OBJECT_ID,
+                'target_volume_names',
+                nextValue
+            );
+        },
+        numericFields: [
+            {
+                labelText: 'Production Cut',
+                id: 'region_cuts_and_limits_production_cut_mm',
+                value: regionCutsAndLimits.production_cut_mm,
+                propertyPath: 'production_cut_mm',
+                unitLabel: 'mm',
+            },
+            {
+                labelText: 'Max Step',
+                id: 'region_cuts_and_limits_max_step_mm',
+                value: regionCutsAndLimits.max_step_mm,
+                propertyPath: 'max_step_mm',
+                unitLabel: 'mm',
+            },
+            {
+                labelText: 'Max Track Length',
+                id: 'region_cuts_and_limits_max_track_length_mm',
+                value: regionCutsAndLimits.max_track_length_mm,
+                propertyPath: 'max_track_length_mm',
+                unitLabel: 'mm',
+            },
+            {
+                labelText: 'Max Time',
+                id: 'region_cuts_and_limits_max_time_ns',
+                value: regionCutsAndLimits.max_time_ns,
+                propertyPath: 'max_time_ns',
+                unitLabel: 'ns',
+            },
+            {
+                labelText: 'Min Kinetic Energy',
+                id: 'region_cuts_and_limits_min_kinetic_energy_mev',
+                value: regionCutsAndLimits.min_kinetic_energy_mev,
+                propertyPath: 'min_kinetic_energy_mev',
+                unitLabel: 'MeV',
+            },
+            {
+                labelText: 'Min Range',
+                id: 'region_cuts_and_limits_min_range_mm',
+                value: regionCutsAndLimits.min_range_mm,
+                propertyPath: 'min_range_mm',
+                unitLabel: 'mm',
+            },
+        ],
+        objectType: REGION_CUTS_AND_LIMITS_OBJECT_TYPE,
+        objectId: REGION_CUTS_AND_LIMITS_OBJECT_ID,
+        noteText: 'Production cuts use mm; user limits use mm, ns, and MeV internal units.',
     });
 }
 

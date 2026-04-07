@@ -33,6 +33,11 @@ function normalizeFieldVector(rawVector) {
     return normalized;
 }
 
+function normalizeFiniteNumber(rawValue, defaultValue = 0) {
+    const parsed = Number(rawValue);
+    return Number.isFinite(parsed) ? parsed : defaultValue;
+}
+
 export function normalizeTargetVolumeNames(rawNames) {
     if (rawNames == null) {
         return [];
@@ -138,6 +143,26 @@ export function normalizeLocalElectricFieldState(rawState) {
     });
 }
 
+export const REGION_CUTS_AND_LIMITS_OBJECT_TYPE = 'environment';
+export const REGION_CUTS_AND_LIMITS_OBJECT_ID = 'region_cuts_and_limits';
+
+export function normalizeRegionCutsAndLimitsState(rawState) {
+    const state = rawState && typeof rawState === 'object' ? rawState : {};
+    return {
+        enabled: normalizeBoolean(state.enabled),
+        region_name: typeof state.region_name === 'string' && state.region_name.trim()
+            ? state.region_name.trim()
+            : 'airpet_region',
+        target_volume_names: normalizeTargetVolumeNames(state.target_volume_names),
+        production_cut_mm: normalizeFiniteNumber(state.production_cut_mm, 1),
+        max_step_mm: normalizeFiniteNumber(state.max_step_mm, 0),
+        max_track_length_mm: normalizeFiniteNumber(state.max_track_length_mm, 0),
+        max_time_ns: normalizeFiniteNumber(state.max_time_ns, 0),
+        min_kinetic_energy_mev: normalizeFiniteNumber(state.min_kinetic_energy_mev, 0),
+        min_range_mm: normalizeFiniteNumber(state.min_range_mm, 0),
+    };
+}
+
 export function formatGlobalMagneticFieldSummary(state) {
     return formatFieldSummary('Global magnetic field', state, 'T', {
         includeTargets: false,
@@ -164,4 +189,41 @@ export function formatLocalElectricFieldSummary(state) {
         includeTargets: true,
         vectorKey: 'field_vector_volt_per_meter',
     });
+}
+
+export function formatRegionCutsAndLimitsSummary(state) {
+    const regionName = state?.region_name || 'airpet_region';
+    const targets = normalizeTargetVolumeNames(state?.target_volume_names);
+    const limitParts = [];
+
+    if (Number(state?.production_cut_mm) > 0) {
+        limitParts.push(`cut ${Number(state.production_cut_mm)} mm`);
+    }
+    if (Number(state?.max_step_mm) > 0) {
+        limitParts.push(`max step ${Number(state.max_step_mm)} mm`);
+    }
+    if (Number(state?.max_track_length_mm) > 0) {
+        limitParts.push(`max track ${Number(state.max_track_length_mm)} mm`);
+    }
+    if (Number(state?.max_time_ns) > 0) {
+        limitParts.push(`max time ${Number(state.max_time_ns)} ns`);
+    }
+    if (Number(state?.min_kinetic_energy_mev) > 0) {
+        limitParts.push(`min Ek ${Number(state.min_kinetic_energy_mev)} MeV`);
+    }
+    if (Number(state?.min_range_mm) > 0) {
+        limitParts.push(`min range ${Number(state.min_range_mm)} mm`);
+    }
+
+    const parts = [`Region cuts and limits: ${state?.enabled ? 'enabled' : 'disabled'} (region ${regionName})`];
+    if (targets.length > 0) {
+        parts.push(`(targets ${targets.join(', ')})`);
+    }
+    if (limitParts.length > 0) {
+        parts.push(limitParts.join(', '));
+    } else {
+        parts.push('no user limits');
+    }
+
+    return parts.join(' ');
 }
