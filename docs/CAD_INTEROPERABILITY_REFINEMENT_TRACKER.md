@@ -56,18 +56,18 @@ A task is only `DONE` when all of the following are true:
 ## Current Status
 
 - Overall phase: roadmap phase R2, ready to activate after physics-environment completion
-- Current priority: CIR-002
+- Current priority: CIR-003
 - Success metric: a user can revise an imported STEP-driven subsystem in CAD and update the AIRPET project without duplicating geometry or redoing key simulation annotations by hand
 
 ## Current NEXT Task
 
-CIR-002: Add a supported STEP reimport path that targets an existing imported CAD subsystem instead of always merging new names.
+CIR-003: Preserve key AIRPET-side annotations across supported STEP reimports.
 
 Reason:
 
-- CIR-001 is done, so the next smallest slice is a constrained reimport flow that can consume the new provenance contract
-- it keeps the first supported reimport path narrow and deterministic
-- it makes the import/update loop visible without broadening into annotation-preservation yet
+- CIR-002 is done, so the next smallest slice is preserving the annotations users already attach to imported CAD
+- this keeps the reimport path useful without broadening into UI/reporting work yet
+- it focuses the next cycle on the most valuable supported update behavior after replacement
 
 ## Backlog
 
@@ -82,8 +82,8 @@ Statuses:
 | ID | Priority | Area | Feature | Status | Notes |
 | --- | --- | --- | --- | --- | --- |
 | CIR-001 | P0 | Provenance | Add saved-project CAD import provenance metadata and stable import identity for STEP imports | DONE | Saved-project `cad_imports` records now persist STEP source digest, stable `import_id`, import options, and created object ids |
-| CIR-002 | P0 | Reimport | Add a supported STEP reimport path that targets an existing imported CAD subsystem instead of always merging new names | NEXT | Start with one explicit, constrained reimport path rather than general replacement |
-| CIR-003 | P0 | Reimport | Preserve key AIRPET-side annotations across supported STEP reimports | PENDING | Focus first on materials, sensitivity, grouping, and other directly attached simulation annotations |
+| CIR-002 | P0 | Reimport | Add a supported STEP reimport path that targets an existing imported CAD subsystem instead of always merging new names | DONE | Reimport can now target an existing `import_id`, remove the old imported subsystem, and replace it in place without suffixing names |
+| CIR-003 | P0 | Reimport | Preserve key AIRPET-side annotations across supported STEP reimports | NEXT | Focus first on materials, sensitivity, grouping, and other directly attached simulation annotations |
 | CIR-004 | P1 | UI | Add UI surfaces to inspect CAD import provenance and launch a supported reimport flow | PENDING | Keep the reimport workflow visible and inspectable instead of hidden behind naming heuristics |
 | CIR-005 | P1 | Grouping | Improve imported assembly naming, grouping, and top-level selection ergonomics | PENDING | Make imported subsystems easier to find and manage after import |
 | CIR-006 | P1 | Editing | Add post-import batch helpers for material and sensitive-volume assignment on imported CAD geometry | PENDING | Reduce the manual work that often follows a successful CAD import |
@@ -98,6 +98,7 @@ Statuses:
 | --- | --- | --- | --- |
 | 2026-04-07 | Backlog setup | DONE | Created the CAD-interoperability refinement context and seeded the first concrete backlog, starting with saved-project CAD provenance and stable import identity for STEP imports |
 | 2026-04-07 | CIR-001 provenance metadata | DONE | Added persisted `cad_imports` state and STEP import identity bookkeeping in [`/Volumes/nvme/projects/airpet/src/geometry_types.py`](/Volumes/nvme/projects/airpet/src/geometry_types.py) and [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py); added regression coverage in [`/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py`](/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py); verified with `pytest tests/test_cad_import_provenance.py -q` |
+| 2026-04-07 | CIR-002 reimport replacement | DONE | Added a targeted STEP reimport path in [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py) that resolves an existing `import_id`, removes the old imported subsystem, and reuses the stable provenance record identity; added regression coverage in [`/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py`](/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py); verified with `python3 -m pytest tests/test_cad_import_provenance.py -q`; next task is CIR-003 |
 
 ## Notes For Future Reordering
 

@@ -69,7 +69,20 @@ def _collect_step_import_object_ids(imported_state):
     }
 
 
-def _build_step_import_provenance_record(temp_path, step_file_stream, options, imported_state):
+def _get_step_reimport_target_import_id(options):
+    if not isinstance(options, dict):
+        return None
+
+    target_import_id = options.get('reimportTargetImportId')
+    if isinstance(target_import_id, str):
+        target_import_id = target_import_id.strip()
+        if target_import_id:
+            return target_import_id
+
+    return None
+
+
+def _build_step_import_provenance_record(temp_path, step_file_stream, options, imported_state, import_id=None):
     import uuid
 
     source_filename = getattr(step_file_stream, 'filename', None)
@@ -88,7 +101,7 @@ def _build_step_import_provenance_record(temp_path, step_file_stream, options, i
     object_ids = _collect_step_import_object_ids(imported_state)
 
     return {
-        'import_id': f"step_import_{uuid.uuid4().hex}",
+        'import_id': str(import_id).strip() if isinstance(import_id, str) and import_id.strip() else f"step_import_{uuid.uuid4().hex}",
         'source': {
             'format': 'step',
             'filename': source_filename,
@@ -459,6 +472,18 @@ class ProjectManager:
             # Now, capture the single, final state of the entire operation.
             self._capture_history_state(description)
 
+    def abort_transaction(self):
+        """Aborts an open transaction and restores the pre-transaction state."""
+        if self._is_transaction_open:
+            print("Aborting transaction.")
+            if self._pre_transaction_state is not None:
+                self.current_geometry_state = GeometryState.from_dict(self._pre_transaction_state.to_dict())
+                success, error_msg = self.recalculate_geometry_state()
+                if not success:
+                    print(f"CRITICAL WARNING: Aborted transaction restored an invalid state: {error_msg}")
+            self._is_transaction_open = False
+            self._pre_transaction_state = None
+
     def _capture_history_state(self, description=""):
         """Captures the current state for undo/redo."""
 
@@ -525,6 +550,98 @@ class ProjectManager:
         while f"{base_name}_{i}" in existing_names_dict:
             i += 1
         return f"{base_name}_{i}"
+
+    def _find_step_import_record(self, import_id):
+        """Returns (index, record) for a CAD import entry if it exists."""
+        if not self.current_geometry_state or not isinstance(import_id, str) or not import_id.strip():
+            return None, None
+
+        cad_imports = getattr(self.current_geometry_state, 'cad_imports', None)
+        if not isinstance(cad_imports, list):
+            return None, None
+
+        for index, cad_import in enumerate(cad_imports):
+            if isinstance(cad_import, dict) and cad_import.get('import_id') == import_id:
+                return index, cad_import
+
+        return None, None
+
+    def _find_object_name_by_id(self, objects_by_name, object_id):
+        """Returns the object name for a given stable object id if present."""
+        if not isinstance(objects_by_name, dict) or not isinstance(object_id, str) or not object_id.strip():
+            return None
+
+        for object_name, object_value in objects_by_name.items():
+            if getattr(object_value, 'id', None) == object_id:
+                return object_name
+
+        return None
+
+    def _delete_step_import_subsystem(self, cad_import_record):
+        """Deletes all objects and groups recorded for a STEP import."""
+        if not isinstance(cad_import_record, dict):
+            return False, "Invalid STEP import provenance record."
+
+        object_ids = cad_import_record.get('created_object_ids', {})
+        if not isinstance(object_ids, dict):
+            return False, "STEP import provenance record is missing created object ids."
+
+        deletion_specs = []
+        seen_specs = set()
+        for object_id in object_ids.get('placement_ids', []) or []:
+            if not isinstance(object_id, str) or not object_id.strip():
+                continue
+            spec = ('physical_volume', object_id.strip())
+            if spec in seen_specs:
+                continue
+            seen_specs.add(spec)
+            deletion_specs.append({'type': 'physical_volume', 'id': object_id.strip()})
+
+        if deletion_specs:
+            success, error_msg = self.delete_objects_batch(deletion_specs)
+            if not success:
+                return False, error_msg
+
+        deletion_specs = []
+        seen_specs = set()
+        for object_type, ids_key in (
+            ('solid', 'solid_ids'),
+            ('logical_volume', 'logical_volume_ids'),
+            ('assembly', 'assembly_ids'),
+        ):
+            for object_id in object_ids.get(ids_key, []) or []:
+                if not isinstance(object_id, str) or not object_id.strip():
+                    continue
+                resolved_id = object_id.strip()
+                if object_type == 'solid':
+                    resolved_id = self._find_object_name_by_id(self.current_geometry_state.solids, resolved_id)
+                elif object_type == 'logical_volume':
+                    resolved_id = self._find_object_name_by_id(self.current_geometry_state.logical_volumes, resolved_id)
+                elif object_type == 'assembly':
+                    resolved_id = self._find_object_name_by_id(self.current_geometry_state.assemblies, resolved_id)
+
+                if resolved_id is None:
+                    return False, f"Could not resolve imported {object_type} id '{object_id}' in the current project."
+
+                spec = (object_type, resolved_id)
+                if spec in seen_specs:
+                    continue
+                seen_specs.add(spec)
+                deletion_specs.append({'type': object_type, 'id': resolved_id})
+
+        if deletion_specs:
+            success, error_msg = self.delete_objects_batch(deletion_specs)
+            if not success:
+                return False, error_msg
+
+        group_names = cad_import_record.get('created_group_names', {})
+        if isinstance(group_names, dict):
+            for group_type in ('solid', 'logical_volume', 'assembly'):
+                group_name = group_names.get(group_type)
+                if isinstance(group_name, str) and group_name.strip():
+                    self.delete_group(group_type, group_name.strip())
+
+        return True, None
 
     def _get_next_copy_number(self, parent_lv: LogicalVolume):
         """Finds the highest copy number among children and returns the next one."""
@@ -4828,34 +4945,82 @@ class ProjectManager:
             temp_path = temp_f.name
         
         try:
+            target_import_id = _get_step_reimport_target_import_id(options)
+            target_import_index = None
+            target_import_record = None
+
+            effective_options = deepcopy(options) if isinstance(options, dict) else {}
+            if target_import_id:
+                target_import_index, target_import_record = self._find_step_import_record(target_import_id)
+                if target_import_record is None:
+                    return False, f"STEP reimport target '{target_import_id}' was not found.", None
+
+                prior_options = target_import_record.get('options', {})
+                if isinstance(prior_options, dict):
+                    if not effective_options.get('groupingName'):
+                        effective_options['groupingName'] = prior_options.get('grouping_name', 'STEP_Import')
+                    if not effective_options.get('placementMode'):
+                        effective_options['placementMode'] = prior_options.get('placement_mode', 'assembly')
+                    if not effective_options.get('parentLVName') and prior_options.get('parent_lv_name') is not None:
+                        effective_options['parentLVName'] = prior_options.get('parent_lv_name')
+                    if not effective_options.get('offset'):
+                        effective_options['offset'] = deepcopy(prior_options.get('offset', {'x': '0', 'y': '0', 'z': '0'}))
+                    if 'smartImport' not in effective_options and 'smart_import' not in effective_options:
+                        effective_options['smartImport'] = bool(prior_options.get('smart_import_enabled', False))
+
             # The STEP parser now takes the options dictionary
-            imported_state = parse_step_file(temp_path, options)
-            cad_import_record = _build_step_import_provenance_record(temp_path, step_file_stream, options, imported_state)
+            imported_state = parse_step_file(temp_path, effective_options)
+            cad_import_record = _build_step_import_provenance_record(
+                temp_path,
+                step_file_stream,
+                effective_options,
+                imported_state,
+                import_id=target_import_id,
+            )
             imported_state.cad_imports = list(getattr(imported_state, 'cad_imports', []) or [])
             imported_state.cad_imports.append(cad_import_record)
 
-            # Set the new solids as "changed" so they will be sent to the front end
-            newly_created_solid_names = set(imported_state.solids.keys())
-            self.changed_object_ids['solids'].update(newly_created_solid_names)
-            print(f"Changed solids {self.changed_object_ids['solids']}")
-            
             import_report = getattr(imported_state, 'smart_import_report', None)
+
+            if target_import_record is not None:
+                self.begin_transaction()
+                delete_success, delete_error = self._delete_step_import_subsystem(target_import_record)
+                if not delete_success:
+                    self.abort_transaction()
+                    return False, f"Failed to reimport STEP geometry: {delete_error}", None
+
+                if isinstance(getattr(self.current_geometry_state, 'cad_imports', None), list) and target_import_index is not None:
+                    del self.current_geometry_state.cad_imports[target_import_index]
+            else:
+                target_import_index = None
 
             # The merge_from_state function already handles placements and grouping
             success, error_msg = self.merge_from_state(imported_state)
             
             if not success:
+                if target_import_record is not None:
+                    self.abort_transaction()
                 return False, f"Failed to merge STEP geometry: {error_msg}", None
+
+            # Set the new solids as "changed" so they will be sent to the front end.
+            newly_created_solid_names = {solid.name for solid in imported_state.solids.values()}
+            self.changed_object_ids['solids'].update(newly_created_solid_names)
+            print(f"Changed solids {self.changed_object_ids['solids']}")
             
             # Recalculate is handled inside merge_from_state, but an extra one ensures consistency.
             self.recalculate_geometry_state()
             
-            # Capture this entire import as a single history event
-            self._capture_history_state(f"Imported STEP file '{options.get('groupingName')}'")
+            # Capture this entire import as a single history event.
+            if target_import_record is not None:
+                self.end_transaction(f"Reimported STEP file '{effective_options.get('groupingName')}'")
+            else:
+                self._capture_history_state(f"Imported STEP file '{effective_options.get('groupingName')}'")
 
             return True, None, import_report
             
         except Exception as e:
+            if target_import_record is not None:
+                self.abort_transaction()
             # Ensure we raise the error to be caught by the app route
             raise e
         finally:

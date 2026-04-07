@@ -82,11 +82,15 @@ class DummyStepUpload:
             handle.write(self.data)
 
 
-def _build_fake_imported_state():
+def _build_fake_imported_state(solid_dimensions=('1', '2', '3')):
     state = GeometryState()
     state.grouping_name = 'fixture_import'
 
-    solid = Solid('fixture_solid', 'box', {'x': '1', 'y': '2', 'z': '3'})
+    solid = Solid(
+        'fixture_solid',
+        'box',
+        {'x': str(solid_dimensions[0]), 'y': str(solid_dimensions[1]), 'z': str(solid_dimensions[2])},
+    )
     state.add_solid(solid)
 
     lv = LogicalVolume('fixture_lv', solid.name, 'G4_STAINLESS-STEEL')
@@ -167,3 +171,80 @@ def test_step_import_provenance_roundtrips_through_saved_project_state():
     pm_round_tripped = ProjectManager(ExpressionEvaluator())
     pm_round_tripped.load_project_from_json_string(json.dumps(saved_payload))
     assert pm_round_tripped.current_geometry_state.cad_imports[0] == import_record
+
+
+def test_step_reimport_targets_existing_import_and_replaces_the_old_subsystem():
+    first_payload_bytes = b'STEP-DATA-ONE'
+    second_payload_bytes = b'STEP-DATA-TWO'
+    second_sha256 = hashlib.sha256(second_payload_bytes).hexdigest()
+
+    first_imported_state, _, _, _, _, _ = _build_fake_imported_state(('1', '2', '3'))
+    second_imported_state, second_solid, second_lv, second_assembly, second_assembly_child, second_top_level_pv = _build_fake_imported_state(
+        ('4', '5', '6')
+    )
+
+    pm = _make_pm()
+
+    with patch('src.project_manager.parse_step_file', side_effect=[first_imported_state, second_imported_state]) as mock_parse:
+        first_upload = DummyStepUpload(first_payload_bytes, 'fixture.step')
+        success, error_msg, import_report = pm.import_step_with_options(
+            first_upload,
+            {
+                'groupingName': 'fixture_import',
+                'placementMode': 'assembly',
+                'parentLVName': 'World',
+                'offset': {'x': '0', 'y': '0', 'z': '0'},
+                'smartImport': True,
+            },
+        )
+
+        assert success is True
+        assert error_msg is None
+        assert import_report is None
+
+        initial_import_record = pm.current_geometry_state.cad_imports[0]
+        initial_import_id = initial_import_record['import_id']
+
+        second_upload = DummyStepUpload(second_payload_bytes, 'fixture.step')
+        success, error_msg, import_report = pm.import_step_with_options(
+            second_upload,
+            {
+                'reimportTargetImportId': initial_import_id,
+            },
+        )
+
+    assert success is True
+    assert error_msg is None
+    assert import_report is None
+    assert mock_parse.call_count == 2
+
+    second_parse_options = mock_parse.call_args_list[1][0][1]
+    assert second_parse_options['groupingName'] == 'fixture_import'
+    assert second_parse_options['placementMode'] == 'assembly'
+    assert second_parse_options['parentLVName'] == 'World'
+    assert second_parse_options['offset'] == {'x': '0', 'y': '0', 'z': '0'}
+    assert second_parse_options['smartImport'] is True
+
+    assert len(pm.current_geometry_state.cad_imports) == 1
+    reimport_record = pm.current_geometry_state.cad_imports[0]
+    assert reimport_record['import_id'] == initial_import_id
+    assert reimport_record['source']['sha256'] == second_sha256
+    assert reimport_record['created_object_ids']['solid_ids'] == [second_solid.id]
+    assert reimport_record['created_object_ids']['logical_volume_ids'] == [second_lv.id]
+    assert reimport_record['created_object_ids']['assembly_ids'] == [second_assembly.id]
+    assert set(reimport_record['created_object_ids']['placement_ids']) == {second_assembly_child.id, second_top_level_pv.id}
+
+    assert 'fixture_solid_1' not in pm.current_geometry_state.solids
+    assert 'fixture_lv_1' not in pm.current_geometry_state.logical_volumes
+    assert 'fixture_assembly_1' not in pm.current_geometry_state.assemblies
+    assert pm.current_geometry_state.solids['fixture_solid'].raw_parameters == {'x': '4', 'y': '5', 'z': '6'}
+
+    solid_group = next(group for group in pm.current_geometry_state.ui_groups['solid'] if group['name'] == 'fixture_import_solids')
+    lv_group = next(group for group in pm.current_geometry_state.ui_groups['logical_volume'] if group['name'] == 'fixture_import_lvs')
+    assembly_group = next(group for group in pm.current_geometry_state.ui_groups['assembly'] if group['name'] == 'fixture_import_assemblies')
+    assert solid_group['members'] == ['fixture_solid']
+    assert lv_group['members'] == ['fixture_lv']
+    assert assembly_group['members'] == ['fixture_assembly']
+    assert 'fixture_solid_1' not in solid_group['members']
+    assert 'fixture_lv_1' not in lv_group['members']
+    assert 'fixture_assembly_1' not in assembly_group['members']
