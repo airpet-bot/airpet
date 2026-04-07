@@ -2,6 +2,7 @@ import sys
 import types
 import hashlib
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 from src.smart_cad_classifier import summarize_candidates
@@ -68,6 +69,8 @@ from src.geometry_types import Assembly, GeometryState, LogicalVolume, PhysicalV
 from src.project_manager import ProjectManager
 import src.step_parser as step_parser
 
+STEP_FIXTURE_CORPUS_DIR = Path(__file__).resolve().parent / 'fixtures' / 'step' / 'corpus'
+
 
 def _make_pm():
     pm = ProjectManager(ExpressionEvaluator())
@@ -127,6 +130,10 @@ class DummyStepUpload:
             handle.write(self.data)
 
 
+def _load_step_fixture_bytes(filename):
+    return (STEP_FIXTURE_CORPUS_DIR / filename).read_bytes()
+
+
 def _build_fake_imported_state(solid_dimensions=('1', '2', '3')):
     state = GeometryState()
     state.grouping_name = 'fixture_import'
@@ -158,6 +165,72 @@ def _build_fake_imported_state(solid_dimensions=('1', '2', '3')):
     state.placements_to_add = [top_level_pv]
 
     return state, solid, lv, assembly, assembly_child, top_level_pv
+
+
+def _build_fixture_imported_state(temp_path, options=None):
+    fixture_text = Path(temp_path).read_text(encoding='utf-8')
+
+    if 'AIRPET_SCENARIO=fixture_import_base' in fixture_text:
+        imported_state, _, _, _, _, _ = _build_fake_imported_state(('1', '2', '3'))
+        smart_candidates = [
+            {
+                'source_id': 'fixture_import_base_box',
+                'classification': 'box',
+                'confidence': 0.95,
+                'params': {'x': 1, 'y': 2, 'z': 3},
+                'fallback_reason': None,
+                'selected_mode': 'primitive',
+            },
+            {
+                'source_id': 'fixture_import_base_shell',
+                'classification': 'tessellated',
+                'confidence': 0.1,
+                'params': {},
+                'fallback_reason': 'no_primitive_match_v1',
+                'selected_mode': 'tessellated',
+            },
+        ]
+    elif 'AIRPET_SCENARIO=fixture_import_revised' in fixture_text:
+        imported_state, _, _, _, _, _ = _build_fake_imported_state(('4', '5', '6'))
+        smart_candidates = [
+            {
+                'source_id': 'fixture_import_revised_box',
+                'classification': 'box',
+                'confidence': 0.97,
+                'params': {'x': 4, 'y': 5, 'z': 6},
+                'fallback_reason': None,
+                'selected_mode': 'primitive',
+            },
+            {
+                'source_id': 'fixture_import_revised_cylinder',
+                'classification': 'cylinder',
+                'confidence': 0.88,
+                'params': {'rmax': 4.0, 'z': 12.0},
+                'fallback_reason': None,
+                'selected_mode': 'primitive',
+            },
+            {
+                'source_id': 'fixture_import_revised_shell',
+                'classification': 'tessellated',
+                'confidence': 0.2,
+                'params': {},
+                'fallback_reason': 'below_confidence_threshold',
+                'selected_mode': 'tessellated',
+            },
+        ]
+    else:
+        raise AssertionError(f'Unexpected STEP fixture marker in {temp_path}')
+
+    imported_state.smart_import_report = {
+        'enabled': True,
+        'policy': {
+            'primitive_confidence_threshold': 0.8,
+        },
+        'candidates': smart_candidates,
+        'summary': summarize_candidates(smart_candidates),
+    }
+
+    return imported_state
 
 
 def _build_fake_imported_state_with_multiple_lvs():
@@ -688,6 +761,80 @@ def test_step_reimport_records_a_deterministic_part_diff_summary():
     pm_round_tripped = ProjectManager(ExpressionEvaluator())
     pm_round_tripped.load_project_from_json_string(json.dumps(saved_payload))
     assert pm_round_tripped.current_geometry_state.cad_imports[0]['reimport_diff_summary'] == reimport_diff
+
+
+def test_step_import_reimport_fixture_corpus_tracks_compact_summary_and_replacement():
+    base_fixture = STEP_FIXTURE_CORPUS_DIR / 'fixture_import_base.step'
+    revised_fixture = STEP_FIXTURE_CORPUS_DIR / 'fixture_import_revised.step'
+
+    base_payload_bytes = _load_step_fixture_bytes(base_fixture.name)
+    revised_payload_bytes = _load_step_fixture_bytes(revised_fixture.name)
+    base_sha256 = hashlib.sha256(base_payload_bytes).hexdigest()
+    revised_sha256 = hashlib.sha256(revised_payload_bytes).hexdigest()
+
+    pm = _make_pm()
+
+    with patch('src.project_manager.parse_step_file', side_effect=_build_fixture_imported_state) as mock_parse:
+        success, error_msg, base_report = pm.import_step_with_options(
+            DummyStepUpload(base_payload_bytes, base_fixture.name),
+            {
+                'groupingName': 'fixture_import',
+                'placementMode': 'assembly',
+                'parentLVName': 'World',
+                'offset': {'x': '0', 'y': '0', 'z': '0'},
+                'smartImport': True,
+            },
+        )
+
+        assert success is True
+        assert error_msg is None
+        assert base_report['summary']['selected_mode_counts'] == {'primitive': 1, 'tessellated': 1}
+
+        initial_import_record = pm.current_geometry_state.cad_imports[0]
+        initial_import_id = initial_import_record['import_id']
+        assert initial_import_record['source']['filename'] == base_fixture.name
+        assert initial_import_record['source']['sha256'] == base_sha256
+        assert initial_import_record['smart_import_summary']['summary_text'] == '1 primitive candidates, 1 tessellated fallbacks'
+
+        success, error_msg, revised_report = pm.import_step_with_options(
+            DummyStepUpload(revised_payload_bytes, revised_fixture.name),
+            {
+                'reimportTargetImportId': initial_import_id,
+            },
+        )
+
+    assert success is True
+    assert error_msg is None
+    assert revised_report['summary']['selected_mode_counts'] == {'primitive': 2, 'tessellated': 1}
+    assert mock_parse.call_count == 2
+
+    second_parse_options = mock_parse.call_args_list[1][0][1]
+    assert second_parse_options['groupingName'] == 'fixture_import'
+    assert second_parse_options['placementMode'] == 'assembly'
+    assert second_parse_options['parentLVName'] == 'World'
+    assert second_parse_options['offset'] == {'x': '0', 'y': '0', 'z': '0'}
+    assert second_parse_options['smartImport'] is True
+
+    assert len(pm.current_geometry_state.cad_imports) == 1
+    reimport_record = pm.current_geometry_state.cad_imports[0]
+    assert reimport_record['import_id'] == initial_import_id
+    assert reimport_record['source']['filename'] == revised_fixture.name
+    assert reimport_record['source']['sha256'] == revised_sha256
+    assert reimport_record['smart_import_summary']['summary_text'] == '2 primitive candidates, 1 tessellated fallbacks'
+    assert reimport_record['reimport_diff_summary']['summary'] == {
+        'total_before': 1,
+        'total_after': 1,
+        'unchanged_count': 0,
+        'added_count': 0,
+        'removed_count': 0,
+        'renamed_count': 0,
+        'changed_count': 1,
+    }
+
+    assert 'fixture_solid_1' not in pm.current_geometry_state.solids
+    assert 'fixture_lv_1' not in pm.current_geometry_state.logical_volumes
+    assert 'fixture_assembly_1' not in pm.current_geometry_state.assemblies
+    assert pm.current_geometry_state.solids['fixture_solid'].raw_parameters == {'x': '4', 'y': '5', 'z': '6'}
 
 
 def test_step_import_logical_volume_batch_assignment_uses_import_ids_atomically():
