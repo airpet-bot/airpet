@@ -42,6 +42,7 @@ def _normalize_step_import_offset(raw_offset):
 
 def _collect_step_import_object_ids(imported_state):
     placements = []
+    top_level_placements = []
     seen_placement_ids = set()
 
     def add_placement(pv):
@@ -50,7 +51,10 @@ def _collect_step_import_object_ids(imported_state):
             placements.append(pv)
 
     for pv in getattr(imported_state, 'placements_to_add', []) or []:
-        add_placement(pv)
+        if pv and getattr(pv, 'id', None) and pv.id not in seen_placement_ids:
+            seen_placement_ids.add(pv.id)
+            placements.append(pv)
+            top_level_placements.append(pv)
 
     for assembly in imported_state.assemblies.values():
         for pv in getattr(assembly, 'placements', []) or []:
@@ -66,6 +70,7 @@ def _collect_step_import_object_ids(imported_state):
         'logical_volume_ids': [lv.id for lv in imported_state.logical_volumes.values()],
         'assembly_ids': [assembly.id for assembly in imported_state.assemblies.values()],
         'placement_ids': [pv.id for pv in placements],
+        'top_level_placement_ids': [pv.id for pv in top_level_placements],
     }
 
 

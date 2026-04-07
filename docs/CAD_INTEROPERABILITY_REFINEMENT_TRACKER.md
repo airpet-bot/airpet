@@ -56,16 +56,16 @@ A task is only `DONE` when all of the following are true:
 ## Current Status
 
 - Overall phase: roadmap phase R2, ready to activate after physics-environment completion
-- Current priority: CIR-005
+- Current priority: CIR-006
 - Success metric: a user can revise an imported STEP-driven subsystem in CAD and update the AIRPET project without duplicating geometry or redoing key simulation annotations by hand
 
 ## Current NEXT Task
 
-CIR-005: Improve imported assembly naming, grouping, and top-level selection ergonomics.
+CIR-006: Add post-import batch helpers for material and sensitive-volume assignment on imported CAD geometry.
 
 Reason:
 
-- CIR-004 is done, so the next smallest slice is imported-assembly organization and findability
+- CIR-005 is done, so the next smallest slice is post-import editing on imported geometry
 - this keeps the CAD-interoperability phase moving without widening into reporting or cleanup yet
 - it stays within the same imported-CAD workflow surface and avoids mixing unrelated refactors
 
@@ -85,8 +85,8 @@ Statuses:
 | CIR-002 | P0 | Reimport | Add a supported STEP reimport path that targets an existing imported CAD subsystem instead of always merging new names | DONE | Reimport can now target an existing `import_id`, remove the old imported subsystem, and replace it in place without suffixing names |
 | CIR-003 | P0 | Reimport | Preserve key AIRPET-side annotations across supported STEP reimports | DONE | Reimport now restores imported LV material, sensitivity, and visual attributes, preserves matching UI group membership, and relinks source bindings onto replacement PVs |
 | CIR-004 | P1 | UI | Add UI surfaces to inspect CAD import provenance and launch a supported reimport flow | DONE | Added a CAD Imports accordion, provenance summary cards, and a reimport-seeded STEP modal flow |
-| CIR-005 | P1 | Grouping | Improve imported assembly naming, grouping, and top-level selection ergonomics | NEXT | Make imported subsystems easier to find and manage after import |
-| CIR-006 | P1 | Editing | Add post-import batch helpers for material and sensitive-volume assignment on imported CAD geometry | PENDING | Reduce the manual work that often follows a successful CAD import |
+| CIR-005 | P1 | Grouping | Improve imported assembly naming, grouping, and top-level selection ergonomics | DONE | Removed the extra placeholder assembly created during STEP parsing, recorded top-level placement ids in provenance, and added a CAD import panel shortcut to select top-level imported placements in the hierarchy |
+| CIR-006 | P1 | Editing | Add post-import batch helpers for material and sensitive-volume assignment on imported CAD geometry | NEXT | Reduce the manual work that often follows a successful CAD import |
 | CIR-007 | P1 | Reporting | Add deterministic reimport diff summaries for added, removed, renamed, or changed imported parts | PENDING | Users should be able to see what changed before trusting the update |
 | CIR-008 | P2 | Smart Import | Surface primitive-recognition and tessellated-fallback outcomes in saved metadata and user-visible summaries | PENDING | Reuse the existing smart-import classifier and fallback policy instead of creating a separate reporting path |
 | CIR-009 | P2 | Testing | Add a compact STEP import/reimport fixture corpus with focused regression coverage | PENDING | Keep fixtures small enough for fast import and reimport verification |
@@ -101,6 +101,7 @@ Statuses:
 | 2026-04-07 | CIR-002 reimport replacement | DONE | Added a targeted STEP reimport path in [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py) that resolves an existing `import_id`, removes the old imported subsystem, and reuses the stable provenance record identity; added regression coverage in [`/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py`](/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py); verified with `python3 -m pytest tests/test_cad_import_provenance.py -q`; next task is CIR-003 |
 | 2026-04-07 | CIR-003 annotation preservation | DONE | Added STEP reimport annotation snapshot/restore logic in [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py) to carry imported LV material/sensitivity/visual state, matching UI group membership, and linked source bindings across supported reimports; added regression coverage in [`/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py`](/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py); verified with `python3 -m pytest tests/test_cad_import_provenance.py -q`; next task is CIR-004 |
 | 2026-04-07 | CIR-004 provenance and reimport UI | DONE | Added provenance helpers in [`/Volumes/nvme/projects/airpet/static/cadImportUi.js`](/Volumes/nvme/projects/airpet/static/cadImportUi.js), a CAD Imports accordion in [`/Volumes/nvme/projects/airpet/templates/index.html`](/Volumes/nvme/projects/airpet/templates/index.html), controller wiring in [`/Volumes/nvme/projects/airpet/static/main.js`](/Volumes/nvme/projects/airpet/static/main.js), [`/Volumes/nvme/projects/airpet/static/uiManager.js`](/Volumes/nvme/projects/airpet/static/uiManager.js), and [`/Volumes/nvme/projects/airpet/static/stepImportEditor.js`](/Volumes/nvme/projects/airpet/static/stepImportEditor.js), plus regression coverage in [`/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs`](/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs); verified with `node --test tests/js/cad_import_ui.test.mjs`, `node --check static/cadImportUi.js`, `node --check static/stepImportEditor.js`, `node --check static/main.js`, `node --check static/uiManager.js`, and `python3 -m pytest tests/test_cad_import_provenance.py -q`; next task is CIR-005 |
+| 2026-04-07 | CIR-005 imported assembly ergonomics | DONE | Removed the extra placeholder assembly from STEP parsing in [`/Volumes/nvme/projects/airpet/src/step_parser.py`](/Volumes/nvme/projects/airpet/src/step_parser.py), recorded `top_level_placement_ids` in provenance via [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py), and added a CAD import panel shortcut plus selection helpers in [`/Volumes/nvme/projects/airpet/static/cadImportUi.js`](/Volumes/nvme/projects/airpet/static/cadImportUi.js), [`/Volumes/nvme/projects/airpet/static/uiManager.js`](/Volumes/nvme/projects/airpet/static/uiManager.js), and [`/Volumes/nvme/projects/airpet/static/main.js`](/Volumes/nvme/projects/airpet/static/main.js); added regression coverage in [`/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py`](/Volumes/nvme/projects/airpet/tests/test_cad_import_provenance.py) and [`/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs`](/Volumes/nvme/projects/airpet/tests/js/cad_import_ui.test.mjs); verified with `python3 -m pytest tests/test_cad_import_provenance.py -q`, `node --test tests/js/cad_import_ui.test.mjs`, `node --check static/cadImportUi.js`, and `node --check static/uiManager.js && node --check static/main.js`; next task is CIR-006 |
 
 ## Notes For Future Reordering
 

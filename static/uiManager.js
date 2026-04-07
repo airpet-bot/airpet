@@ -55,7 +55,7 @@ import {
     normalizeRegionCutsAndLimitsState,
     normalizeTargetVolumeNames,
 } from './environmentFieldUi.js';
-import { describeCadImportRecord } from './cadImportUi.js';
+import { buildCadImportSelectionContext, describeCadImportRecord } from './cadImportUi.js';
 
 // --- Module-level variables for DOM elements ---
 let newProjectButton, saveProjectButton, exportGdmlButton,
@@ -215,7 +215,8 @@ let callbacks = {
     onDrawTracksToggle: () => { },
     onAnalysisModalOpen: () => { },
     onRefreshAnalysisClicked: (energyBins, spatialBins, sensitiveDetector) => { },
-    onDownloadSimDataClicked: () => { }
+    onDownloadSimDataClicked: () => { },
+    onSelectHierarchyItems: (selectedIds) => { },
 };
 
 // --- Initialization ---
@@ -2328,6 +2329,7 @@ function renderCadImportsPanel(projectState) {
 
     cadImports.forEach((rawRecord, index) => {
         const described = describeCadImportRecord(rawRecord);
+        const selectionContext = described.selectionContext || buildCadImportSelectionContext(rawRecord);
         const card = document.createElement('details');
         card.className = 'cad-import-card';
         card.open = cadImports.length === 1 || index === cadImports.length - 1;
@@ -2366,6 +2368,21 @@ function renderCadImportsPanel(projectState) {
 
         const actions = document.createElement('div');
         actions.className = 'cad-import-actions';
+
+        if (selectionContext.selectionIds.length > 0) {
+            const selectButton = document.createElement('button');
+            selectButton.type = 'button';
+            selectButton.className = 'history-action-btn';
+            selectButton.textContent = 'Select Top-Level';
+            selectButton.title = 'Select the top-level imported placement(s) in the hierarchy.';
+            selectButton.addEventListener('click', (event) => {
+                event.stopPropagation();
+                if (callbacks.onSelectHierarchyItems) {
+                    callbacks.onSelectHierarchyItems(selectionContext.selectionIds);
+                }
+            });
+            actions.appendChild(selectButton);
+        }
 
         const reimportButton = document.createElement('button');
         reimportButton.type = 'button';

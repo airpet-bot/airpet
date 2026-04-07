@@ -64,12 +64,55 @@ _install_occ_stubs()
 from src.expression_evaluator import ExpressionEvaluator
 from src.geometry_types import Assembly, GeometryState, LogicalVolume, PhysicalVolumePlacement, Solid
 from src.project_manager import ProjectManager
+import src.step_parser as step_parser
 
 
 def _make_pm():
     pm = ProjectManager(ExpressionEvaluator())
     pm.create_empty_project()
     return pm
+
+
+def test_step_parser_creates_only_the_grouping_named_top_level_assembly(tmp_path):
+    class _DummyDocument:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def Main(self):
+            return object()
+
+    class _DummyReader:
+        def ReadFile(self, *args, **kwargs):
+            return None
+
+        def Transfer(self, *args, **kwargs):
+            return None
+
+    class _DummyShapeTool:
+        def GetFreeShapes(self, *args, **kwargs):
+            return None
+
+    class _DummyLabelSequence:
+        def Length(self):
+            return 0
+
+    step_file = tmp_path / 'sample.step'
+    step_file.write_bytes(b'STEP-DATA')
+
+    with patch.object(step_parser, 'TDocStd_Document', _DummyDocument), \
+        patch.object(step_parser, 'STEPCAFControl_Reader', _DummyReader), \
+        patch.object(step_parser.XCAFDoc_DocumentTool, 'ShapeTool', return_value=_DummyShapeTool()), \
+        patch.object(step_parser, 'TDF_LabelSequence', _DummyLabelSequence):
+        imported_state = step_parser.parse_step_file(
+            str(step_file),
+            {
+                'groupingName': 'fixture_import',
+                'placementMode': 'assembly',
+            },
+        )
+
+    assert list(imported_state.assemblies.keys()) == ['fixture_import']
+    assert imported_state.grouping_name == 'fixture_import'
 
 
 class DummyStepUpload:
@@ -159,6 +202,7 @@ def test_step_import_provenance_roundtrips_through_saved_project_state():
     assert import_record['created_object_ids']['logical_volume_ids'] == [lv.id]
     assert import_record['created_object_ids']['assembly_ids'] == [assembly.id]
     assert set(import_record['created_object_ids']['placement_ids']) == {assembly_child.id, top_level_pv.id}
+    assert import_record['created_object_ids']['top_level_placement_ids'] == [top_level_pv.id]
     assert import_record['created_group_names'] == {
         'solid': 'fixture_import_solids',
         'logical_volume': 'fixture_import_lvs',
@@ -233,6 +277,7 @@ def test_step_reimport_targets_existing_import_and_replaces_the_old_subsystem():
     assert reimport_record['created_object_ids']['logical_volume_ids'] == [second_lv.id]
     assert reimport_record['created_object_ids']['assembly_ids'] == [second_assembly.id]
     assert set(reimport_record['created_object_ids']['placement_ids']) == {second_assembly_child.id, second_top_level_pv.id}
+    assert reimport_record['created_object_ids']['top_level_placement_ids'] == [second_top_level_pv.id]
 
     assert 'fixture_solid_1' not in pm.current_geometry_state.solids
     assert 'fixture_lv_1' not in pm.current_geometry_state.logical_volumes

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     buildCadImportReimportContext,
+    buildCadImportSelectionContext,
     describeCadImportRecord,
 } from '../../static/cadImportUi.js';
 
@@ -27,6 +28,7 @@ test('cad import provenance helpers describe a full STEP import deterministicall
             logical_volume_ids: ['lv-1'],
             assembly_ids: ['assembly-1'],
             placement_ids: ['placement-1', 'placement-2'],
+            top_level_placement_ids: ['placement-1'],
         },
         created_group_names: {
             solid: 'fixture_import_solids',
@@ -47,6 +49,8 @@ test('cad import provenance helpers describe a full STEP import deterministicall
         described.createdGroupSummary,
         'fixture_import_solids, fixture_import_lvs, fixture_import_assemblies',
     );
+    assert.equal(described.selectionContext.selectionSummary, '1 top-level placement');
+    assert.deepEqual(described.selectionContext.selectionIds, ['placement-1']);
     assert.deepEqual(
         described.detailRows.map((row) => row.label),
         [
@@ -60,6 +64,7 @@ test('cad import provenance helpers describe a full STEP import deterministicall
             'Smart CAD',
             'Created Objects',
             'Created Groups',
+            'Top-Level Selection',
         ],
     );
     assert.equal(described.detailRows[2].value.text, '0123456789ab...');
@@ -92,3 +97,13 @@ test('cad import provenance helpers stay stable when optional fields are missing
     assert.equal(reimportContext.smartImport, false);
 });
 
+test('cad import selection helpers fall back to the first recorded placement for legacy records', () => {
+    const selectionContext = buildCadImportSelectionContext({
+        created_object_ids: {
+            placement_ids: ['placement-a', 'placement-b'],
+        },
+    });
+
+    assert.deepEqual(selectionContext.selectionIds, ['placement-a']);
+    assert.equal(selectionContext.selectionSummary, '1 top-level placement');
+});

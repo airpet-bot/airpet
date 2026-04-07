@@ -27,6 +27,12 @@ function normalizeCadImportRecord(rawRecord) {
     const logicalVolumeIds = Array.isArray(createdObjectIds.logical_volume_ids) ? createdObjectIds.logical_volume_ids.filter(Boolean) : [];
     const assemblyIds = Array.isArray(createdObjectIds.assembly_ids) ? createdObjectIds.assembly_ids.filter(Boolean) : [];
     const placementIds = Array.isArray(createdObjectIds.placement_ids) ? createdObjectIds.placement_ids.filter(Boolean) : [];
+    const topLevelPlacementIds = Array.isArray(createdObjectIds.top_level_placement_ids)
+        ? createdObjectIds.top_level_placement_ids.filter(Boolean)
+        : [];
+    const normalizedTopLevelPlacementIds = topLevelPlacementIds.length > 0
+        ? topLevelPlacementIds
+        : placementIds.slice(0, 1);
 
     const groupingName = normalizeString(
         options.grouping_name ?? options.groupingName,
@@ -58,6 +64,7 @@ function normalizeCadImportRecord(rawRecord) {
             logical_volume_ids: logicalVolumeIds,
             assembly_ids: assemblyIds,
             placement_ids: placementIds,
+            top_level_placement_ids: normalizedTopLevelPlacementIds,
         },
         created_group_names: {
             solid: normalizeString(createdGroupNames.solid, ''),
@@ -93,6 +100,16 @@ function formatCreatedGroupSummary(record) {
     return groupNames.length > 0 ? groupNames.join(', ') : 'No created groups recorded.';
 }
 
+function buildSelectionContextFromRecord(record) {
+    const selectionIds = record.created_object_ids.top_level_placement_ids;
+    return {
+        selectionIds,
+        selectionSummary: selectionIds.length > 0
+            ? formatCount(selectionIds.length, 'top-level placement')
+            : 'No top-level placements recorded.',
+    };
+}
+
 function getPlacementModeLabel(placementMode) {
     return placementMode === 'individual' ? 'individual' : 'assembly';
 }
@@ -113,10 +130,15 @@ export function buildCadImportReimportContext(rawRecord) {
     };
 }
 
+export function buildCadImportSelectionContext(rawRecord) {
+    return buildSelectionContextFromRecord(normalizeCadImportRecord(rawRecord));
+}
+
 export function describeCadImportRecord(rawRecord) {
     const record = normalizeCadImportRecord(rawRecord);
     const createdObjectSummary = formatCreatedObjectSummary(record);
     const createdGroupSummary = formatCreatedGroupSummary(record);
+    const selectionContext = buildSelectionContextFromRecord(record);
     const placementMode = getPlacementModeLabel(record.options.placement_mode);
     const sourceLabel = `${record.source.filename} (${record.import_id})`;
     const summary = `STEP import from ${record.source.filename} · placement mode: ${placementMode} · smart CAD ${record.options.smart_import_enabled ? 'on' : 'off'}`;
@@ -138,13 +160,14 @@ export function describeCadImportRecord(rawRecord) {
             { label: 'Smart CAD', value: record.options.smart_import_enabled ? 'Enabled' : 'Disabled' },
             { label: 'Created Objects', value: createdObjectSummary },
             { label: 'Created Groups', value: createdGroupSummary },
+            { label: 'Top-Level Selection', value: selectionContext.selectionSummary },
         ],
         createdObjectSummary,
         createdGroupSummary,
+        selectionContext,
         reimportContext: {
             ...buildCadImportReimportContext(record),
             sourceLabel,
         },
     };
 }
-

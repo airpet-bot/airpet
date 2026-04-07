@@ -300,7 +300,8 @@ async function initializeApp() {
         onProcessLorsClicked: handleProcessLors,
         onGenerateSensitivityClicked: handleGenerateSensitivity,
         onRefreshAnalysisClicked: handleRefreshAnalysis,
-        onDownloadSimDataClicked: handleDownloadSimData
+        onDownloadSimDataClicked: handleDownloadSimData,
+        onSelectHierarchyItems: handleHierarchySelectionByIds
     });
 
     // Bind object-menu launchers early so menu actions remain available
@@ -1633,6 +1634,30 @@ async function handleHierarchySelection(newSelection) {
     } else {
         UIManager.clearInspector();
     }
+}
+
+async function handleHierarchySelectionByIds(itemIds) {
+    const selection = [];
+    const seenIds = new Set();
+
+    if (Array.isArray(itemIds)) {
+        itemIds.forEach((itemId) => {
+            const normalizedId = typeof itemId === 'string' ? itemId.trim() : '';
+            if (!normalizedId || seenIds.has(normalizedId)) return;
+            const item = findItemInState(normalizedId);
+            if (item) {
+                selection.push(item);
+                seenIds.add(normalizedId);
+            }
+        });
+    }
+
+    if (selection.length === 0) {
+        UIManager.showError('Could not resolve the imported top-level selection in the current project.');
+        return;
+    }
+
+    await handleHierarchySelection(selection);
 }
 
 // Called by SceneManager when an object is clicked in 3D
