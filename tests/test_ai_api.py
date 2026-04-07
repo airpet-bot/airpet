@@ -5659,6 +5659,29 @@ def test_ai_physics_template(pm):
     assert any("Phantom_LV" in pv.volume_ref for pv in world_lv.content)
 
 
+def test_ai_field_probe_slab_template(pm):
+    res = dispatch_ai_tool(pm, "insert_physics_template", {
+        "template_name": "field_probe_slab",
+        "params": {"size": 12, "thickness": 0.5},
+        "parent_lv_name": "World",
+        "position": {"x": 0, "y": 0, "z": 0}
+    })
+
+    assert res["success"]
+
+    probe_solid_names = [name for name in pm.current_geometry_state.solids if name.startswith("FieldProbe_Solid_")]
+    probe_lv_names = [name for name in pm.current_geometry_state.logical_volumes if name.startswith("FieldProbe_LV_")]
+
+    assert probe_solid_names
+    assert probe_lv_names
+
+    probe_lv = pm.current_geometry_state.logical_volumes[probe_lv_names[0]]
+    assert probe_lv.is_sensitive is True
+
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+    assert any(pv.volume_ref == probe_lv.name for pv in world_lv.content)
+
+
 def test_ai_tool_accepts_stringified_json_args(pm):
     # Simulates providers that pass function arguments as a JSON string.
     res = dispatch_ai_tool(pm, "create_primitive_solid", '{"name":"S1","solid_type":"box","params":{"x":"1","y":"2","z":"3"}}')

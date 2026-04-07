@@ -107,6 +107,17 @@ def test_environment_ai_schema_exposes_read_and_write_tools():
     assert "local_uniform_electric_field" in update_tool["description"]
 
 
+def test_physics_template_schema_exposes_field_probe_slab():
+    template_tool = next(
+        tool for tool in AI_GEOMETRY_TOOLS
+        if tool["name"] == "insert_physics_template"
+    )
+    template_enum = template_tool["parameters"]["properties"]["template_name"]["enum"]
+
+    assert "field_probe_slab" in template_enum
+    assert "field probe slab" in template_tool["description"]
+
+
 def test_ai_chat_flow_mocked(client):
     """Verify that the AI can trigger a simulation via chat using test_client."""
     from google.genai import types
