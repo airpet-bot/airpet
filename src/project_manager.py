@@ -20,7 +20,7 @@ from .geometry_types import GeometryState, Solid, Define, Material, Element, Iso
                             DivisionVolume, ParamVolume, OpticalSurface, SkinSurface, \
                             BorderSurface, ParticleSource, GlobalUniformMagneticField, \
                             GlobalUniformElectricField, LocalUniformMagneticField, \
-                            LocalUniformElectricField
+                            LocalUniformElectricField, normalize_detector_feature_generator_entry
 from .gdml_parser import GDMLParser
 from .gdml_writer import GDMLWriter
 from .step_parser import parse_step_file
@@ -1299,6 +1299,91 @@ class ProjectManager:
             'hole_count': count_x * count_y,
         }, None
 
+    def _realize_detector_feature_generator_entry(self, generator_entry):
+        generator_type = generator_entry.get('generator_type')
+        if generator_type == 'rectangular_drilled_hole_array':
+            return self._realize_rectangular_drilled_hole_array(generator_entry)
+
+        return None, (
+            f"Detector feature generator type '{generator_type}' is not supported for realization."
+        )
+
+    def upsert_detector_feature_generator(self, raw_entry, *, realize_now=True):
+        """Create or update one saved detector-feature-generator contract."""
+        if not self.current_geometry_state:
+            return None, None, "No project loaded."
+        if not isinstance(raw_entry, dict):
+            return None, None, "Detector feature generator payload must be an object."
+
+        requested_generator_id = raw_entry.get('generator_id')
+        existing_index, existing_entry = self._find_detector_feature_generator(requested_generator_id)
+
+        candidate_entry = deepcopy(raw_entry)
+        if existing_entry is not None:
+            candidate_entry.setdefault('generator_id', existing_entry.get('generator_id'))
+            candidate_entry.setdefault('generator_type', existing_entry.get('generator_type'))
+            candidate_entry.setdefault('enabled', existing_entry.get('enabled', True))
+            if 'target' not in candidate_entry:
+                candidate_entry['target'] = deepcopy(existing_entry.get('target', {}))
+            if 'pattern' not in candidate_entry:
+                candidate_entry['pattern'] = deepcopy(existing_entry.get('pattern', {}))
+            if 'hole' not in candidate_entry:
+                candidate_entry['hole'] = deepcopy(existing_entry.get('hole', {}))
+            if 'realization' not in candidate_entry:
+                candidate_entry['realization'] = deepcopy(existing_entry.get('realization', {}))
+
+        try:
+            normalized_entry = normalize_detector_feature_generator_entry(candidate_entry)
+        except ValueError as exc:
+            return None, None, str(exc)
+
+        self.begin_transaction()
+        realization_result = None
+        try:
+            if existing_index is None:
+                self.current_geometry_state.detector_feature_generators.append(normalized_entry)
+                generator_entry = self.current_geometry_state.detector_feature_generators[-1]
+            else:
+                self.current_geometry_state.detector_feature_generators[existing_index] = normalized_entry
+                generator_entry = self.current_geometry_state.detector_feature_generators[existing_index]
+
+            if realize_now:
+                success, error_msg = self.recalculate_geometry_state()
+                if not success:
+                    raise ValueError(error_msg)
+
+                realization_result, error_msg = self._realize_detector_feature_generator_entry(generator_entry)
+                if error_msg:
+                    raise ValueError(error_msg)
+
+                self.changed_object_ids['solids'].update(
+                    realization_result.get('generated_solid_names', [])
+                )
+
+                success, error_msg = self.recalculate_geometry_state()
+                if not success:
+                    raise ValueError(error_msg)
+            else:
+                generator_entry['realization'] = {
+                    'mode': 'boolean_subtraction',
+                    'status': 'spec_only',
+                    'result_solid_ref': None,
+                    'generated_object_refs': {
+                        'solid_refs': [],
+                        'logical_volume_refs': [],
+                        'placement_refs': [],
+                    },
+                }
+
+            action_verb = 'Saved and realized' if realize_now else 'Saved'
+            description = generator_entry.get('name') or generator_entry.get('generator_id') or 'detector feature generator'
+        except Exception as exc:
+            self.abort_transaction()
+            return None, None, str(exc)
+
+        self.end_transaction(f"{action_verb} detector feature generator '{description}'")
+        return deepcopy(generator_entry), realization_result, None
+
     def realize_detector_feature_generator(self, generator_id):
         """Materialize a saved detector-feature-generator spec into concrete geometry."""
         if not self.current_geometry_state:
@@ -1316,15 +1401,7 @@ class ProjectManager:
 
         self.begin_transaction()
         try:
-            generator_type = generator_entry.get('generator_type')
-            if generator_type == 'rectangular_drilled_hole_array':
-                result, error_msg = self._realize_rectangular_drilled_hole_array(generator_entry)
-            else:
-                result = None
-                error_msg = (
-                    f"Detector feature generator type '{generator_type}' is not supported for realization."
-                )
-
+            result, error_msg = self._realize_detector_feature_generator_entry(generator_entry)
             if error_msg:
                 raise ValueError(error_msg)
 

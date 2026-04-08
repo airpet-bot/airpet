@@ -56,6 +56,10 @@ import {
     normalizeTargetVolumeNames,
 } from './environmentFieldUi.js';
 import { buildCadImportBatchContext, buildCadImportSelectionContext, describeCadImportRecord } from './cadImportUi.js';
+import {
+    describeDetectorFeatureGenerator,
+    listDetectorFeatureGeneratorTargetOptions,
+} from './detectorFeatureGeneratorsUi.js';
 
 // --- Module-level variables for DOM elements ---
 let newProjectButton, saveProjectButton, exportGdmlButton,
@@ -77,7 +81,7 @@ let newProjectButton, saveProjectButton, exportGdmlButton,
 let structureTreeRoot, assembliesListRoot, lvolumesListRoot, definesListRoot, materialsListRoot,
     elementsListRoot, isotopesListRoot, solidsListRoot, opticalSurfacesListRoot, skinSurfacesListRoot,
     borderSurfacesListRoot;
-let inspectorContentDiv, environmentPanelRoot, cadImportsPanelRoot;
+let inspectorContentDiv, environmentPanelRoot, cadImportsPanelRoot, detectorFeatureGeneratorsPanelRoot;
 
 function setCadImportsAccordionVisibility(hasCadImports) {
     if (!cadImportsPanelRoot) return;
@@ -205,6 +209,9 @@ let callbacks = {
     onEditLVClicked: (lvData) => { },
     onAddObjectClicked: () => { }, // To show modal
     onAddRingArrayClicked: () => { },
+    onAddDetectorFeatureGeneratorClicked: () => { },
+    onEditDetectorFeatureGeneratorClicked: (_generatorEntry) => { },
+    onRealizeDetectorFeatureGeneratorClicked: (_generatorEntry) => { },
     onConfirmAddObject: (type, name, params) => { },
     onDeleteSelectedClicked: () => { },
     onHierarchySelectionChanged: (selectedItems) => { },
@@ -321,6 +328,7 @@ export function initUI(cb) {
     inspectorContentDiv = document.getElementById('inspector_content');
     environmentPanelRoot = document.getElementById('environment_panel_root');
     cadImportsPanelRoot = document.getElementById('cad_imports_panel_root');
+    detectorFeatureGeneratorsPanelRoot = document.getElementById('detector_feature_generators_panel_root');
 
 
     // Bottom panel (AI and simulation)
@@ -2463,6 +2471,133 @@ function renderCadImportsPanel(projectState) {
     });
 }
 
+function renderDetectorFeatureGeneratorsPanel(projectState) {
+    if (!detectorFeatureGeneratorsPanelRoot) return;
+
+    detectorFeatureGeneratorsPanelRoot.innerHTML = '';
+
+    const targetOptions = listDetectorFeatureGeneratorTargetOptions(projectState);
+    const generators = Array.isArray(projectState?.detector_feature_generators)
+        ? projectState.detector_feature_generators.filter((entry) => entry && typeof entry === 'object')
+        : [];
+
+    const intro = document.createElement('p');
+    intro.className = 'detector-feature-generators-intro';
+    intro.textContent = 'Create rectangular drilled-hole patterns against box solids and keep the saved generator parameters editable.';
+    detectorFeatureGeneratorsPanelRoot.appendChild(intro);
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'detector-feature-generators-toolbar';
+
+    const addButton = document.createElement('button');
+    addButton.type = 'button';
+    addButton.className = 'history-action-btn';
+    addButton.textContent = 'New Generator...';
+    addButton.title = 'Create a new patterned-hole generator.';
+    addButton.disabled = targetOptions.length === 0;
+    addButton.addEventListener('click', () => {
+        if (callbacks.onAddDetectorFeatureGeneratorClicked) {
+            callbacks.onAddDetectorFeatureGeneratorClicked();
+        }
+    });
+    toolbar.appendChild(addButton);
+    detectorFeatureGeneratorsPanelRoot.appendChild(toolbar);
+
+    if (targetOptions.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'detector-feature-generators-empty';
+        empty.textContent = 'No box solids are available yet. Create a box solid first, then add a patterned-hole generator.';
+        detectorFeatureGeneratorsPanelRoot.appendChild(empty);
+        return;
+    }
+
+    if (generators.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'detector-feature-generators-empty';
+        empty.textContent = 'No detector feature generators saved yet.';
+        detectorFeatureGeneratorsPanelRoot.appendChild(empty);
+        return;
+    }
+
+    generators.forEach((rawEntry, index) => {
+        const described = describeDetectorFeatureGenerator(rawEntry, projectState);
+        const card = document.createElement('details');
+        card.className = 'detector-feature-card';
+        card.open = generators.length === 1 || index === generators.length - 1;
+
+        const summary = document.createElement('summary');
+        summary.className = 'detector-feature-card-summary';
+        summary.title = 'Inspect this detector-feature-generator contract.';
+
+        const summaryText = document.createElement('div');
+        summaryText.className = 'detector-feature-card-summary-text';
+
+        const title = document.createElement('div');
+        title.className = 'detector-feature-title';
+        title.textContent = described.title;
+        summaryText.appendChild(title);
+
+        const summaryLine = document.createElement('div');
+        summaryLine.className = 'detector-feature-summary';
+        summaryLine.textContent = described.summary;
+        summaryText.appendChild(summaryLine);
+
+        const statusBadge = document.createElement('code');
+        statusBadge.className = 'detector-feature-status';
+        statusBadge.textContent = described.statusBadge;
+
+        summary.appendChild(summaryText);
+        summary.appendChild(statusBadge);
+        card.appendChild(summary);
+
+        const body = document.createElement('div');
+        body.className = 'detector-feature-card-body';
+
+        described.detailRows.forEach((row) => {
+            createReadOnlyProperty(body, `${row.label}:`, row.value);
+        });
+
+        const actions = document.createElement('div');
+        actions.className = 'detector-feature-actions';
+
+        const editButton = document.createElement('button');
+        editButton.type = 'button';
+        editButton.className = 'history-action-btn';
+        editButton.textContent = 'Edit...';
+        editButton.title = 'Revise the saved patterned-hole generator parameters.';
+        editButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            if (callbacks.onEditDetectorFeatureGeneratorClicked) {
+                callbacks.onEditDetectorFeatureGeneratorClicked(rawEntry);
+            }
+        });
+        actions.appendChild(editButton);
+
+        const regenerateButton = document.createElement('button');
+        regenerateButton.type = 'button';
+        regenerateButton.className = 'history-action-btn';
+        regenerateButton.textContent = 'Regenerate';
+        regenerateButton.title = 'Re-run the saved generator contract against the current target geometry.';
+        regenerateButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            if (callbacks.onRealizeDetectorFeatureGeneratorClicked) {
+                callbacks.onRealizeDetectorFeatureGeneratorClicked(rawEntry);
+            }
+        });
+        actions.appendChild(regenerateButton);
+
+        body.appendChild(actions);
+
+        const note = document.createElement('p');
+        note.className = 'detector-feature-note';
+        note.textContent = 'This first UI slice keeps the target solid fixed after creation and focuses revisions on counts, pitch, offsets, and hole size.';
+        body.appendChild(note);
+
+        card.appendChild(body);
+        detectorFeatureGeneratorsPanelRoot.appendChild(card);
+    });
+}
+
 /**
  * Enables or disables transformation mode buttons based on provided state.
  * @param {object} state - An object with keys 'translate', 'rotate', 'scale' and boolean values.
@@ -2559,6 +2694,7 @@ export function updateHierarchy(projectState, sceneUpdate) {
     skinSurfacesListRoot = document.getElementById('skin_surfaces_list_root');
     borderSurfacesListRoot = document.getElementById('border_surfaces_list_root');
     cadImportsPanelRoot = document.getElementById('cad_imports_panel_root');
+    detectorFeatureGeneratorsPanelRoot = document.getElementById('detector_feature_generators_panel_root');
 
     // Clear all lists
     if (structureTreeRoot) structureTreeRoot.innerHTML = '';
@@ -2586,6 +2722,7 @@ export function updateHierarchy(projectState, sceneUpdate) {
     populateListWithGrouping(borderSurfacesListRoot, Object.values(projectState.border_surfaces || {}), 'border_surface');
     renderEnvironmentPanel(projectState);
     renderCadImportsPanel(projectState);
+    renderDetectorFeatureGeneratorsPanel(projectState);
 
     // --- Build the physical placement tree (Structure tab) ---
     if (structureTreeRoot && sceneUpdate) {

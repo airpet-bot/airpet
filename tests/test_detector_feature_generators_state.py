@@ -497,3 +497,98 @@ def test_rectangular_drilled_hole_generator_realization_reuses_generated_solids_
         if name.startswith("refresh_collimator_holes__")
     )
     assert generated_prefix_names == [first_cutter_name, first_result_name]
+
+
+def test_upsert_detector_feature_generator_saves_and_regenerates_in_place():
+    pm = _make_pm()
+
+    solid_dict, error_msg = pm.add_solid(
+        "ui_collimator_block",
+        "box",
+        {"x": "24", "y": "18", "z": "12"},
+    )
+    assert error_msg is None
+
+    _, error_msg = pm.add_logical_volume("ui_collimator_lv", "ui_collimator_block", "G4_Galactic")
+    assert error_msg is None
+
+    created_entry, first_result, error_msg = pm.upsert_detector_feature_generator(
+        {
+            "generator_id": "dfg_ui_modal_fixture",
+            "generator_type": "rectangular_drilled_hole_array",
+            "name": "ui_collimator_holes",
+            "target": {
+                "solid_ref": {
+                    "id": solid_dict["id"],
+                    "name": solid_dict["name"],
+                },
+            },
+            "pattern": {
+                "count_x": 2,
+                "count_y": 3,
+                "pitch_mm": {"x": 4.5, "y": 6.0},
+                "origin_offset_mm": {"x": 0.5, "y": -1.0},
+            },
+            "hole": {
+                "diameter_mm": 1.5,
+                "depth_mm": 8.0,
+            },
+        },
+        realize_now=True,
+    )
+
+    assert error_msg is None
+    assert first_result["hole_count"] == 6
+    assert created_entry["realization"]["status"] == "generated"
+    first_result_name = first_result["result_solid_name"]
+    first_cutter_name = first_result["cutter_solid_name"]
+
+    updated_entry, second_result, error_msg = pm.upsert_detector_feature_generator(
+        {
+            "generator_id": "dfg_ui_modal_fixture",
+            "generator_type": "rectangular_drilled_hole_array",
+            "name": "ui_collimator_holes",
+            "target": {
+                "solid_ref": {
+                    "id": solid_dict["id"],
+                    "name": solid_dict["name"],
+                },
+            },
+            "pattern": {
+                "count_x": 4,
+                "count_y": 1,
+                "pitch_mm": {"x": 3.0, "y": 6.0},
+                "origin_offset_mm": {"x": -1.5, "y": 0.0},
+            },
+            "hole": {
+                "diameter_mm": 2.0,
+                "depth_mm": 10.0,
+            },
+        },
+        realize_now=True,
+    )
+
+    assert error_msg is None
+    assert second_result["hole_count"] == 4
+    assert second_result["result_solid_name"] == first_result_name
+    assert second_result["cutter_solid_name"] == first_cutter_name
+    assert updated_entry["realization"]["result_solid_ref"]["name"] == first_result_name
+    assert pm.current_geometry_state.logical_volumes["ui_collimator_lv"].solid_ref == first_result_name
+
+    refreshed_recipe = pm.current_geometry_state.solids[first_result_name].raw_parameters["recipe"]
+    assert len(refreshed_recipe) == 5
+    assert [
+        (
+            float(item["transform"]["position"]["x"]),
+            float(item["transform"]["position"]["y"]),
+            float(item["transform"]["position"]["z"]),
+        )
+        for item in refreshed_recipe[1:]
+    ] == pytest.approx(
+        [
+            (-6.0, 0.0, 1.0),
+            (-3.0, 0.0, 1.0),
+            (0.0, 0.0, 1.0),
+            (3.0, 0.0, 1.0),
+        ]
+    )

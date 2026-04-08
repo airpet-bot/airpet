@@ -307,13 +307,16 @@
         }
 
         #cad_imports_panel_root .cad-imports-intro,
-        #cad_imports_panel_root .cad-imports-empty {
+        #cad_imports_panel_root .cad-imports-empty,
+        #detector_feature_generators_panel_root .detector-feature-generators-intro,
+        #detector_feature_generators_panel_root .detector-feature-generators-empty {
             margin: 8px;
             font-size: 12px;
             color: #334155;
         }
 
-        #cad_imports_panel_root .cad-import-card {
+        #cad_imports_panel_root .cad-import-card,
+        #detector_feature_generators_panel_root .detector-feature-card {
             margin: 8px;
             padding: 10px;
             background: #f8fafc;
@@ -321,21 +324,25 @@
             border-radius: 4px;
         }
 
-        #cad_imports_panel_root .cad-import-card summary {
+        #cad_imports_panel_root .cad-import-card summary,
+        #detector_feature_generators_panel_root .detector-feature-card summary {
             list-style: none;
             cursor: pointer;
             display: block;
         }
 
-        #cad_imports_panel_root .cad-import-card summary::-webkit-details-marker {
+        #cad_imports_panel_root .cad-import-card summary::-webkit-details-marker,
+        #detector_feature_generators_panel_root .detector-feature-card summary::-webkit-details-marker {
             display: none;
         }
 
-        #cad_imports_panel_root .cad-import-card-summary-text {
+        #cad_imports_panel_root .cad-import-card-summary-text,
+        #detector_feature_generators_panel_root .detector-feature-card-summary-text {
             min-width: 0;
         }
 
-        #cad_imports_panel_root .cad-import-title {
+        #cad_imports_panel_root .cad-import-title,
+        #detector_feature_generators_panel_root .detector-feature-title {
             font-size: 13px;
             font-weight: bold;
             color: #0f172a;
@@ -344,7 +351,8 @@
             overflow-wrap: anywhere;
         }
 
-        #cad_imports_panel_root .cad-import-summary {
+        #cad_imports_panel_root .cad-import-summary,
+        #detector_feature_generators_panel_root .detector-feature-summary {
             margin: 0;
             font-size: 12px;
             color: #334155;
@@ -353,7 +361,8 @@
             overflow-wrap: anywhere;
         }
 
-        #cad_imports_panel_root .cad-import-id {
+        #cad_imports_panel_root .cad-import-id,
+        #detector_feature_generators_panel_root .detector-feature-status {
             display: inline-block;
             font-size: 10px;
             color: #475569;
@@ -364,15 +373,18 @@
             margin-top: 8px;
         }
 
-        #cad_imports_panel_root .cad-import-card-body {
+        #cad_imports_panel_root .cad-import-card-body,
+        #detector_feature_generators_panel_root .detector-feature-card-body {
             margin-top: 10px;
         }
 
-        #cad_imports_panel_root .property_item {
+        #cad_imports_panel_root .property_item,
+        #detector_feature_generators_panel_root .property_item {
             margin-bottom: 8px;
         }
 
-        #cad_imports_panel_root .property_item label {
+        #cad_imports_panel_root .property_item label,
+        #detector_feature_generators_panel_root .property_item label {
             display: inline-block;
             width: 110px;
             font-weight: bold;
@@ -380,29 +392,38 @@
             vertical-align: top;
         }
 
-        #cad_imports_panel_root .property_item.readonly label {
+        #cad_imports_panel_root .property_item.readonly label,
+        #detector_feature_generators_panel_root .property_item.readonly label {
             font-weight: normal;
             color: #555;
         }
 
-        #cad_imports_panel_root .property_item.readonly span {
+        #cad_imports_panel_root .property_item.readonly span,
+        #detector_feature_generators_panel_root .property_item.readonly span {
             color: #000;
             font-family: monospace;
         }
 
-        #cad_imports_panel_root .cad-import-actions {
+        #cad_imports_panel_root .cad-import-actions,
+        #detector_feature_generators_panel_root .detector-feature-actions,
+        #detector_feature_generators_panel_root .detector-feature-generators-toolbar {
             display: flex;
             gap: 8px;
             flex-wrap: wrap;
             margin-top: 10px;
         }
 
-        #cad_imports_panel_root .cad-import-actions button {
+        #cad_imports_panel_root .cad-import-actions button,
+        #detector_feature_generators_panel_root .detector-feature-actions button,
+        #detector_feature_generators_panel_root .detector-feature-generators-toolbar button {
             font-size: 11px;
             padding: 3px 8px;
         }
 
-        #cad_imports_panel_root .cad-import-note {
+        #cad_imports_panel_root .cad-import-note,
+        #detector_feature_generators_panel_root .detector-feature-note,
+        #detectorFeatureGeneratorTargetSummary,
+        #detectorFeatureGeneratorTargetLockNotice {
             margin: 8px 0 0 0;
             font-size: 11px;
             color: #64748b;
@@ -3136,6 +3157,15 @@
                             <div id="cad_imports_panel_root"></div>
                         </div>
                     </div>
+                    <div class="accordion-item">
+                        <div class="accordion-header">
+                            <span class="accordion-toggle">[+]</span>
+                            <span>&nbsp;Detector Generators</span>
+                        </div>
+                        <div class="accordion-content">
+                            <div id="detector_feature_generators_panel_root"></div>
+                        </div>
+                    </div>
                     <!-- Electromagnetic fields accordion -->
                     <div class="accordion-item">
                         <div class="accordion-header">
@@ -4619,6 +4649,63 @@
             <div class="modal-footer">
                 <button id="ringArrayCancel">Cancel</button>
                 <button id="ringArrayConfirm" class="confirm-button">Create Ring</button>
+            </div>
+        </div>
+    </div>
+    <div id="detectorFeatureGeneratorModal" class="editor-modal">
+        <div class="modal-content" style="width: 560px; height: auto;">
+            <div class="modal-header">
+                <h4 id="detectorFeatureGeneratorTitle">New Patterned-Hole Generator</h4>
+            </div>
+            <div class="modal-body" style="flex-direction: column;">
+                <div class="property_item">
+                    <label for="detectorFeatureGeneratorName">Name:</label>
+                    <input type="text" id="detectorFeatureGeneratorName" placeholder="e.g., collimator_block_holes">
+                </div>
+                <div class="property_item">
+                    <label for="detectorFeatureGeneratorTargetSolid">Target Solid:</label>
+                    <select id="detectorFeatureGeneratorTargetSolid"></select>
+                </div>
+                <p id="detectorFeatureGeneratorTargetSummary">Matching logical volumes will be updated on generation.</p>
+                <p id="detectorFeatureGeneratorTargetLockNotice" hidden>The target solid is fixed after creation in this first UI slice.</p>
+                <hr>
+                <div class="property_item">
+                    <label for="detectorFeatureGeneratorCountX">Count X:</label>
+                    <input type="number" id="detectorFeatureGeneratorCountX" min="1" step="1" value="3">
+                </div>
+                <div class="property_item">
+                    <label for="detectorFeatureGeneratorCountY">Count Y:</label>
+                    <input type="number" id="detectorFeatureGeneratorCountY" min="1" step="1" value="3">
+                </div>
+                <div class="property_item">
+                    <label for="detectorFeatureGeneratorPitchX">Pitch X (mm):</label>
+                    <input type="number" id="detectorFeatureGeneratorPitchX" min="0.001" step="any" value="5">
+                </div>
+                <div class="property_item">
+                    <label for="detectorFeatureGeneratorPitchY">Pitch Y (mm):</label>
+                    <input type="number" id="detectorFeatureGeneratorPitchY" min="0.001" step="any" value="5">
+                </div>
+                <div class="property_item">
+                    <label for="detectorFeatureGeneratorOffsetX">Offset X (mm):</label>
+                    <input type="number" id="detectorFeatureGeneratorOffsetX" step="any" value="0">
+                </div>
+                <div class="property_item">
+                    <label for="detectorFeatureGeneratorOffsetY">Offset Y (mm):</label>
+                    <input type="number" id="detectorFeatureGeneratorOffsetY" step="any" value="0">
+                </div>
+                <div class="property_item">
+                    <label for="detectorFeatureGeneratorHoleDiameter">Hole Diameter (mm):</label>
+                    <input type="number" id="detectorFeatureGeneratorHoleDiameter" min="0.001" step="any" value="2">
+                </div>
+                <div class="property_item">
+                    <label for="detectorFeatureGeneratorHoleDepth">Hole Depth (mm):</label>
+                    <input type="number" id="detectorFeatureGeneratorHoleDepth" min="0.001" step="any" value="5">
+                </div>
+                <p style="margin: 8px 0 0 0; font-size: 11px; color: #64748b;">Rectangular cylindrical hole patterns currently use the target center anchor and drill along +Z into box solids.</p>
+            </div>
+            <div class="modal-footer">
+                <button id="detectorFeatureGeneratorCancel">Cancel</button>
+                <button id="detectorFeatureGeneratorConfirm" class="confirm-button">Create &amp; Generate</button>
             </div>
         </div>
     </div>

@@ -1345,6 +1345,24 @@ export async function createDetectorRing(params) {
     return handleResponse(response);
 }
 
+export async function upsertDetectorFeatureGenerator(payload) {
+    const response = await fetch(`${API_BASE_URL}/api/detector_feature_generators/upsert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    return handleResponse(response);
+}
+
+export async function realizeDetectorFeatureGenerator(generatorId) {
+    const response = await fetch(`${API_BASE_URL}/api/detector_feature_generators/realize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ generator_id: generatorId }),
+    });
+    return handleResponse(response);
+}
+
 export async function addParticleSource(name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id) {
     const response = await fetch(`${API_BASE_URL}/api/add_source`, {
         method: 'POST',

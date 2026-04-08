@@ -13,6 +13,7 @@ import * as ElementEditor from './elementEditor.js';
 import * as MaterialEditor from './materialEditor.js';
 import * as OpticalSurfaceEditor from './opticalSurfaceEditor.js';
 import * as PVEditor from './physicalVolumeEditor.js';
+import * as DetectorFeatureGeneratorEditor from './detectorFeatureGeneratorEditor.js';
 import * as RingArrayEditor from './ringArrayEditor.js';
 import * as SceneManager from './sceneManager.js';
 import * as SkinSurfaceEditor from './skinSurfaceEditor.js';
@@ -252,6 +253,9 @@ async function initializeApp() {
         onEditGpsClicked: handleEditGps,
         // Add ring array
         onAddRingArrayClicked: handleAddRingArray,
+        onAddDetectorFeatureGeneratorClicked: handleAddDetectorFeatureGenerator,
+        onEditDetectorFeatureGeneratorClicked: handleEditDetectorFeatureGenerator,
+        onRealizeDetectorFeatureGeneratorClicked: handleRealizeDetectorFeatureGenerator,
 
         onPVVisibilityToggle: handlePVVisibilityToggle,
         onDeleteSelectedClicked: handleDeleteSelected,
@@ -375,6 +379,10 @@ async function initializeApp() {
     // Ring array editor
     RingArrayEditor.initRingArrayEditor({
         onConfirm: handleCreateRingArray
+    });
+
+    DetectorFeatureGeneratorEditor.initDetectorFeatureGeneratorEditor({
+        onConfirm: handleSaveDetectorFeatureGenerator
     });
 
     // Initialize solid editor
@@ -2201,6 +2209,52 @@ async function handleCreateRingArray(params) {
         syncUIWithState(result); // This will update everything
     } catch (error) {
         UIManager.showError("Failed to create ring array: " + error.message);
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+function handleAddDetectorFeatureGenerator() {
+    DetectorFeatureGeneratorEditor.show(
+        null,
+        AppState.currentProjectState,
+        AppState.selectedHierarchyItems,
+    );
+}
+
+function handleEditDetectorFeatureGenerator(generatorEntry) {
+    DetectorFeatureGeneratorEditor.show(
+        generatorEntry,
+        AppState.currentProjectState,
+        AppState.selectedHierarchyItems,
+    );
+}
+
+async function handleSaveDetectorFeatureGenerator(payload) {
+    UIManager.showLoading('Saving patterned-hole generator...');
+    try {
+        const result = await APIService.upsertDetectorFeatureGenerator(payload);
+        syncUIWithState(result);
+    } catch (error) {
+        UIManager.showError('Failed to save patterned-hole generator: ' + (error.message || error));
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
+async function handleRealizeDetectorFeatureGenerator(generatorEntry) {
+    const generatorId = String(generatorEntry?.generator_id || '').trim();
+    if (!generatorId) {
+        UIManager.showError('Could not determine which detector feature generator to regenerate.');
+        return;
+    }
+
+    UIManager.showLoading('Regenerating patterned-hole geometry...');
+    try {
+        const result = await APIService.realizeDetectorFeatureGenerator(generatorId);
+        syncUIWithState(result);
+    } catch (error) {
+        UIManager.showError('Failed to regenerate patterned-hole geometry: ' + (error.message || error));
     } finally {
         UIManager.hideLoading();
     }

@@ -15229,6 +15229,55 @@ def import_step_with_options_route():
         traceback.print_exc()
         return jsonify({"error": "An unexpected error occurred on the server while importing the STEP file."}), 500
 
+
+@app.route('/api/detector_feature_generators/upsert', methods=['POST'])
+def upsert_detector_feature_generator_route():
+    pm = get_project_manager_for_session()
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "Detector feature generator payload must be an object."}), 400
+
+    realize_now = bool(data.pop('realize_now', True))
+    entry, realization_result, error_msg = pm.upsert_detector_feature_generator(
+        data,
+        realize_now=realize_now,
+    )
+    if error_msg:
+        return jsonify({"success": False, "error": error_msg}), 400
+
+    action_verb = "saved and generated" if realize_now else "saved"
+    generator_name = entry.get('name') or entry.get('generator_id') or 'detector feature generator'
+    return create_success_response(
+        pm,
+        f"Detector feature generator '{generator_name}' {action_verb}.",
+        extra_payload={
+            "detector_feature_generator": entry,
+            "detector_feature_realization": realization_result,
+        },
+    )
+
+
+@app.route('/api/detector_feature_generators/realize', methods=['POST'])
+def realize_detector_feature_generator_route():
+    pm = get_project_manager_for_session()
+
+    data = request.get_json(silent=True) or {}
+    generator_id = str(data.get('generator_id') or '').strip()
+    if not generator_id:
+        return jsonify({"success": False, "error": "generator_id is required."}), 400
+
+    result, error_msg = pm.realize_detector_feature_generator(generator_id)
+    if error_msg:
+        status_code = 404 if "was not found" in error_msg else 400
+        return jsonify({"success": False, "error": error_msg}), status_code
+
+    return create_success_response(
+        pm,
+        f"Detector feature generator '{generator_id}' regenerated.",
+        extra_payload={"detector_feature_realization": result},
+    )
+
 @app.route('/add_assembly', methods=['POST'])
 def add_assembly_route():
     pm = get_project_manager_for_session()

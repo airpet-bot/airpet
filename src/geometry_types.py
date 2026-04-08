@@ -413,6 +413,11 @@ def _normalize_detector_feature_generators(raw_generators):
 
     return normalized_generators
 
+
+def normalize_detector_feature_generator_entry(raw_entry):
+    """Public wrapper for validating one detector-feature-generator contract."""
+    return _normalize_detector_feature_generator_entry(raw_entry)
+
 class Define:
     """Represents a defined entity like position, rotation, or constant."""
     def __init__(self, name, type, raw_expression, unit=None, category=None):
