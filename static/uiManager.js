@@ -79,6 +79,21 @@ let structureTreeRoot, assembliesListRoot, lvolumesListRoot, definesListRoot, ma
     borderSurfacesListRoot;
 let inspectorContentDiv, environmentPanelRoot, cadImportsPanelRoot;
 
+function setCadImportsAccordionVisibility(hasCadImports) {
+    if (!cadImportsPanelRoot) return;
+    const accordionItem = cadImportsPanelRoot.closest('.accordion-item');
+    if (!accordionItem) return;
+
+    accordionItem.hidden = !hasCadImports;
+
+    if (!hasCadImports) {
+        const content = accordionItem.querySelector('.accordion-content');
+        const toggle = accordionItem.querySelector('.accordion-toggle');
+        if (content) content.classList.remove('active');
+        if (toggle) toggle.textContent = '[+]';
+    }
+}
+
 // Project, history and undo/redo
 let projectNameDisplay, historyButton, historyPanel, closeHistoryPanel, historyListContainer,
     historySelectModeButton, historySelectionBar, historySelectionSummary,
@@ -2303,23 +2318,13 @@ function renderCadImportsPanel(projectState) {
 
     cadImportsPanelRoot.innerHTML = '';
 
-    if (!projectState) {
-        const empty = document.createElement('p');
-        empty.className = 'cad-imports-empty';
-        empty.textContent = 'No project loaded.';
-        cadImportsPanelRoot.appendChild(empty);
-        return;
-    }
-
-    const cadImports = Array.isArray(projectState.cad_imports)
+    const cadImports = Array.isArray(projectState?.cad_imports)
         ? projectState.cad_imports.filter((entry) => entry && typeof entry === 'object')
         : [];
 
+    setCadImportsAccordionVisibility(cadImports.length > 0);
+
     if (cadImports.length === 0) {
-        const empty = document.createElement('p');
-        empty.className = 'cad-imports-empty';
-        empty.textContent = 'No imported STEP subsystems recorded yet.';
-        cadImportsPanelRoot.appendChild(empty);
         return;
     }
 

@@ -1,6 +1,6 @@
 # AIRPET Post-Workflow-Refinement Roadmap
 
-Last updated: 2026-04-07
+Last updated: 2026-04-08
 
 ## Purpose
 
@@ -19,7 +19,7 @@ Do not activate the next roadmap phase until one of the following is true:
 - `docs/WORKFLOW_REFINEMENT_TRACKER.md` has no `NEXT` or `PENDING` items left
 - workflow refinement is manually paused and the next phase is explicitly promoted
 
-As of 2026-04-07, workflow refinement and physics-environment refinement are complete, and R2 is now `READY`.
+As of 2026-04-08, workflow refinement, physics-environment refinement, and CAD interoperability refinement are complete, and R3 is now `ACTIVE`.
 
 ## Product Direction
 
@@ -50,45 +50,44 @@ Statuses used here:
 | Phase | Status | Why It Comes Next | Exit Signal |
 | --- | --- | --- | --- |
 | R1: Physics Environment Refinement | DONE | AIRPET already handles geometry and workflows well enough that missing field/environment capabilities were a bigger blocker for real Geant4 use | A user can define, save, inspect, and run field-aware simulations from AIRPET without hand-editing Geant4 code or macros |
-| R2: CAD Interoperability Refinement | READY | Complex mechanical shapes should usually come from CAD; AIRPET should be best-in-class at import, reimport, and simulation-oriented augmentation | Imported assemblies can be updated, grouped, annotated, and instrumented reliably inside AIRPET |
-| R3: Detector Feature Generators | PLANNED | Many detector users need patterned holes, stacks, arrays, channels, and shields more than generic CAD sketching | Common detector-specific patterned and repeated geometry features can be created directly in AIRPET |
+| R2: CAD Interoperability Refinement | DONE | Complex mechanical shapes should usually come from CAD; AIRPET should be best-in-class at import, reimport, and simulation-oriented augmentation | Imported assemblies can be updated, grouped, annotated, and instrumented reliably inside AIRPET |
+| R3: Detector Feature Generators | ACTIVE | Many detector users need patterned holes, stacks, arrays, channels, and shields more than generic CAD sketching | Common detector-specific patterned and repeated geometry features can be created directly in AIRPET |
 | R4: Advanced Scoring And Run Controls | PLANNED | Once environment and geometry authoring are stronger, users need richer outputs and expert run controls | AIRPET exposes useful scoring/tally/run-control features for broader study classes with strong regression coverage |
 | R5: Packaging, Reproducibility, And Templates | PLANNED | As AIRPET becomes more capable, project portability and guided starting points matter more | Users can start from stable templates and carry reproducible run metadata and artifacts across machines |
 
 ## Current Next Phase
 
-### R2: CAD Interoperability Refinement
+### R3: Detector Feature Generators
 
-Status: READY
+Status: ACTIVE
 
 Objective:
-Make imported CAD geometry substantially easier to reuse, update, annotate, and simulate inside AIRPET, starting with safe STEP reimport and explicit imported-CAD provenance.
+Add detector-oriented geometry generators that cover common real use cases without turning AIRPET into a full sketch-based CAD system.
 
 Why now:
 
-- AIRPET already has real STEP import and smart-import infrastructure
-- complex mechanical parts are often authored in CAD and then revised repeatedly
-- import without safe update and annotation preservation leaves too much manual rework
+- AIRPET now has a stronger geometry workflow, stronger field/environment controls, and a materially more trustworthy CAD import/reimport path
+- many remaining real-world geometry gaps are repetitive detector features rather than full mechanical parts
+- users often need patterned holes, layered stacks, tiled sensors, and repeated channels faster than they need generic CAD sketch tooling
 
 Current focus:
 
-- define saved-project CAD provenance and stable import identity so later reimport flows can match existing imported subsystems safely
+- define the first detector-feature-generator contract and land a practical hole-pattern generator MVP that builds on existing boolean-solid and array-oriented infrastructure
 
 Phase docs:
 
-- `docs/CAD_INTEROPERABILITY_REFINEMENT_CONTEXT.md`
-- `docs/CAD_INTEROPERABILITY_REFINEMENT_TRACKER.md`
-- `docs/SMART_IMPORT_FALLBACK_POLICY.md`
+- `docs/DETECTOR_FEATURE_GENERATORS_CONTEXT.md`
+- `docs/DETECTOR_FEATURE_GENERATORS_TRACKER.md`
 
 Entry gate:
 
-- physics-environment refinement is complete, or this phase has been explicitly promoted
+- CAD interoperability refinement is complete, or this phase has been explicitly promoted
 
 Exit criteria:
 
-- at least one supported STEP reimport flow can update an existing imported subsystem safely
-- key AIRPET-side annotations survive supported reimports
-- imported CAD provenance is visible enough for users and automation to inspect
+- at least one patterned detector-feature workflow is available without hand-building the entire geometry as ad hoc boolean solids
+- generated detector features remain explicit enough in saved state and UI that users can revise them deterministically
+- at least one additional reusable detector generator beyond hole patterns is available or queued at a clear MVP stopping point
 - the backlog has either been completed or deliberately trimmed to a stable MVP stopping point
 
 ## Planned Successor Phases
