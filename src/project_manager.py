@@ -994,6 +994,353 @@ class ProjectManager:
 
         return self._find_object_name_by_id(self.current_geometry_state.logical_volumes, logical_volume_ref)
 
+    def _resolve_detector_feature_object_name(self, object_ref, objects_by_name):
+        """Resolve a detector-feature object ref that may contain an id and/or name."""
+        if not isinstance(object_ref, dict):
+            return None
+
+        ref_id = object_ref.get('id')
+        if isinstance(ref_id, str):
+            resolved_name = self._find_object_name_by_id(objects_by_name, ref_id.strip())
+            if resolved_name:
+                return resolved_name
+
+        ref_name = object_ref.get('name')
+        if isinstance(ref_name, str):
+            ref_name = ref_name.strip()
+            if ref_name and ref_name in objects_by_name:
+                return ref_name
+
+        return None
+
+    @staticmethod
+    def _get_detector_feature_object_name_hint(object_ref):
+        if not isinstance(object_ref, dict):
+            return None
+
+        ref_name = object_ref.get('name')
+        if isinstance(ref_name, str):
+            ref_name = ref_name.strip()
+            if ref_name:
+                return ref_name
+
+        return None
+
+    @staticmethod
+    def _build_detector_feature_object_ref(obj):
+        if obj is None:
+            return None
+
+        object_ref = {}
+        object_id = getattr(obj, 'id', None)
+        object_name = getattr(obj, 'name', None)
+
+        if isinstance(object_id, str) and object_id.strip():
+            object_ref['id'] = object_id
+        if isinstance(object_name, str) and object_name.strip():
+            object_ref['name'] = object_name
+
+        return object_ref or None
+
+    def _find_detector_feature_generator(self, generator_id):
+        if not self.current_geometry_state or not isinstance(generator_id, str) or not generator_id.strip():
+            return None, None
+
+        for index, generator_entry in enumerate(self.current_geometry_state.detector_feature_generators):
+            if isinstance(generator_entry, dict) and generator_entry.get('generator_id') == generator_id.strip():
+                return index, generator_entry
+
+        return None, None
+
+    def _get_detector_feature_target_logical_volume_names(
+        self,
+        generator_entry,
+        *,
+        target_solid_name,
+        prior_result_solid_name=None,
+    ):
+        state = self.current_geometry_state
+        target_section = generator_entry.get('target', {}) or {}
+        requested_refs = target_section.get('logical_volume_refs', []) or []
+        allowed_solid_refs = {target_solid_name}
+        if isinstance(prior_result_solid_name, str) and prior_result_solid_name.strip():
+            allowed_solid_refs.add(prior_result_solid_name.strip())
+
+        target_lv_names = []
+        seen_lv_names = set()
+
+        if requested_refs:
+            for object_ref in requested_refs:
+                lv_name = self._resolve_detector_feature_object_name(object_ref, state.logical_volumes)
+                if not lv_name:
+                    requested_name = (
+                        self._get_detector_feature_object_name_hint(object_ref)
+                        or object_ref.get('id')
+                        or '<unknown>'
+                    )
+                    return None, f"Target logical volume '{requested_name}' was not found."
+
+                if lv_name in seen_lv_names:
+                    continue
+
+                lv = state.logical_volumes.get(lv_name)
+                if lv is None:
+                    return None, f"Target logical volume '{lv_name}' was not found."
+
+                if lv.solid_ref not in allowed_solid_refs:
+                    allowed_solid_refs_str = ", ".join(sorted(allowed_solid_refs))
+                    return None, (
+                        f"Target logical volume '{lv_name}' must reference '{allowed_solid_refs_str}' "
+                        "before realization."
+                    )
+
+                seen_lv_names.add(lv_name)
+                target_lv_names.append(lv_name)
+
+            return target_lv_names, None
+
+        for lv_name, lv in state.logical_volumes.items():
+            if lv.solid_ref in allowed_solid_refs and lv_name not in seen_lv_names:
+                seen_lv_names.add(lv_name)
+                target_lv_names.append(lv_name)
+
+        return target_lv_names, None
+
+    def _realize_rectangular_drilled_hole_array(self, generator_entry):
+        state = self.current_geometry_state
+        generator_id = generator_entry.get('generator_id')
+        generator_name = generator_entry.get('name') or generator_id or 'detector_feature_generator'
+        target_section = generator_entry.get('target', {}) or {}
+        target_solid_name = self._resolve_detector_feature_object_name(
+            target_section.get('solid_ref'),
+            state.solids,
+        )
+        if not target_solid_name:
+            requested_name = (
+                self._get_detector_feature_object_name_hint(target_section.get('solid_ref'))
+                or (target_section.get('solid_ref') or {}).get('id')
+                or '<unknown>'
+            )
+            return None, f"Target solid '{requested_name}' was not found."
+
+        target_solid = state.solids.get(target_solid_name)
+        if target_solid is None:
+            return None, f"Target solid '{target_solid_name}' was not found."
+        if target_solid.type != 'box':
+            return None, (
+                "Rectangular drilled-hole generators currently support only box target solids."
+            )
+
+        pattern = generator_entry.get('pattern', {}) or {}
+        hole = generator_entry.get('hole', {}) or {}
+
+        if pattern.get('anchor') != 'target_center':
+            return None, "Rectangular drilled-hole generators currently require anchor 'target_center'."
+        if hole.get('shape') != 'cylindrical':
+            return None, "Rectangular drilled-hole generators currently require cylindrical holes."
+        if hole.get('axis') != 'z':
+            return None, "Rectangular drilled-hole generators currently support only z-axis drilling."
+        if hole.get('drill_from') != 'positive_z_face':
+            return None, "Rectangular drilled-hole generators currently drill only from the positive-z face."
+
+        target_dims = target_solid._evaluated_parameters or {}
+        target_depth = float(target_dims.get('z', float('nan')))
+        if not math.isfinite(target_depth) or target_depth <= 0.0:
+            return None, f"Target solid '{target_solid_name}' has invalid evaluated depth."
+
+        count_x = int(pattern.get('count_x') or 0)
+        count_y = int(pattern.get('count_y') or 0)
+        pitch_x = float((pattern.get('pitch_mm') or {}).get('x') or 0.0)
+        pitch_y = float((pattern.get('pitch_mm') or {}).get('y') or 0.0)
+        origin_offset = pattern.get('origin_offset_mm') or {}
+        offset_x = float(origin_offset.get('x') or 0.0)
+        offset_y = float(origin_offset.get('y') or 0.0)
+        hole_diameter = float(hole.get('diameter_mm') or 0.0)
+        hole_depth = float(hole.get('depth_mm') or 0.0)
+        if count_x <= 0 or count_y <= 0:
+            return None, "Rectangular drilled-hole generators require positive x/y counts."
+        if pitch_x <= 0.0 or pitch_y <= 0.0:
+            return None, "Rectangular drilled-hole generators require positive x/y pitch values."
+        if hole_diameter <= 0.0 or hole_depth <= 0.0:
+            return None, "Rectangular drilled-hole generators require positive hole diameter and depth."
+
+        realization = generator_entry.get('realization', {}) or {}
+        prior_result_name = (
+            self._resolve_detector_feature_object_name(realization.get('result_solid_ref'), state.solids)
+            or self._get_detector_feature_object_name_hint(realization.get('result_solid_ref'))
+        )
+        prior_generated_solid_refs = (realization.get('generated_object_refs') or {}).get('solid_refs', []) or []
+
+        existing_result_name = None
+        if prior_result_name and prior_result_name in state.solids:
+            prior_result_solid = state.solids[prior_result_name]
+            if prior_result_solid.type == 'boolean':
+                existing_result_name = prior_result_name
+
+        existing_cutter_name = None
+        for object_ref in prior_generated_solid_refs:
+            candidate_name = (
+                self._resolve_detector_feature_object_name(object_ref, state.solids)
+                or self._get_detector_feature_object_name_hint(object_ref)
+            )
+            if not candidate_name or candidate_name == prior_result_name or candidate_name not in state.solids:
+                continue
+            candidate_solid = state.solids[candidate_name]
+            if candidate_solid.type == 'tube':
+                existing_cutter_name = candidate_name
+                break
+
+        cutter_name = existing_cutter_name or self._generate_unique_name(
+            f"{generator_name}__cutter",
+            state.solids,
+        )
+        result_name = existing_result_name or self._generate_unique_name(
+            f"{generator_name}__result",
+            state.solids,
+        )
+
+        def _fmt(value):
+            return f"{float(value):.12g}"
+
+        cutter_params = {
+            'rmin': '0',
+            'rmax': _fmt(hole_diameter / 2.0),
+            'z': _fmt(hole_depth),
+            'startphi': '0',
+            'deltaphi': '360*deg',
+        }
+
+        cutter_solid = state.solids.get(cutter_name)
+        if cutter_solid is None:
+            cutter_solid = Solid(cutter_name, 'tube', cutter_params)
+            state.add_solid(cutter_solid)
+        else:
+            cutter_solid.raw_parameters = cutter_params
+
+        z_center = (target_depth / 2.0) - (hole_depth / 2.0)
+        x_origin = -((count_x - 1) * pitch_x) / 2.0 + offset_x
+        y_origin = -((count_y - 1) * pitch_y) / 2.0 + offset_y
+
+        recipe = [{'op': 'base', 'solid_ref': target_solid_name}]
+        for y_index in range(count_y):
+            y_position = y_origin + y_index * pitch_y
+            for x_index in range(count_x):
+                x_position = x_origin + x_index * pitch_x
+                recipe.append({
+                    'op': 'subtraction',
+                    'solid_ref': cutter_name,
+                    'transform': {
+                        'position': {
+                            'x': _fmt(x_position),
+                            'y': _fmt(y_position),
+                            'z': _fmt(z_center),
+                        },
+                    },
+                })
+
+        result_solid = state.solids.get(result_name)
+        if result_solid is None:
+            result_solid = Solid(result_name, 'boolean', {'recipe': recipe})
+            state.add_solid(result_solid)
+        else:
+            result_solid.raw_parameters = {'recipe': recipe}
+
+        target_lv_names, error_msg = self._get_detector_feature_target_logical_volume_names(
+            generator_entry,
+            target_solid_name=target_solid_name,
+            prior_result_solid_name=prior_result_name,
+        )
+        if error_msg:
+            return None, error_msg
+
+        touched_logical_volumes = []
+        touched_placement_refs = []
+        seen_placement_ids = set()
+        for lv_name in target_lv_names:
+            lv = state.logical_volumes.get(lv_name)
+            if lv is None:
+                continue
+            lv.solid_ref = result_name
+            logical_volume_ref = self._build_detector_feature_object_ref(lv)
+            if logical_volume_ref:
+                touched_logical_volumes.append(logical_volume_ref)
+
+            for pv in self._find_pvs_by_lv_name(lv_name):
+                pv_ref = self._build_detector_feature_object_ref(pv)
+                if not pv_ref:
+                    continue
+                pv_ref_id = pv_ref.get('id') or pv_ref.get('name')
+                if pv_ref_id in seen_placement_ids:
+                    continue
+                seen_placement_ids.add(pv_ref_id)
+                touched_placement_refs.append(pv_ref)
+
+        generator_entry['realization'] = {
+            'mode': 'boolean_subtraction',
+            'status': 'generated',
+            'result_solid_ref': self._build_detector_feature_object_ref(result_solid),
+            'generated_object_refs': {
+                'solid_refs': [
+                    self._build_detector_feature_object_ref(result_solid),
+                    self._build_detector_feature_object_ref(cutter_solid),
+                ],
+                'logical_volume_refs': touched_logical_volumes,
+                'placement_refs': touched_placement_refs,
+            },
+        }
+
+        return {
+            'generator_id': generator_id,
+            'generator_name': generator_name,
+            'generated_solid_names': [result_name, cutter_name],
+            'result_solid_name': result_name,
+            'cutter_solid_name': cutter_name,
+            'updated_logical_volume_names': target_lv_names,
+            'hole_count': count_x * count_y,
+        }, None
+
+    def realize_detector_feature_generator(self, generator_id):
+        """Materialize a saved detector-feature-generator spec into concrete geometry."""
+        if not self.current_geometry_state:
+            return None, "No project loaded."
+
+        generator_index, generator_entry = self._find_detector_feature_generator(generator_id)
+        if generator_entry is None:
+            return None, f"Detector feature generator '{generator_id}' was not found."
+        if not bool(generator_entry.get('enabled', True)):
+            return None, f"Detector feature generator '{generator_id}' is disabled."
+
+        success, error_msg = self.recalculate_geometry_state()
+        if not success:
+            return None, error_msg
+
+        self.begin_transaction()
+        try:
+            generator_type = generator_entry.get('generator_type')
+            if generator_type == 'rectangular_drilled_hole_array':
+                result, error_msg = self._realize_rectangular_drilled_hole_array(generator_entry)
+            else:
+                result = None
+                error_msg = (
+                    f"Detector feature generator type '{generator_type}' is not supported for realization."
+                )
+
+            if error_msg:
+                raise ValueError(error_msg)
+
+            self.changed_object_ids['solids'].update(result.get('generated_solid_names', []))
+
+            success, error_msg = self.recalculate_geometry_state()
+            if not success:
+                raise ValueError(error_msg)
+        except Exception as exc:
+            self.abort_transaction()
+            return None, str(exc)
+
+        description = generator_entry.get('name') or generator_entry.get('generator_id') or f"generator #{generator_index}"
+        self.end_transaction(f"Realized detector feature generator '{description}'")
+        return result, None
+
     def _snapshot_step_import_annotations(self, cad_import_record):
         """Captures user-facing annotations that should survive a supported reimport."""
         if not self.current_geometry_state or not isinstance(cad_import_record, dict):

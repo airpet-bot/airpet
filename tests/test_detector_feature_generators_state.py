@@ -2,6 +2,8 @@ import json
 import sys
 import types
 
+import pytest
+
 from src.expression_evaluator import ExpressionEvaluator
 from src.geometry_types import GeometryState
 
@@ -69,6 +71,18 @@ def _install_occ_stubs():
 _install_occ_stubs()
 
 from src.project_manager import ProjectManager
+
+
+def _make_pm():
+    pm = ProjectManager(ExpressionEvaluator())
+    pm.create_empty_project()
+    return pm
+
+
+def _normalize_detector_feature_generators(raw_generators):
+    return GeometryState.from_dict(
+        {"detector_feature_generators": raw_generators}
+    ).detector_feature_generators
 
 
 def test_detector_feature_generator_contract_defaults_and_invalid_entries():
@@ -273,3 +287,213 @@ def test_detector_feature_generator_contract_roundtrips_through_project_manager(
     pm_round_tripped = ProjectManager(ExpressionEvaluator())
     pm_round_tripped.load_project_from_json_string(json_string)
     assert pm_round_tripped.current_geometry_state.detector_feature_generators == [expected_payload]
+
+
+def test_rectangular_drilled_hole_generator_realization_creates_boolean_geometry_and_updates_targets():
+    pm = _make_pm()
+
+    solid_dict, error_msg = pm.add_solid(
+        "collimator_block",
+        "box",
+        {"x": "20", "y": "12", "z": "10"},
+    )
+    assert error_msg is None
+    assert solid_dict["name"] == "collimator_block"
+
+    lv_a, error_msg = pm.add_logical_volume("collimator_lv", "collimator_block", "G4_Galactic")
+    assert error_msg is None
+    lv_b, error_msg = pm.add_logical_volume("collimator_lv_copy", "collimator_block", "G4_Galactic")
+    assert error_msg is None
+
+    pv_a, error_msg = pm.add_physical_volume(
+        "World",
+        "collimator_pv",
+        "collimator_lv",
+        {"x": "0", "y": "0", "z": "0"},
+        {"x": "0", "y": "0", "z": "0"},
+        {"x": "1", "y": "1", "z": "1"},
+    )
+    assert error_msg is None
+    pv_b, error_msg = pm.add_physical_volume(
+        "World",
+        "collimator_pv_copy",
+        "collimator_lv_copy",
+        {"x": "40", "y": "0", "z": "0"},
+        {"x": "0", "y": "0", "z": "0"},
+        {"x": "1", "y": "1", "z": "1"},
+    )
+    assert error_msg is None
+
+    pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
+        {
+            "generator_id": "dfg_rect_holes_runtime",
+            "name": "fixture_collimator_holes",
+            "generator_type": "rectangular_drilled_hole_array",
+            "target": {
+                "solid_ref": {
+                    "id": solid_dict["id"],
+                    "name": solid_dict["name"],
+                },
+            },
+            "pattern": {
+                "count_x": 2,
+                "count_y": 2,
+                "pitch_mm": {"x": 4, "y": 5},
+                "origin_offset_mm": {"x": 1, "y": -1},
+            },
+            "hole": {
+                "diameter_mm": 2,
+                "depth_mm": 6,
+            },
+        }
+    ])
+
+    result, error_msg = pm.realize_detector_feature_generator("dfg_rect_holes_runtime")
+    assert error_msg is None
+    assert result["hole_count"] == 4
+    assert result["updated_logical_volume_names"] == ["collimator_lv", "collimator_lv_copy"]
+
+    cutter_name = result["cutter_solid_name"]
+    result_name = result["result_solid_name"]
+    cutter_solid = pm.current_geometry_state.solids[cutter_name]
+    result_solid = pm.current_geometry_state.solids[result_name]
+
+    assert cutter_solid.type == "tube"
+    assert float(cutter_solid.raw_parameters["rmax"]) == pytest.approx(1.0)
+    assert float(cutter_solid.raw_parameters["z"]) == pytest.approx(6.0)
+
+    assert result_solid.type == "boolean"
+    recipe = result_solid.raw_parameters["recipe"]
+    assert recipe[0] == {"op": "base", "solid_ref": "collimator_block"}
+    assert len(recipe) == 5
+
+    positions = [
+        (
+            float(item["transform"]["position"]["x"]),
+            float(item["transform"]["position"]["y"]),
+            float(item["transform"]["position"]["z"]),
+        )
+        for item in recipe[1:]
+    ]
+    assert positions == pytest.approx(
+        [
+            (-1.0, -3.5, 2.0),
+            (3.0, -3.5, 2.0),
+            (-1.0, 1.5, 2.0),
+            (3.0, 1.5, 2.0),
+        ]
+    )
+
+    assert pm.current_geometry_state.logical_volumes["collimator_lv"].solid_ref == result_name
+    assert pm.current_geometry_state.logical_volumes["collimator_lv_copy"].solid_ref == result_name
+
+    entry = pm.current_geometry_state.detector_feature_generators[0]
+    assert entry["realization"]["status"] == "generated"
+    assert entry["realization"]["result_solid_ref"] == {
+        "id": result_solid.id,
+        "name": result_name,
+    }
+    assert entry["realization"]["generated_object_refs"]["solid_refs"] == [
+        {"id": result_solid.id, "name": result_name},
+        {"id": cutter_solid.id, "name": cutter_name},
+    ]
+    assert entry["realization"]["generated_object_refs"]["logical_volume_refs"] == [
+        {"id": lv_a["id"], "name": "collimator_lv"},
+        {"id": lv_b["id"], "name": "collimator_lv_copy"},
+    ]
+    assert entry["realization"]["generated_object_refs"]["placement_refs"] == [
+        {"id": pv_a["id"], "name": "collimator_pv"},
+        {"id": pv_b["id"], "name": "collimator_pv_copy"},
+    ]
+
+
+def test_rectangular_drilled_hole_generator_realization_reuses_generated_solids_on_revision():
+    pm = _make_pm()
+
+    solid_dict, error_msg = pm.add_solid(
+        "revision_block",
+        "box",
+        {"x": "30", "y": "20", "z": "10"},
+    )
+    assert error_msg is None
+
+    _, error_msg = pm.add_logical_volume("revision_lv", "revision_block", "G4_Galactic")
+    assert error_msg is None
+
+    pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
+        {
+            "generator_id": "dfg_rect_holes_refresh",
+            "name": "refresh_collimator_holes",
+            "generator_type": "rectangular_drilled_hole_array",
+            "target": {
+                "solid_ref": {
+                    "id": solid_dict["id"],
+                    "name": solid_dict["name"],
+                },
+            },
+            "pattern": {
+                "count_x": 1,
+                "count_y": 1,
+                "pitch_mm": {"x": 4, "y": 4},
+                "origin_offset_mm": {"x": 0, "y": 0},
+            },
+            "hole": {
+                "diameter_mm": 1.5,
+                "depth_mm": 4,
+            },
+        }
+    ])
+
+    first_result, error_msg = pm.realize_detector_feature_generator("dfg_rect_holes_refresh")
+    assert error_msg is None
+
+    first_result_name = first_result["result_solid_name"]
+    first_cutter_name = first_result["cutter_solid_name"]
+    first_entry = pm.current_geometry_state.detector_feature_generators[0]
+    first_solid_refs = {
+        item["name"]: item["id"]
+        for item in first_entry["realization"]["generated_object_refs"]["solid_refs"]
+    }
+
+    entry = pm.current_geometry_state.detector_feature_generators[0]
+    entry["pattern"]["count_x"] = 3
+    entry["pattern"]["pitch_mm"]["x"] = 5.0
+    entry["hole"]["depth_mm"] = 10.0
+
+    second_result, error_msg = pm.realize_detector_feature_generator("dfg_rect_holes_refresh")
+    assert error_msg is None
+    assert second_result["result_solid_name"] == first_result_name
+    assert second_result["cutter_solid_name"] == first_cutter_name
+    assert pm.current_geometry_state.logical_volumes["revision_lv"].solid_ref == first_result_name
+
+    second_entry = pm.current_geometry_state.detector_feature_generators[0]
+    second_solid_refs = {
+        item["name"]: item["id"]
+        for item in second_entry["realization"]["generated_object_refs"]["solid_refs"]
+    }
+    assert second_solid_refs == first_solid_refs
+
+    refreshed_result_solid = pm.current_geometry_state.solids[first_result_name]
+    refreshed_recipe = refreshed_result_solid.raw_parameters["recipe"]
+    assert len(refreshed_recipe) == 4
+    assert [
+        (
+            float(item["transform"]["position"]["x"]),
+            float(item["transform"]["position"]["y"]),
+            float(item["transform"]["position"]["z"]),
+        )
+        for item in refreshed_recipe[1:]
+    ] == pytest.approx(
+        [
+            (-5.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (5.0, 0.0, 0.0),
+        ]
+    )
+
+    generated_prefix_names = sorted(
+        name
+        for name in pm.current_geometry_state.solids
+        if name.startswith("refresh_collimator_holes__")
+    )
+    assert generated_prefix_names == [first_cutter_name, first_result_name]
