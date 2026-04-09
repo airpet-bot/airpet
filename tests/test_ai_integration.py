@@ -109,6 +109,29 @@ def test_environment_ai_schema_exposes_read_and_write_tools():
     assert "region_cuts_and_limits" in update_tool["description"]
 
 
+def test_detector_feature_generator_ai_schema_exposes_manage_and_inspect_tools():
+    tool_dict = {tool["name"]: tool for tool in AI_GEOMETRY_TOOLS}
+
+    manage_tool = tool_dict["manage_detector_feature_generator"]
+    manage_properties = manage_tool["parameters"]["properties"]
+    manage_required = manage_tool["parameters"]["required"]
+
+    assert manage_properties["generator_type"]["enum"] == ["rectangular_drilled_hole_array"]
+    assert "target" in manage_properties
+    assert "pattern" in manage_properties
+    assert "hole" in manage_properties
+    assert "realize_now" in manage_properties
+    assert "generator_type" in manage_required
+    assert "target" in manage_required
+    assert "pattern" in manage_required
+    assert "hole" in manage_required
+
+    details_tool = tool_dict["get_component_details"]
+    details_enum = details_tool["parameters"]["properties"]["component_type"]["enum"]
+    assert "detector_feature_generator" in details_enum
+    assert "detector feature generator" in details_tool["description"]
+
+
 def test_physics_template_schema_exposes_field_probe_slab():
     template_tool = next(
         tool for tool in AI_GEOMETRY_TOOLS

@@ -1052,6 +1052,26 @@ class ProjectManager:
 
         return None, None
 
+    def get_detector_feature_generator_details(self, generator_name_or_id):
+        if not self.current_geometry_state:
+            return None
+        if not isinstance(generator_name_or_id, str) or not generator_name_or_id.strip():
+            return None
+
+        lookup_value = generator_name_or_id.strip()
+        _, generator_entry = self._find_detector_feature_generator(lookup_value)
+        if generator_entry is not None:
+            return deepcopy(generator_entry)
+
+        for candidate_entry in self.current_geometry_state.detector_feature_generators:
+            if not isinstance(candidate_entry, dict):
+                continue
+            candidate_name = candidate_entry.get('name')
+            if isinstance(candidate_name, str) and candidate_name.strip() == lookup_value:
+                return deepcopy(candidate_entry)
+
+        return None
+
     def _get_detector_feature_target_logical_volume_names(
         self,
         generator_entry,
@@ -4061,7 +4081,8 @@ class ProjectManager:
     def get_object_details(self, object_type, object_name_or_id):
         """
         Get details for a specific object by its type and name/ID.
-        'object_type' can be 'define', 'material', 'solid', 'logical_volume', 'physical_volume', or 'environment'.
+        'object_type' can be 'define', 'material', 'solid', 'logical_volume', 'physical_volume',
+        'environment', or 'detector_feature_generator'.
         For 'physical_volume', object_name_or_id would be its unique ID.
         """
         if not self.current_geometry_state: return None
@@ -4091,6 +4112,8 @@ class ProjectManager:
             obj = state.border_surfaces.get(object_name_or_id)
         elif object_type == "environment":
             obj = state.environment
+        elif object_type == "detector_feature_generator":
+            obj = self.get_detector_feature_generator_details(object_name_or_id)
         elif object_type == "physical_volume":
             # Search through all logical volumes to find the PV
             all_lvs = list(state.logical_volumes.values())
@@ -4122,6 +4145,8 @@ class ProjectManager:
                     obj = s
                     break
 
+        if isinstance(obj, dict):
+            return deepcopy(obj)
         return obj.to_dict() if obj else None
 
     def _normalize_update_property_path_parts(self, property_path):

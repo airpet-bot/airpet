@@ -8258,7 +8258,11 @@ def get_object_details_route():
     if details:
         return jsonify(details)
     
-    error_key = "ID" if obj_type in ["physical_volume", "particle_source", "environment"] else "name"
+    error_key = (
+        "id or name"
+        if obj_type == "detector_feature_generator"
+        else "ID" if obj_type in ["physical_volume", "particle_source", "environment"] else "name"
+    )
     return jsonify({"error": f"{obj_type} with {error_key} '{obj_id}' not found"}), 404
 
 @app.route('/save_project_json', methods=['GET'])
@@ -9024,6 +9028,11 @@ AI_TOOL_ARG_ALIASES = {
     "create_boolean_solid": {
         "operations": "recipe",
         "ops": "recipe"
+    },
+    "manage_detector_feature_generator": {
+        "id": "generator_id",
+        "type": "generator_type",
+        "realize": "realize_now",
     },
     "manage_logical_volume": {
         "solid": "solid_ref",
@@ -9892,6 +9901,83 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
         rgb = names.get(str(color_str).lower(), (0.8, 0.8, 0.8))
         return {'color': {'r': rgb[0], 'g': rgb[1], 'b': rgb[2], 'a': opacity}}
 
+    def to_detector_feature_object_ref(raw_ref, objects_by_name=None):
+        if raw_ref is None:
+            return None
+
+        normalized_ref = None
+        if isinstance(raw_ref, str):
+            ref_name = raw_ref.strip()
+            if ref_name:
+                normalized_ref = {'name': ref_name}
+        elif isinstance(raw_ref, dict):
+            normalized_ref = {}
+            ref_id = raw_ref.get('id')
+            ref_name = raw_ref.get('name')
+            if ref_id is not None:
+                ref_id = str(ref_id).strip()
+                if ref_id:
+                    normalized_ref['id'] = ref_id
+            if ref_name is not None:
+                ref_name = str(ref_name).strip()
+                if ref_name:
+                    normalized_ref['name'] = ref_name
+            normalized_ref = normalized_ref or None
+        else:
+            return raw_ref
+
+        if not normalized_ref or not isinstance(objects_by_name, dict):
+            return normalized_ref
+
+        resolved_name = pm._resolve_detector_feature_object_name(normalized_ref, objects_by_name)
+        if not resolved_name:
+            return normalized_ref
+
+        resolved_obj = objects_by_name.get(resolved_name)
+        resolved_ref = pm._build_detector_feature_object_ref(resolved_obj)
+        return resolved_ref or normalized_ref
+
+    def normalize_detector_feature_generator_payload(raw_args):
+        normalized_args = dict(raw_args or {})
+        raw_target = normalized_args.get('target')
+
+        if isinstance(raw_target, str):
+            raw_target = {'solid_ref': raw_target}
+
+        if isinstance(raw_target, dict):
+            normalized_target = dict(raw_target)
+            raw_solid_ref = normalized_target.get('solid_ref')
+            if raw_solid_ref is None and normalized_target.get('solid') is not None:
+                raw_solid_ref = normalized_target.get('solid')
+
+            normalized_target['solid_ref'] = to_detector_feature_object_ref(
+                raw_solid_ref,
+                pm.current_geometry_state.solids,
+            )
+
+            raw_lv_refs = normalized_target.get('logical_volume_refs')
+            if raw_lv_refs is None:
+                raw_lv_refs = normalized_target.get('logical_volume_ref')
+            if raw_lv_refs is None:
+                raw_lv_refs = normalized_target.get('logical_volumes')
+            if raw_lv_refs is None:
+                raw_lv_refs = []
+            if not isinstance(raw_lv_refs, list):
+                raw_lv_refs = [raw_lv_refs]
+
+            normalized_lv_refs = []
+            for raw_lv_ref in raw_lv_refs:
+                normalized_lv_ref = to_detector_feature_object_ref(
+                    raw_lv_ref,
+                    pm.current_geometry_state.logical_volumes,
+                )
+                if normalized_lv_ref:
+                    normalized_lv_refs.append(normalized_lv_ref)
+            normalized_target['logical_volume_refs'] = normalized_lv_refs
+            normalized_args['target'] = normalized_target
+
+        return normalized_args
+
     def call_route_json(route_fn, route_args=None, payload=None, query_params=None):
         """Call an existing Flask route function with a synthetic JSON request context."""
         route_args = route_args or []
@@ -9941,6 +10027,9 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
     if normalize_error:
         return {"success": False, "error": normalize_error}
 
+    if tool_name == "manage_detector_feature_generator":
+        args = normalize_detector_feature_generator_payload(args)
+
     validation_error = _validate_tool_args(tool_name, args)
     if validation_error:
         return {"success": False, "error": validation_error}
@@ -9971,6 +10060,25 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     ),
                 }
             return {"success": False, "error": error}
+
+        elif tool_name == "manage_detector_feature_generator":
+            generator_payload = dict(args)
+            realize_now = bool(generator_payload.pop("realize_now", True))
+            entry, realization_result, error = pm.upsert_detector_feature_generator(
+                generator_payload,
+                realize_now=realize_now,
+            )
+            if error:
+                return {"success": False, "error": error}
+
+            description = entry.get("name") or entry.get("generator_id") or "detector feature generator"
+            action_verb = "saved and realized" if realize_now else "saved"
+            return {
+                "success": True,
+                "message": f"Detector feature generator '{description}' {action_verb}.",
+                "detector_feature_generator": entry,
+                "detector_feature_realization": realization_result,
+            }
 
         elif tool_name == "manage_define":
             name = args.get('name')

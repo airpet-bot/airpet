@@ -800,6 +800,85 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
     }
 
 
+def test_ai_tool_manage_detector_feature_generator_and_get_component_details(pm):
+    solid, error = pm.add_solid(
+        "ai_detector_block",
+        "box",
+        {"x": "24", "y": "18", "z": "12"},
+    )
+    assert error is None
+
+    logical_volume, error = pm.add_logical_volume(
+        "ai_detector_lv",
+        "ai_detector_block",
+        "G4_Galactic",
+    )
+    assert error is None
+
+    result = dispatch_ai_tool(pm, "manage_detector_feature_generator", {
+        "id": "dfg_ai_tool_fixture",
+        "type": "rectangular_drilled_hole_array",
+        "name": "ai_detector_holes",
+        "target": {
+            "solid_ref": "ai_detector_block",
+            "logical_volume_refs": ["ai_detector_lv"],
+        },
+        "pattern": {
+            "count_x": 3,
+            "count_y": 2,
+            "pitch_mm": {"x": 5.0, "y": 6.5},
+            "origin_offset_mm": {"x": 0.5, "y": -1.0},
+        },
+        "hole": {
+            "diameter_mm": 1.25,
+            "depth_mm": 8.0,
+        },
+        "realize": True,
+    })
+
+    assert result["success"], result
+    assert result["detector_feature_generator"]["generator_id"] == "dfg_ai_tool_fixture"
+    assert result["detector_feature_generator"]["target"] == {
+        "solid_ref": {
+            "id": solid["id"],
+            "name": solid["name"],
+        },
+        "logical_volume_refs": [
+            {
+                "id": logical_volume["id"],
+                "name": logical_volume["name"],
+            },
+        ],
+    }
+    assert result["detector_feature_realization"]["hole_count"] == 6
+    assert (
+        pm.current_geometry_state.logical_volumes["ai_detector_lv"].solid_ref
+        == result["detector_feature_realization"]["result_solid_name"]
+    )
+
+    details_by_id = dispatch_ai_tool(pm, "get_component_details", {
+        "component_type": "detector_feature_generator",
+        "name": "dfg_ai_tool_fixture",
+    })
+    assert details_by_id["success"], details_by_id
+    assert details_by_id["result"]["name"] == "ai_detector_holes"
+    assert details_by_id["result"]["realization"]["result_solid_ref"]["name"] == (
+        result["detector_feature_realization"]["result_solid_name"]
+    )
+
+    details_by_name = dispatch_ai_tool(pm, "get_component_details", {
+        "component_type": "detector_feature_generator",
+        "name": "ai_detector_holes",
+    })
+    assert details_by_name["success"], details_by_name
+    assert details_by_name["result"]["generator_id"] == "dfg_ai_tool_fixture"
+
+    summary = dispatch_ai_tool(pm, "get_project_summary", {})
+    assert summary["success"], summary
+    assert summary["result"]["counts"]["detector_feature_generators"] == 1
+    assert summary["result"]["names"]["detector_feature_generators"] == ["ai_detector_holes"]
+
+
 def test_ai_tool_create_primitive_solid(pm):
     res = dispatch_ai_tool(pm, "create_primitive_solid", {
         "name": "AI_Box",

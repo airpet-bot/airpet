@@ -3,9 +3,23 @@
 from typing import List, Dict, Any, Optional
 from .geometry_types import GeometryState
 
+
+def _list_detector_feature_generator_labels(state) -> List[str]:
+    labels = []
+    for entry in getattr(state, "detector_feature_generators", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("name") or entry.get("generator_id")
+        if isinstance(label, str):
+            label = label.strip()
+            if label:
+                labels.append(label)
+    return labels
+
 def get_project_summary(pm) -> Dict[str, Any]:
     """Returns a high-level summary of the current project structure."""
     state = pm.current_geometry_state
+    detector_feature_generator_labels = _list_detector_feature_generator_labels(state)
     return {
         "project_name": pm.project_name,
         "world_volume": state.world_volume_ref,
@@ -16,12 +30,14 @@ def get_project_summary(pm) -> Dict[str, Any]:
             "solids": len(state.solids),
             "logical_volumes": len(state.logical_volumes),
             "assemblies": len(state.assemblies),
-            "sources": len(state.sources)
+            "sources": len(state.sources),
+            "detector_feature_generators": len(getattr(state, "detector_feature_generators", []) or []),
         },
         "names": {
             "materials": list(state.materials.keys()),
             "solids": list(state.solids.keys()),
-            "logical_volumes": list(state.logical_volumes.keys())
+            "logical_volumes": list(state.logical_volumes.keys()),
+            "detector_feature_generators": detector_feature_generator_labels,
         }
     }
 
@@ -318,6 +334,127 @@ def _create_primitive_solid_tool() -> Dict[str, Any]:
     }
 
 
+def _detector_feature_object_ref_param(description: str) -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "description": (
+            f"{description} Prefer saved-state style refs with 'id' and 'name' when known; "
+            "at least one is required."
+        ),
+        "properties": {
+            "id": {"type": "string"},
+            "name": {"type": "string"},
+        },
+    }
+
+
+def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
+    object_ref_schema = _detector_feature_object_ref_param("Object reference.")
+    return {
+        "name": "manage_detector_feature_generator",
+        "description": (
+            "Create or update a saved detector feature generator. Current MVP supports "
+            "rectangular drilled-hole arrays only. Reuse generator_id to update an existing "
+            "generator and keep realize_now=true when you want regenerated geometry plus a "
+            "deterministic realization summary back."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "generator_id": {
+                    "type": "string",
+                    "description": "Stable generator id. Reuse an existing id to update that generator in place.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Human-readable generator name. Defaults to a deterministic type-based name.",
+                },
+                "generator_type": {
+                    "type": "string",
+                    "enum": ["rectangular_drilled_hole_array"],
+                    "description": "Detector feature generator type.",
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the saved generator stays enabled.",
+                },
+                "realize_now": {
+                    "type": "boolean",
+                    "description": "If true, realize the saved generator into geometry immediately (default: true).",
+                },
+                "target": {
+                    "type": "object",
+                    "description": "Saved-state target contract for the generator.",
+                    "properties": {
+                        "solid_ref": _detector_feature_object_ref_param(
+                            "Target solid reference."
+                        ),
+                        "logical_volume_refs": {
+                            "type": "array",
+                            "description": (
+                                "Optional logical-volume refs to retarget. When omitted, matching logical "
+                                "volumes using the target solid are updated automatically."
+                            ),
+                            "items": object_ref_schema,
+                        },
+                    },
+                    "required": ["solid_ref"],
+                },
+                "pattern": {
+                    "type": "object",
+                    "description": "Pattern parameters for a rectangular drilled-hole array.",
+                    "properties": {
+                        "count_x": {"type": "integer"},
+                        "count_y": {"type": "integer"},
+                        "pitch_mm": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                            },
+                            "required": ["x", "y"],
+                        },
+                        "origin_offset_mm": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                            },
+                        },
+                        "anchor": {
+                            "type": "string",
+                            "enum": ["target_center"],
+                        },
+                    },
+                    "required": ["count_x", "count_y", "pitch_mm"],
+                },
+                "hole": {
+                    "type": "object",
+                    "description": "Hole geometry parameters for the generator.",
+                    "properties": {
+                        "shape": {
+                            "type": "string",
+                            "enum": ["cylindrical"],
+                        },
+                        "diameter_mm": {"type": "number"},
+                        "depth_mm": {"type": "number"},
+                        "axis": {
+                            "type": "string",
+                            "enum": ["z"],
+                        },
+                        "drill_from": {
+                            "type": "string",
+                            "enum": ["positive_z_face"],
+                        },
+                    },
+                    "required": ["diameter_mm", "depth_mm"],
+                },
+            },
+            "required": ["generator_type", "target", "pattern", "hole"],
+        },
+    }
+
+
 RUN_SIMULATION_OPTION_SPECS: Dict[str, Dict[str, Any]] = {
     "production_cut": _expr_param(
         "Geant4 production cut passed to /run/setCut (e.g. '1.0 mm')"
@@ -354,15 +491,15 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "get_component_details",
-        "description": "Get the full JSON definition of a specific component to see its current parameters, including the saved environment, field state, and region cuts/limits state.",
+        "description": "Get the full JSON definition of a specific component to see its current parameters, including the saved environment, field state, region cuts/limits state, and detector feature generator state.",
         "parameters": {
             "type": "object",
             "properties": {
                 "component_type": {
                     "type": "string", 
-                    "enum": ["define", "material", "element", "solid", "logical_volume", "assembly", "particle_source", "physical_volume", "environment"]
+                    "enum": ["define", "material", "element", "solid", "logical_volume", "assembly", "particle_source", "physical_volume", "environment", "detector_feature_generator"]
                 },
-                "name": {"type": "string", "description": "The name of the component or its unique ID (for physical_volumes)."}
+                "name": {"type": "string", "description": "The name of the component, its unique ID (for physical_volumes), or the generator_id/name for detector feature generators."}
             },
             "required": ["component_type", "name"]
         }
@@ -408,6 +545,7 @@ AI_GEOMETRY_TOOLS = [
             "required": ["object_type", "object_id", "property_path", "new_value"]
         }
     },
+    _create_manage_detector_feature_generator_tool(),
     {
         "name": "search_components",
         "description": "Search for components by name using a regex pattern.",
