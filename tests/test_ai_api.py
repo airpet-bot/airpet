@@ -879,6 +879,77 @@ def test_ai_tool_manage_detector_feature_generator_and_get_component_details(pm)
     assert summary["result"]["names"]["detector_feature_generators"] == ["ai_detector_holes"]
 
 
+def test_ai_tool_manage_detector_feature_generator_supports_circular_patterns(pm):
+    solid, error = pm.add_solid(
+        "ai_circular_block",
+        "box",
+        {"x": "30", "y": "30", "z": "12"},
+    )
+    assert error is None
+
+    logical_volume, error = pm.add_logical_volume(
+        "ai_circular_lv",
+        "ai_circular_block",
+        "G4_Galactic",
+    )
+    assert error is None
+
+    result = dispatch_ai_tool(pm, "manage_detector_feature_generator", {
+        "id": "dfg_ai_circular_fixture",
+        "type": "circular_drilled_hole_array",
+        "name": "ai_circular_holes",
+        "target": {
+            "solid_ref": "ai_circular_block",
+            "logical_volume_refs": ["ai_circular_lv"],
+        },
+        "pattern": {
+            "count": 4,
+            "radius_mm": 6.0,
+            "orientation_deg": 45.0,
+            "origin_offset_mm": {"x": 1.0, "y": -1.5},
+        },
+        "hole": {
+            "diameter_mm": 1.5,
+            "depth_mm": 9.0,
+        },
+        "realize": True,
+    })
+
+    assert result["success"], result
+    assert result["detector_feature_generator"]["generator_type"] == "circular_drilled_hole_array"
+    assert result["detector_feature_generator"]["pattern"] == {
+        "count": 4,
+        "radius_mm": 6.0,
+        "orientation_deg": 45.0,
+        "origin_offset_mm": {"x": 1.0, "y": -1.5},
+        "anchor": "target_center",
+    }
+    assert result["detector_feature_realization"]["hole_count"] == 4
+    assert (
+        pm.current_geometry_state.logical_volumes["ai_circular_lv"].solid_ref
+        == result["detector_feature_realization"]["result_solid_name"]
+    )
+
+    details = dispatch_ai_tool(pm, "get_component_details", {
+        "component_type": "detector_feature_generator",
+        "name": "dfg_ai_circular_fixture",
+    })
+    assert details["success"], details
+    assert details["result"]["name"] == "ai_circular_holes"
+    assert details["result"]["target"] == {
+        "solid_ref": {
+            "id": solid["id"],
+            "name": solid["name"],
+        },
+        "logical_volume_refs": [
+            {
+                "id": logical_volume["id"],
+                "name": logical_volume["name"],
+            },
+        ],
+    }
+
+
 def test_ai_tool_create_primitive_solid(pm):
     res = dispatch_ai_tool(pm, "create_primitive_solid", {
         "name": "AI_Box",

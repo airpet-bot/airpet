@@ -1,17 +1,26 @@
 import { buildDetectorFeatureGeneratorEditorModel } from './detectorFeatureGeneratorsUi.js';
 
+const RECTANGULAR_DRILLED_HOLE_ARRAY = 'rectangular_drilled_hole_array';
+const CIRCULAR_DRILLED_HOLE_ARRAY = 'circular_drilled_hole_array';
+
 let modalElement;
 let titleElement;
 let confirmButton;
 let cancelButton;
 let nameInput;
+let generatorTypeSelect;
 let targetSolidSelect;
 let targetSummary;
 let targetLockNotice;
+let rectangularFields;
 let countXInput;
 let countYInput;
 let pitchXInput;
 let pitchYInput;
+let circularFields;
+let circularCountInput;
+let circularRadiusInput;
+let circularOrientationInput;
 let offsetXInput;
 let offsetYInput;
 let holeDiameterInput;
@@ -29,13 +38,19 @@ export function initDetectorFeatureGeneratorEditor(callbacks) {
     confirmButton = document.getElementById('detectorFeatureGeneratorConfirm');
     cancelButton = document.getElementById('detectorFeatureGeneratorCancel');
     nameInput = document.getElementById('detectorFeatureGeneratorName');
+    generatorTypeSelect = document.getElementById('detectorFeatureGeneratorType');
     targetSolidSelect = document.getElementById('detectorFeatureGeneratorTargetSolid');
     targetSummary = document.getElementById('detectorFeatureGeneratorTargetSummary');
     targetLockNotice = document.getElementById('detectorFeatureGeneratorTargetLockNotice');
+    rectangularFields = document.getElementById('detectorFeatureGeneratorRectangularFields');
     countXInput = document.getElementById('detectorFeatureGeneratorCountX');
     countYInput = document.getElementById('detectorFeatureGeneratorCountY');
     pitchXInput = document.getElementById('detectorFeatureGeneratorPitchX');
     pitchYInput = document.getElementById('detectorFeatureGeneratorPitchY');
+    circularFields = document.getElementById('detectorFeatureGeneratorCircularFields');
+    circularCountInput = document.getElementById('detectorFeatureGeneratorCircularCount');
+    circularRadiusInput = document.getElementById('detectorFeatureGeneratorCircularRadius');
+    circularOrientationInput = document.getElementById('detectorFeatureGeneratorCircularOrientation');
     offsetXInput = document.getElementById('detectorFeatureGeneratorOffsetX');
     offsetYInput = document.getElementById('detectorFeatureGeneratorOffsetY');
     holeDiameterInput = document.getElementById('detectorFeatureGeneratorHoleDiameter');
@@ -43,6 +58,7 @@ export function initDetectorFeatureGeneratorEditor(callbacks) {
 
     cancelButton.addEventListener('click', hide);
     confirmButton.addEventListener('click', handleConfirm);
+    generatorTypeSelect.addEventListener('change', updatePatternSectionVisibility);
     targetSolidSelect.addEventListener('change', updateTargetSummary);
 }
 
@@ -59,10 +75,14 @@ export function show(generatorEntry, projectState, selectedItems = []) {
     titleElement.textContent = model.title;
     confirmButton.textContent = model.confirmLabel;
     nameInput.value = model.name;
+    generatorTypeSelect.value = model.generatorType;
     countXInput.value = String(model.countX);
     countYInput.value = String(model.countY);
     pitchXInput.value = String(model.pitchX);
     pitchYInput.value = String(model.pitchY);
+    circularCountInput.value = String(model.circularCount);
+    circularRadiusInput.value = String(model.circularRadius);
+    circularOrientationInput.value = String(model.circularOrientation);
     offsetXInput.value = String(model.offsetX);
     offsetYInput.value = String(model.offsetY);
     holeDiameterInput.value = String(model.holeDiameter);
@@ -70,10 +90,12 @@ export function show(generatorEntry, projectState, selectedItems = []) {
 
     populateTargetOptions(model.targetOptions, model.selectedTargetName);
     targetSolidSelect.disabled = model.targetLocked;
+    generatorTypeSelect.disabled = model.typeLocked;
     if (targetLockNotice) {
-        targetLockNotice.hidden = !model.targetLocked;
+        targetLockNotice.hidden = !(model.targetLocked || model.typeLocked);
     }
 
+    updatePatternSectionVisibility();
     updateTargetSummary();
     modalElement.style.display = 'block';
 }
@@ -83,9 +105,11 @@ function hide() {
     currentGeneratorEntry = null;
     currentTargetOptions = [];
     targetSolidSelect.disabled = false;
+    generatorTypeSelect.disabled = false;
     if (targetLockNotice) {
         targetLockNotice.hidden = true;
     }
+    updatePatternSectionVisibility();
 }
 
 function populateTargetOptions(options, selectedName) {
@@ -126,6 +150,16 @@ function updateTargetSummary() {
     targetSummary.title = names.join('\n');
 }
 
+function updatePatternSectionVisibility() {
+    const generatorType = String(generatorTypeSelect?.value || RECTANGULAR_DRILLED_HOLE_ARRAY).trim();
+    if (rectangularFields) {
+        rectangularFields.hidden = generatorType !== RECTANGULAR_DRILLED_HOLE_ARRAY;
+    }
+    if (circularFields) {
+        circularFields.hidden = generatorType !== CIRCULAR_DRILLED_HOLE_ARRAY;
+    }
+}
+
 function readPositiveInteger(input, labelText) {
     const value = Number.parseInt(input.value, 10);
     if (!Number.isFinite(value) || value <= 0) {
@@ -150,6 +184,34 @@ function readFiniteNumber(input, labelText) {
     return value;
 }
 
+function buildPatternPayload(generatorType) {
+    const originOffset = {
+        x: readFiniteNumber(offsetXInput, 'Offset X'),
+        y: readFiniteNumber(offsetYInput, 'Offset Y'),
+    };
+
+    if (generatorType === CIRCULAR_DRILLED_HOLE_ARRAY) {
+        return {
+            count: readPositiveInteger(circularCountInput, 'Circular count'),
+            radius_mm: readPositiveNumber(circularRadiusInput, 'Circle radius'),
+            orientation_deg: readFiniteNumber(circularOrientationInput, 'Orientation'),
+            origin_offset_mm: originOffset,
+            anchor: 'target_center',
+        };
+    }
+
+    return {
+        count_x: readPositiveInteger(countXInput, 'Count X'),
+        count_y: readPositiveInteger(countYInput, 'Count Y'),
+        pitch_mm: {
+            x: readPositiveNumber(pitchXInput, 'Pitch X'),
+            y: readPositiveNumber(pitchYInput, 'Pitch Y'),
+        },
+        origin_offset_mm: originOffset,
+        anchor: 'target_center',
+    };
+}
+
 function handleConfirm() {
     if (!onConfirmCallback) {
         return;
@@ -161,6 +223,7 @@ function handleConfirm() {
             throw new Error('Please provide a generator name.');
         }
 
+        const generatorType = String(generatorTypeSelect.value || RECTANGULAR_DRILLED_HOLE_ARRAY).trim();
         const targetSolidName = String(targetSolidSelect.value || '').trim();
         const selectedOption = targetSolidSelect.selectedOptions?.[0];
         const targetSolidId = String(selectedOption?.dataset?.solidId || '').trim();
@@ -170,7 +233,7 @@ function handleConfirm() {
 
         onConfirmCallback({
             generator_id: currentGeneratorEntry?.generator_id,
-            generator_type: 'rectangular_drilled_hole_array',
+            generator_type: generatorType,
             name: generatorName,
             target: {
                 solid_ref: {
@@ -179,19 +242,7 @@ function handleConfirm() {
                 },
                 logical_volume_refs: [],
             },
-            pattern: {
-                count_x: readPositiveInteger(countXInput, 'Count X'),
-                count_y: readPositiveInteger(countYInput, 'Count Y'),
-                pitch_mm: {
-                    x: readPositiveNumber(pitchXInput, 'Pitch X'),
-                    y: readPositiveNumber(pitchYInput, 'Pitch Y'),
-                },
-                origin_offset_mm: {
-                    x: readFiniteNumber(offsetXInput, 'Offset X'),
-                    y: readFiniteNumber(offsetYInput, 'Offset Y'),
-                },
-                anchor: 'target_center',
-            },
+            pattern: buildPatternPayload(generatorType),
             hole: {
                 shape: 'cylindrical',
                 diameter_mm: readPositiveNumber(holeDiameterInput, 'Hole diameter'),

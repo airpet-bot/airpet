@@ -1126,7 +1126,7 @@ class ProjectManager:
 
         return target_lv_names, None
 
-    def _realize_rectangular_drilled_hole_array(self, generator_entry):
+    def _prepare_drilled_hole_array_realization(self, generator_entry, *, generator_label):
         state = self.current_geometry_state
         generator_id = generator_entry.get('generator_id')
         generator_name = generator_entry.get('name') or generator_id or 'detector_feature_generator'
@@ -1147,42 +1147,29 @@ class ProjectManager:
         if target_solid is None:
             return None, f"Target solid '{target_solid_name}' was not found."
         if target_solid.type != 'box':
-            return None, (
-                "Rectangular drilled-hole generators currently support only box target solids."
-            )
+            return None, f"{generator_label} generators currently support only box target solids."
 
         pattern = generator_entry.get('pattern', {}) or {}
         hole = generator_entry.get('hole', {}) or {}
 
         if pattern.get('anchor') != 'target_center':
-            return None, "Rectangular drilled-hole generators currently require anchor 'target_center'."
+            return None, f"{generator_label} generators currently require anchor 'target_center'."
         if hole.get('shape') != 'cylindrical':
-            return None, "Rectangular drilled-hole generators currently require cylindrical holes."
+            return None, f"{generator_label} generators currently require cylindrical holes."
         if hole.get('axis') != 'z':
-            return None, "Rectangular drilled-hole generators currently support only z-axis drilling."
+            return None, f"{generator_label} generators currently support only z-axis drilling."
         if hole.get('drill_from') != 'positive_z_face':
-            return None, "Rectangular drilled-hole generators currently drill only from the positive-z face."
+            return None, f"{generator_label} generators currently drill only from the positive-z face."
 
         target_dims = target_solid._evaluated_parameters or {}
         target_depth = float(target_dims.get('z', float('nan')))
         if not math.isfinite(target_depth) or target_depth <= 0.0:
             return None, f"Target solid '{target_solid_name}' has invalid evaluated depth."
 
-        count_x = int(pattern.get('count_x') or 0)
-        count_y = int(pattern.get('count_y') or 0)
-        pitch_x = float((pattern.get('pitch_mm') or {}).get('x') or 0.0)
-        pitch_y = float((pattern.get('pitch_mm') or {}).get('y') or 0.0)
-        origin_offset = pattern.get('origin_offset_mm') or {}
-        offset_x = float(origin_offset.get('x') or 0.0)
-        offset_y = float(origin_offset.get('y') or 0.0)
         hole_diameter = float(hole.get('diameter_mm') or 0.0)
         hole_depth = float(hole.get('depth_mm') or 0.0)
-        if count_x <= 0 or count_y <= 0:
-            return None, "Rectangular drilled-hole generators require positive x/y counts."
-        if pitch_x <= 0.0 or pitch_y <= 0.0:
-            return None, "Rectangular drilled-hole generators require positive x/y pitch values."
         if hole_diameter <= 0.0 or hole_depth <= 0.0:
-            return None, "Rectangular drilled-hole generators require positive hole diameter and depth."
+            return None, f"{generator_label} generators require positive hole diameter and depth."
 
         realization = generator_entry.get('realization', {}) or {}
         prior_result_name = (
@@ -1219,6 +1206,32 @@ class ProjectManager:
             state.solids,
         )
 
+        return {
+            'state': state,
+            'generator_id': generator_id,
+            'generator_name': generator_name,
+            'target_solid_name': target_solid_name,
+            'pattern': pattern,
+            'hole_diameter': hole_diameter,
+            'hole_depth': hole_depth,
+            'target_depth': target_depth,
+            'prior_result_name': prior_result_name,
+            'cutter_name': cutter_name,
+            'result_name': result_name,
+        }, None
+
+    def _realize_drilled_hole_array_with_positions(self, generator_entry, context, hole_positions_xy):
+        state = context['state']
+        generator_id = context['generator_id']
+        generator_name = context['generator_name']
+        target_solid_name = context['target_solid_name']
+        hole_diameter = context['hole_diameter']
+        hole_depth = context['hole_depth']
+        target_depth = context['target_depth']
+        prior_result_name = context['prior_result_name']
+        cutter_name = context['cutter_name']
+        result_name = context['result_name']
+
         def _fmt(value):
             return f"{float(value):.12g}"
 
@@ -1238,25 +1251,20 @@ class ProjectManager:
             cutter_solid.raw_parameters = cutter_params
 
         z_center = (target_depth / 2.0) - (hole_depth / 2.0)
-        x_origin = -((count_x - 1) * pitch_x) / 2.0 + offset_x
-        y_origin = -((count_y - 1) * pitch_y) / 2.0 + offset_y
 
         recipe = [{'op': 'base', 'solid_ref': target_solid_name}]
-        for y_index in range(count_y):
-            y_position = y_origin + y_index * pitch_y
-            for x_index in range(count_x):
-                x_position = x_origin + x_index * pitch_x
-                recipe.append({
-                    'op': 'subtraction',
-                    'solid_ref': cutter_name,
-                    'transform': {
-                        'position': {
-                            'x': _fmt(x_position),
-                            'y': _fmt(y_position),
-                            'z': _fmt(z_center),
-                        },
+        for x_position, y_position in hole_positions_xy:
+            recipe.append({
+                'op': 'subtraction',
+                'solid_ref': cutter_name,
+                'transform': {
+                    'position': {
+                        'x': _fmt(x_position),
+                        'y': _fmt(y_position),
+                        'z': _fmt(z_center),
                     },
-                })
+                },
+            })
 
         result_solid = state.solids.get(result_name)
         if result_solid is None:
@@ -1316,13 +1324,86 @@ class ProjectManager:
             'result_solid_name': result_name,
             'cutter_solid_name': cutter_name,
             'updated_logical_volume_names': target_lv_names,
-            'hole_count': count_x * count_y,
+            'hole_count': len(hole_positions_xy),
         }, None
+
+    def _realize_rectangular_drilled_hole_array(self, generator_entry):
+        context, error_msg = self._prepare_drilled_hole_array_realization(
+            generator_entry,
+            generator_label='Rectangular drilled-hole',
+        )
+        if error_msg:
+            return None, error_msg
+
+        pattern = context['pattern']
+        count_x = int(pattern.get('count_x') or 0)
+        count_y = int(pattern.get('count_y') or 0)
+        pitch_x = float((pattern.get('pitch_mm') or {}).get('x') or 0.0)
+        pitch_y = float((pattern.get('pitch_mm') or {}).get('y') or 0.0)
+        origin_offset = pattern.get('origin_offset_mm') or {}
+        offset_x = float(origin_offset.get('x') or 0.0)
+        offset_y = float(origin_offset.get('y') or 0.0)
+        if count_x <= 0 or count_y <= 0:
+            return None, "Rectangular drilled-hole generators require positive x/y counts."
+        if pitch_x <= 0.0 or pitch_y <= 0.0:
+            return None, "Rectangular drilled-hole generators require positive x/y pitch values."
+
+        x_origin = -((count_x - 1) * pitch_x) / 2.0 + offset_x
+        y_origin = -((count_y - 1) * pitch_y) / 2.0 + offset_y
+        hole_positions_xy = []
+        for y_index in range(count_y):
+            y_position = y_origin + y_index * pitch_y
+            for x_index in range(count_x):
+                x_position = x_origin + x_index * pitch_x
+                hole_positions_xy.append((x_position, y_position))
+
+        return self._realize_drilled_hole_array_with_positions(
+            generator_entry,
+            context,
+            hole_positions_xy,
+        )
+
+    def _realize_circular_drilled_hole_array(self, generator_entry):
+        context, error_msg = self._prepare_drilled_hole_array_realization(
+            generator_entry,
+            generator_label='Circular drilled-hole',
+        )
+        if error_msg:
+            return None, error_msg
+
+        pattern = context['pattern']
+        count = int(pattern.get('count') or 0)
+        radius_mm = float(pattern.get('radius_mm') or 0.0)
+        orientation_deg = float(pattern.get('orientation_deg') or 0.0)
+        origin_offset = pattern.get('origin_offset_mm') or {}
+        offset_x = float(origin_offset.get('x') or 0.0)
+        offset_y = float(origin_offset.get('y') or 0.0)
+        if count <= 0:
+            return None, "Circular drilled-hole generators require a positive hole count."
+        if radius_mm <= 0.0:
+            return None, "Circular drilled-hole generators require a positive radius."
+
+        angle_step_deg = 360.0 / count
+        hole_positions_xy = []
+        for index in range(count):
+            angle_rad = math.radians(orientation_deg + (index * angle_step_deg))
+            hole_positions_xy.append((
+                offset_x + (radius_mm * math.cos(angle_rad)),
+                offset_y + (radius_mm * math.sin(angle_rad)),
+            ))
+
+        return self._realize_drilled_hole_array_with_positions(
+            generator_entry,
+            context,
+            hole_positions_xy,
+        )
 
     def _realize_detector_feature_generator_entry(self, generator_entry):
         generator_type = generator_entry.get('generator_type')
         if generator_type == 'rectangular_drilled_hole_array':
             return self._realize_rectangular_drilled_hole_array(generator_entry)
+        if generator_type == 'circular_drilled_hole_array':
+            return self._realize_circular_drilled_hole_array(generator_entry)
 
         return None, (
             f"Detector feature generator type '{generator_type}' is not supported for realization."

@@ -43,7 +43,10 @@ DEFAULT_OUTPUT_LUNIT = "mm"
 DEFAULT_OUTPUT_AUNIT = "rad"
 
 DETECTOR_FEATURE_GENERATOR_SCHEMA_VERSION = 1
-_SUPPORTED_DETECTOR_FEATURE_GENERATOR_TYPES = {"rectangular_drilled_hole_array"}
+_SUPPORTED_DETECTOR_FEATURE_GENERATOR_TYPES = {
+    "rectangular_drilled_hole_array",
+    "circular_drilled_hole_array",
+}
 _SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS = {"target_center"}
 _SUPPORTED_DETECTOR_FEATURE_HOLE_SHAPES = {"cylindrical"}
 _SUPPORTED_DETECTOR_FEATURE_HOLE_AXES = {"z"}
@@ -295,25 +298,8 @@ def _normalize_detector_feature_generator_entry(raw_entry):
     if not isinstance(generated_object_refs, dict):
         raise ValueError("detector_feature_generators[].realization.generated_object_refs must be an object.")
 
-    default_name = f"{generator_type}_{generator_id.split('_')[-1][:8]}"
-    normalized_entry = {
-        "generator_id": generator_id,
-        "name": _normalize_non_empty_string(raw_entry.get("name")) or default_name,
-        "schema_version": schema_version,
-        "generator_type": generator_type,
-        "enabled": enabled,
-        "target": {
-            "solid_ref": _normalize_detector_feature_object_ref(
-                target.get("solid_ref"),
-                "detector_feature_generators[].target.solid_ref",
-                required=True,
-            ),
-            "logical_volume_refs": _normalize_detector_feature_object_ref_list(
-                target.get("logical_volume_refs", []),
-                "detector_feature_generators[].target.logical_volume_refs",
-            ),
-        },
-        "pattern": {
+    if generator_type == "rectangular_drilled_hole_array":
+        normalized_pattern = {
             "count_x": _normalize_positive_int(
                 pattern.get("count_x"),
                 "detector_feature_generators[].pattern.count_x",
@@ -345,7 +331,62 @@ def _normalize_detector_feature_generator_entry(raw_entry):
                 ),
             },
             "anchor": anchor,
+        }
+    elif generator_type == "circular_drilled_hole_array":
+        normalized_pattern = {
+            "count": _normalize_positive_int(
+                pattern.get("count", pattern.get("hole_count")),
+                "detector_feature_generators[].pattern.count",
+            ),
+            "radius_mm": _normalize_positive_float(
+                pattern.get("radius_mm"),
+                "detector_feature_generators[].pattern.radius_mm",
+            ),
+            "orientation_deg": _normalize_float(
+                pattern.get("orientation_deg"),
+                0.0,
+                "detector_feature_generators[].pattern.orientation_deg",
+            ),
+            "origin_offset_mm": {
+                "x": _normalize_float(
+                    origin_offset_mm.get("x"),
+                    0.0,
+                    "detector_feature_generators[].pattern.origin_offset_mm.x",
+                ),
+                "y": _normalize_float(
+                    origin_offset_mm.get("y"),
+                    0.0,
+                    "detector_feature_generators[].pattern.origin_offset_mm.y",
+                ),
+            },
+            "anchor": anchor,
+        }
+    else:
+        raise ValueError(
+            "detector feature generator type must be one of: "
+            + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_GENERATOR_TYPES))
+            + "."
+        )
+
+    default_name = f"{generator_type}_{generator_id.split('_')[-1][:8]}"
+    normalized_entry = {
+        "generator_id": generator_id,
+        "name": _normalize_non_empty_string(raw_entry.get("name")) or default_name,
+        "schema_version": schema_version,
+        "generator_type": generator_type,
+        "enabled": enabled,
+        "target": {
+            "solid_ref": _normalize_detector_feature_object_ref(
+                target.get("solid_ref"),
+                "detector_feature_generators[].target.solid_ref",
+                required=True,
+            ),
+            "logical_volume_refs": _normalize_detector_feature_object_ref_list(
+                target.get("logical_volume_refs", []),
+                "detector_feature_generators[].target.logical_volume_refs",
+            ),
         },
+        "pattern": normalized_pattern,
         "hole": {
             "shape": hole_shape,
             "diameter_mm": _normalize_positive_float(

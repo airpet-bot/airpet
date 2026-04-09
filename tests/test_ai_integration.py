@@ -116,7 +116,10 @@ def test_detector_feature_generator_ai_schema_exposes_manage_and_inspect_tools()
     manage_properties = manage_tool["parameters"]["properties"]
     manage_required = manage_tool["parameters"]["required"]
 
-    assert manage_properties["generator_type"]["enum"] == ["rectangular_drilled_hole_array"]
+    assert manage_properties["generator_type"]["enum"] == [
+        "rectangular_drilled_hole_array",
+        "circular_drilled_hole_array",
+    ]
     assert "target" in manage_properties
     assert "pattern" in manage_properties
     assert "hole" in manage_properties

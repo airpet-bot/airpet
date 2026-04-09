@@ -354,9 +354,9 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
         "name": "manage_detector_feature_generator",
         "description": (
             "Create or update a saved detector feature generator. Current MVP supports "
-            "rectangular drilled-hole arrays only. Reuse generator_id to update an existing "
-            "generator and keep realize_now=true when you want regenerated geometry plus a "
-            "deterministic realization summary back."
+            "rectangular drilled-hole arrays plus a narrow circular bolt-circle variant. "
+            "Reuse generator_id to update an existing generator and keep realize_now=true "
+            "when you want regenerated geometry plus a deterministic realization summary back."
         ),
         "parameters": {
             "type": "object",
@@ -371,7 +371,7 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
                 },
                 "generator_type": {
                     "type": "string",
-                    "enum": ["rectangular_drilled_hole_array"],
+                    "enum": ["rectangular_drilled_hole_array", "circular_drilled_hole_array"],
                     "description": "Detector feature generator type.",
                 },
                 "enabled": {
@@ -402,10 +402,15 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
                 },
                 "pattern": {
                     "type": "object",
-                    "description": "Pattern parameters for a rectangular drilled-hole array.",
+                    "description": (
+                        "Pattern parameters for the drilled-hole array. "
+                        "Rectangular arrays use count_x/count_y/pitch_mm. "
+                        "Circular arrays use count/radius_mm/orientation_deg."
+                    ),
                     "properties": {
                         "count_x": {"type": "integer"},
                         "count_y": {"type": "integer"},
+                        "count": {"type": "integer"},
                         "pitch_mm": {
                             "type": "object",
                             "properties": {
@@ -414,6 +419,8 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
                             },
                             "required": ["x", "y"],
                         },
+                        "radius_mm": {"type": "number"},
+                        "orientation_deg": {"type": "number"},
                         "origin_offset_mm": {
                             "type": "object",
                             "properties": {

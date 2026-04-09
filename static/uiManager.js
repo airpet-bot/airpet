@@ -2483,7 +2483,7 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
 
     const intro = document.createElement('p');
     intro.className = 'detector-feature-generators-intro';
-    intro.textContent = 'Create rectangular drilled-hole patterns against box solids and keep the saved generator parameters editable.';
+    intro.textContent = 'Create rectangular or circular drilled-hole patterns against box solids and keep the saved generator parameters editable.';
     detectorFeatureGeneratorsPanelRoot.appendChild(intro);
 
     const toolbar = document.createElement('div');

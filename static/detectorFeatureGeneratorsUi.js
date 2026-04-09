@@ -1,3 +1,6 @@
+const RECTANGULAR_DRILLED_HOLE_ARRAY = 'rectangular_drilled_hole_array';
+const CIRCULAR_DRILLED_HOLE_ARRAY = 'circular_drilled_hole_array';
+
 function normalizeString(value, fallback = '') {
     const text = String(value ?? '').trim();
     return text || fallback;
@@ -104,6 +107,12 @@ function resolveSelectedTargetSolidName(projectState, selectedItems) {
     return '';
 }
 
+function getGeneratorType(rawType) {
+    return normalizeString(rawType, RECTANGULAR_DRILLED_HOLE_ARRAY) === CIRCULAR_DRILLED_HOLE_ARRAY
+        ? CIRCULAR_DRILLED_HOLE_ARRAY
+        : RECTANGULAR_DRILLED_HOLE_ARRAY;
+}
+
 export function listDetectorFeatureGeneratorTargetOptions(projectState) {
     const solids = projectState?.solids || {};
 
@@ -139,10 +148,12 @@ export function buildDetectorFeatureGeneratorEditorModel(projectState, generator
     const pitch = pattern.pitch_mm || {};
     const originOffset = pattern.origin_offset_mm || {};
     const hole = generatorEntry?.hole || {};
+    const generatorType = getGeneratorType(generatorEntry?.generator_type);
 
     return {
         isEdit: Boolean(generatorEntry),
         generatorId: normalizeString(generatorEntry?.generator_id, ''),
+        generatorType,
         title: generatorEntry ? 'Edit Patterned-Hole Generator' : 'New Patterned-Hole Generator',
         confirmLabel: generatorEntry ? 'Save & Generate' : 'Create & Generate',
         targetOptions,
@@ -151,11 +162,15 @@ export function buildDetectorFeatureGeneratorEditorModel(projectState, generator
         selectedTargetLogicalVolumeNames: selectedTarget?.logicalVolumeNames || [],
         selectedTargetLogicalVolumeSummary: selectedTarget?.logicalVolumeSummary || 'No eligible box solids.',
         targetLocked: Boolean(generatorEntry),
+        typeLocked: Boolean(generatorEntry),
         name: normalizeString(generatorEntry?.name, buildDefaultGeneratorName(selectedTarget?.name || 'patterned_holes')),
         countX: Number.isFinite(Number(pattern.count_x)) ? Number(pattern.count_x) : 3,
         countY: Number.isFinite(Number(pattern.count_y)) ? Number(pattern.count_y) : 3,
         pitchX: Number.isFinite(Number(pitch.x)) ? Number(pitch.x) : 5,
         pitchY: Number.isFinite(Number(pitch.y)) ? Number(pitch.y) : 5,
+        circularCount: Number.isFinite(Number(pattern.count)) ? Number(pattern.count) : 6,
+        circularRadius: Number.isFinite(Number(pattern.radius_mm)) ? Number(pattern.radius_mm) : 8,
+        circularOrientation: Number.isFinite(Number(pattern.orientation_deg)) ? Number(pattern.orientation_deg) : 0,
         offsetX: Number.isFinite(Number(originOffset.x)) ? Number(originOffset.x) : 0,
         offsetY: Number.isFinite(Number(originOffset.y)) ? Number(originOffset.y) : 0,
         holeDiameter: Number.isFinite(Number(hole.diameter_mm)) ? Number(hole.diameter_mm) : 2,
@@ -165,12 +180,15 @@ export function buildDetectorFeatureGeneratorEditorModel(projectState, generator
 
 export function describeDetectorFeatureGenerator(rawEntry, projectState) {
     const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : {};
+    const generatorType = getGeneratorType(entry.generator_type);
     const target = entry.target && typeof entry.target === 'object' ? entry.target : {};
     const pattern = entry.pattern && typeof entry.pattern === 'object' ? entry.pattern : {};
     const pitch = pattern.pitch_mm && typeof pattern.pitch_mm === 'object' ? pattern.pitch_mm : {};
     const originOffset = pattern.origin_offset_mm && typeof pattern.origin_offset_mm === 'object' ? pattern.origin_offset_mm : {};
     const hole = entry.hole && typeof entry.hole === 'object' ? entry.hole : {};
-    const realization = entry.realization && typeof entry.realization === 'object' ? entry.realization : {};
+    const realization = entry.realization && typeof entry.realization === 'object'
+        ? entry.realization
+        : {};
     const generatedRefs = realization.generated_object_refs && typeof realization.generated_object_refs === 'object'
         ? realization.generated_object_refs
         : {};
@@ -193,14 +211,39 @@ export function describeDetectorFeatureGenerator(rawEntry, projectState) {
     const generatorName = normalizeString(entry.name, 'patterned_holes');
     const generatorId = normalizeString(entry.generator_id, 'unknown_generator');
     const status = normalizeString(realization.status, 'spec_only');
-    const countX = Number.isFinite(Number(pattern.count_x)) ? Number(pattern.count_x) : 0;
-    const countY = Number.isFinite(Number(pattern.count_y)) ? Number(pattern.count_y) : 0;
-    const pitchX = formatNumber(pitch.x);
-    const pitchY = formatNumber(pitch.y);
     const offsetX = formatNumber(originOffset.x);
     const offsetY = formatNumber(originOffset.y);
     const holeDiameter = formatNumber(hole.diameter_mm);
     const holeDepth = formatNumber(hole.depth_mm);
+
+    if (generatorType === CIRCULAR_DRILLED_HOLE_ARRAY) {
+        const count = Number.isFinite(Number(pattern.count)) ? Number(pattern.count) : 0;
+        const radius = formatNumber(pattern.radius_mm);
+        const orientation = formatNumber(pattern.orientation_deg);
+
+        return {
+            title: generatorName,
+            summary: `Circular drilled holes on ${targetSolidName} · ${count} holes on r ${radius} mm @ ${orientation} deg · dia ${holeDiameter} mm depth ${holeDepth} mm`,
+            statusBadge: status === 'generated' ? 'generated' : 'spec only',
+            detailRows: [
+                { label: 'Generator ID', value: generatorId },
+                { label: 'Status', value: status === 'generated' ? 'Generated geometry is current.' : 'Saved spec only.' },
+                { label: 'Target Solid', value: targetSolidName },
+                { label: 'Target Logical Volumes', value: buildListValue(targetedLogicalVolumeNames, 'All matching logical volumes') },
+                { label: 'Pattern', value: `${count} holes on radius ${radius} mm` },
+                { label: 'Orientation', value: `${orientation} deg` },
+                { label: 'Origin Offset', value: `${offsetX}, ${offsetY} mm` },
+                { label: 'Hole', value: `cylindrical dia ${holeDiameter} mm, depth ${holeDepth} mm` },
+                { label: 'Result Solid', value: resultSolidName || 'Not generated yet' },
+                { label: 'Generated Solids', value: buildListValue(generatedSolidNames, 'No generated solids recorded') },
+            ],
+        };
+    }
+
+    const countX = Number.isFinite(Number(pattern.count_x)) ? Number(pattern.count_x) : 0;
+    const countY = Number.isFinite(Number(pattern.count_y)) ? Number(pattern.count_y) : 0;
+    const pitchX = formatNumber(pitch.x);
+    const pitchY = formatNumber(pitch.y);
 
     return {
         title: generatorName,

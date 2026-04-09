@@ -126,7 +126,7 @@ def test_detector_feature_generator_contract_defaults_and_invalid_entries():
                 },
                 {
                     "generator_id": "unsupported-kind",
-                    "generator_type": "circular_drilled_hole_array",
+                    "generator_type": "spiral_drilled_hole_array",
                     "target": {
                         "solid_ref": {"name": "ignored_block"},
                     },
@@ -178,6 +178,55 @@ def test_detector_feature_generator_contract_defaults_and_invalid_entries():
             "logical_volume_refs": [],
             "placement_refs": [],
         },
+    }
+
+
+def test_circular_detector_feature_generator_contract_defaults():
+    loaded = GeometryState.from_dict(
+        {
+            "detector_feature_generators": [
+                {
+                    "generator_type": "circular_drilled_hole_array",
+                    "target": {
+                        "solid_ref": {"name": "circular_collimator_block"},
+                    },
+                    "pattern": {
+                        "hole_count": "6",
+                        "radius_mm": "12.5",
+                        "orientation_deg": "15",
+                        "origin_offset_mm": {"x": "1.5", "y": -2},
+                    },
+                    "hole": {
+                        "diameter_mm": "2.5",
+                        "depth_mm": 7,
+                    },
+                },
+            ]
+        }
+    )
+
+    assert len(loaded.detector_feature_generators) == 1
+    entry = loaded.detector_feature_generators[0]
+    assert entry["generator_id"].startswith("detector_feature_generator_")
+    assert entry["name"].startswith("circular_drilled_hole_array_")
+    assert entry["generator_type"] == "circular_drilled_hole_array"
+    assert entry["target"] == {
+        "solid_ref": {"name": "circular_collimator_block"},
+        "logical_volume_refs": [],
+    }
+    assert entry["pattern"] == {
+        "count": 6,
+        "radius_mm": 12.5,
+        "orientation_deg": 15.0,
+        "origin_offset_mm": {"x": 1.5, "y": -2.0},
+        "anchor": "target_center",
+    }
+    assert entry["hole"] == {
+        "shape": "cylindrical",
+        "diameter_mm": 2.5,
+        "depth_mm": 7.0,
+        "axis": "z",
+        "drill_from": "positive_z_face",
     }
 
 
@@ -497,6 +546,90 @@ def test_rectangular_drilled_hole_generator_realization_reuses_generated_solids_
         if name.startswith("refresh_collimator_holes__")
     )
     assert generated_prefix_names == [first_cutter_name, first_result_name]
+
+
+def test_circular_drilled_hole_generator_realization_creates_bolt_circle_geometry():
+    pm = _make_pm()
+
+    solid_dict, error_msg = pm.add_solid(
+        "circular_block",
+        "box",
+        {"x": "24", "y": "24", "z": "10"},
+    )
+    assert error_msg is None
+
+    logical_volume, error_msg = pm.add_logical_volume("circular_lv", "circular_block", "G4_Galactic")
+    assert error_msg is None
+
+    placement, error_msg = pm.add_physical_volume(
+        "World",
+        "circular_pv",
+        "circular_lv",
+        {"x": "0", "y": "0", "z": "0"},
+        {"x": "0", "y": "0", "z": "0"},
+        {"x": "1", "y": "1", "z": "1"},
+    )
+    assert error_msg is None
+
+    pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
+        {
+            "generator_id": "dfg_circular_holes_runtime",
+            "name": "fixture_circular_holes",
+            "generator_type": "circular_drilled_hole_array",
+            "target": {
+                "solid_ref": {
+                    "id": solid_dict["id"],
+                    "name": solid_dict["name"],
+                },
+            },
+            "pattern": {
+                "count": 4,
+                "radius_mm": 4,
+                "orientation_deg": 45,
+                "origin_offset_mm": {"x": 1, "y": -2},
+            },
+            "hole": {
+                "diameter_mm": 2,
+                "depth_mm": 6,
+            },
+        }
+    ])
+
+    result, error_msg = pm.realize_detector_feature_generator("dfg_circular_holes_runtime")
+    assert error_msg is None
+    assert result["hole_count"] == 4
+    assert result["updated_logical_volume_names"] == ["circular_lv"]
+
+    result_solid = pm.current_geometry_state.solids[result["result_solid_name"]]
+    recipe = result_solid.raw_parameters["recipe"]
+    assert recipe[0] == {"op": "base", "solid_ref": "circular_block"}
+    assert len(recipe) == 5
+    positions = [
+        (
+            float(item["transform"]["position"]["x"]),
+            float(item["transform"]["position"]["y"]),
+            float(item["transform"]["position"]["z"]),
+        )
+        for item in recipe[1:]
+    ]
+    expected_positions = [
+        (3.82842712474619, 0.8284271247461903, 2.0),
+        (-1.8284271247461898, 0.8284271247461903, 2.0),
+        (-1.8284271247461907, -4.82842712474619, 2.0),
+        (3.8284271247461894, -4.82842712474619, 2.0),
+    ]
+    for position, expected_position in zip(positions, expected_positions):
+        assert position == pytest.approx(expected_position)
+
+    entry = pm.current_geometry_state.detector_feature_generators[0]
+    assert entry["realization"]["status"] == "generated"
+    assert entry["realization"]["generated_object_refs"]["logical_volume_refs"] == [
+        {"id": logical_volume["id"], "name": "circular_lv"},
+    ]
+    assert entry["realization"]["generated_object_refs"]["placement_refs"] == [
+        {"id": placement["id"], "name": "circular_pv"},
+    ]
+    assert pm.current_geometry_state.logical_volumes["circular_lv"].solid_ref == result["result_solid_name"]
 
 
 def test_upsert_detector_feature_generator_saves_and_regenerates_in_place():
