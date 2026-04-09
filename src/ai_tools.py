@@ -354,7 +354,8 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
         "name": "manage_detector_feature_generator",
         "description": (
             "Create or update a saved detector feature generator. Current MVP supports "
-            "rectangular drilled-hole arrays plus a narrow circular bolt-circle variant. "
+            "rectangular drilled-hole arrays, a narrow circular bolt-circle variant, "
+            "and a fixed absorber/sensor/support layered detector stack. "
             "Reuse generator_id to update an existing generator and keep realize_now=true "
             "when you want regenerated geometry plus a deterministic realization summary back."
         ),
@@ -371,7 +372,11 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
                 },
                 "generator_type": {
                     "type": "string",
-                    "enum": ["rectangular_drilled_hole_array", "circular_drilled_hole_array"],
+                    "enum": [
+                        "rectangular_drilled_hole_array",
+                        "circular_drilled_hole_array",
+                        "layered_detector_stack",
+                    ],
                     "description": "Detector feature generator type.",
                 },
                 "enabled": {
@@ -397,8 +402,10 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
                             ),
                             "items": object_ref_schema,
                         },
+                        "parent_logical_volume_ref": _detector_feature_object_ref_param(
+                            "Parent logical-volume reference for layered detector stacks."
+                        ),
                     },
-                    "required": ["solid_ref"],
                 },
                 "pattern": {
                     "type": "object",
@@ -433,7 +440,6 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
                             "enum": ["target_center"],
                         },
                     },
-                    "required": ["count_x", "count_y", "pitch_mm"],
                 },
                 "hole": {
                     "type": "object",
@@ -454,10 +460,77 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
                             "enum": ["positive_z_face"],
                         },
                     },
-                    "required": ["diameter_mm", "depth_mm"],
+                },
+                "stack": {
+                    "type": "object",
+                    "description": (
+                        "Layered-stack parameters. Layered detector stacks use module_size_mm, "
+                        "module_count, module_pitch_mm, and origin_offset_mm."
+                    ),
+                    "properties": {
+                        "module_size_mm": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                            },
+                            "required": ["x", "y"],
+                        },
+                        "module_count": {"type": "integer"},
+                        "module_pitch_mm": {"type": "number"},
+                        "origin_offset_mm": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                                "z": {"type": "number"},
+                            },
+                        },
+                        "anchor": {
+                            "type": "string",
+                            "enum": ["target_center"],
+                        },
+                    },
+                },
+                "layers": {
+                    "type": "object",
+                    "description": (
+                        "Fixed three-layer sandwich for layered detector stacks. "
+                        "Provide absorber, sensor, and support entries with material_ref "
+                        "and thickness_mm; sensor can also set is_sensitive."
+                    ),
+                    "properties": {
+                        "absorber": {
+                            "type": "object",
+                            "properties": {
+                                "material_ref": {"type": "string"},
+                                "thickness_mm": {"type": "number"},
+                                "is_sensitive": {"type": "boolean"},
+                            },
+                            "required": ["material_ref", "thickness_mm"],
+                        },
+                        "sensor": {
+                            "type": "object",
+                            "properties": {
+                                "material_ref": {"type": "string"},
+                                "thickness_mm": {"type": "number"},
+                                "is_sensitive": {"type": "boolean"},
+                            },
+                            "required": ["material_ref", "thickness_mm"],
+                        },
+                        "support": {
+                            "type": "object",
+                            "properties": {
+                                "material_ref": {"type": "string"},
+                                "thickness_mm": {"type": "number"},
+                                "is_sensitive": {"type": "boolean"},
+                            },
+                            "required": ["material_ref", "thickness_mm"],
+                        },
+                    },
                 },
             },
-            "required": ["generator_type", "target", "pattern", "hole"],
+            "required": ["generator_type", "target"],
         },
     }
 

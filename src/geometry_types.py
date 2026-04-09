@@ -46,12 +46,13 @@ DETECTOR_FEATURE_GENERATOR_SCHEMA_VERSION = 1
 _SUPPORTED_DETECTOR_FEATURE_GENERATOR_TYPES = {
     "rectangular_drilled_hole_array",
     "circular_drilled_hole_array",
+    "layered_detector_stack",
 }
 _SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS = {"target_center"}
 _SUPPORTED_DETECTOR_FEATURE_HOLE_SHAPES = {"cylindrical"}
 _SUPPORTED_DETECTOR_FEATURE_HOLE_AXES = {"z"}
 _SUPPORTED_DETECTOR_FEATURE_DRILL_FROM = {"positive_z_face"}
-_SUPPORTED_DETECTOR_FEATURE_REALIZATION_MODES = {"boolean_subtraction"}
+_SUPPORTED_DETECTOR_FEATURE_REALIZATION_MODES = {"boolean_subtraction", "layered_stack"}
 _SUPPORTED_DETECTOR_FEATURE_REALIZATION_STATUSES = {"spec_only", "generated"}
 
 def convert_to_internal_units(value, unit_str, category="length"):
@@ -193,6 +194,13 @@ def _normalize_detector_feature_object_ref_list(raw_refs, field_name):
     return normalized_refs
 
 
+def _normalize_detector_feature_material_ref(value, field_name):
+    normalized = _normalize_non_empty_string(value)
+    if not normalized:
+        raise ValueError(f"{field_name} must be a non-empty material name.")
+    return normalized
+
+
 def _normalize_detector_feature_generator_entry(raw_entry):
     if not isinstance(raw_entry, dict):
         raise ValueError("detector feature generator entry must be an object.")
@@ -221,54 +229,28 @@ def _normalize_detector_feature_generator_entry(raw_entry):
         raise ValueError("detector_feature_generators[].target must be an object.")
 
     pattern = raw_entry.get("pattern", {})
+    if pattern is None:
+        pattern = {}
     if not isinstance(pattern, dict):
         raise ValueError("detector_feature_generators[].pattern must be an object.")
 
-    pitch_mm = pattern.get("pitch_mm", {})
-    if not isinstance(pitch_mm, dict):
-        raise ValueError("detector_feature_generators[].pattern.pitch_mm must be an object.")
+    stack = raw_entry.get("stack", {})
+    if stack is None:
+        stack = {}
+    if not isinstance(stack, dict):
+        raise ValueError("detector_feature_generators[].stack must be an object.")
 
-    origin_offset_mm = pattern.get("origin_offset_mm", {})
-    if origin_offset_mm is None:
-        origin_offset_mm = {}
-    if not isinstance(origin_offset_mm, dict):
-        raise ValueError("detector_feature_generators[].pattern.origin_offset_mm must be an object.")
-
-    anchor = _normalize_non_empty_string(pattern.get("anchor")) or "target_center"
-    if anchor not in _SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS:
-        raise ValueError(
-            "detector_feature_generators[].pattern.anchor must be one of: "
-            + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS))
-            + "."
-        )
+    layers = raw_entry.get("layers", {})
+    if layers is None:
+        layers = {}
+    if not isinstance(layers, dict):
+        raise ValueError("detector_feature_generators[].layers must be an object.")
 
     hole = raw_entry.get("hole", {})
+    if hole is None:
+        hole = {}
     if not isinstance(hole, dict):
         raise ValueError("detector_feature_generators[].hole must be an object.")
-
-    hole_shape = _normalize_non_empty_string(hole.get("shape")) or "cylindrical"
-    if hole_shape not in _SUPPORTED_DETECTOR_FEATURE_HOLE_SHAPES:
-        raise ValueError(
-            "detector_feature_generators[].hole.shape must be one of: "
-            + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_HOLE_SHAPES))
-            + "."
-        )
-
-    hole_axis = _normalize_non_empty_string(hole.get("axis")) or "z"
-    if hole_axis not in _SUPPORTED_DETECTOR_FEATURE_HOLE_AXES:
-        raise ValueError(
-            "detector_feature_generators[].hole.axis must be one of: "
-            + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_HOLE_AXES))
-            + "."
-        )
-
-    drill_from = _normalize_non_empty_string(hole.get("drill_from")) or "positive_z_face"
-    if drill_from not in _SUPPORTED_DETECTOR_FEATURE_DRILL_FROM:
-        raise ValueError(
-            "detector_feature_generators[].hole.drill_from must be one of: "
-            + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_DRILL_FROM))
-            + "."
-        )
 
     realization = raw_entry.get("realization", {})
     if realization is None:
@@ -276,7 +258,12 @@ def _normalize_detector_feature_generator_entry(raw_entry):
     if not isinstance(realization, dict):
         raise ValueError("detector_feature_generators[].realization must be an object.")
 
-    realization_mode = _normalize_non_empty_string(realization.get("mode")) or "boolean_subtraction"
+    default_realization_mode = (
+        "layered_stack"
+        if generator_type == "layered_detector_stack"
+        else "boolean_subtraction"
+    )
+    realization_mode = _normalize_non_empty_string(realization.get("mode")) or default_realization_mode
     if realization_mode not in _SUPPORTED_DETECTOR_FEATURE_REALIZATION_MODES:
         raise ValueError(
             "detector_feature_generators[].realization.mode must be one of: "
@@ -298,7 +285,66 @@ def _normalize_detector_feature_generator_entry(raw_entry):
     if not isinstance(generated_object_refs, dict):
         raise ValueError("detector_feature_generators[].realization.generated_object_refs must be an object.")
 
+    normalized_target = {}
+    normalized_pattern = None
+    normalized_stack = None
+    normalized_layers = None
+    normalized_hole = None
+
     if generator_type == "rectangular_drilled_hole_array":
+        pitch_mm = pattern.get("pitch_mm", {})
+        if not isinstance(pitch_mm, dict):
+            raise ValueError("detector_feature_generators[].pattern.pitch_mm must be an object.")
+
+        origin_offset_mm = pattern.get("origin_offset_mm", {})
+        if origin_offset_mm is None:
+            origin_offset_mm = {}
+        if not isinstance(origin_offset_mm, dict):
+            raise ValueError("detector_feature_generators[].pattern.origin_offset_mm must be an object.")
+
+        anchor = _normalize_non_empty_string(pattern.get("anchor")) or "target_center"
+        if anchor not in _SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS:
+            raise ValueError(
+                "detector_feature_generators[].pattern.anchor must be one of: "
+                + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS))
+                + "."
+            )
+
+        hole_shape = _normalize_non_empty_string(hole.get("shape")) or "cylindrical"
+        if hole_shape not in _SUPPORTED_DETECTOR_FEATURE_HOLE_SHAPES:
+            raise ValueError(
+                "detector_feature_generators[].hole.shape must be one of: "
+                + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_HOLE_SHAPES))
+                + "."
+            )
+
+        hole_axis = _normalize_non_empty_string(hole.get("axis")) or "z"
+        if hole_axis not in _SUPPORTED_DETECTOR_FEATURE_HOLE_AXES:
+            raise ValueError(
+                "detector_feature_generators[].hole.axis must be one of: "
+                + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_HOLE_AXES))
+                + "."
+            )
+
+        drill_from = _normalize_non_empty_string(hole.get("drill_from")) or "positive_z_face"
+        if drill_from not in _SUPPORTED_DETECTOR_FEATURE_DRILL_FROM:
+            raise ValueError(
+                "detector_feature_generators[].hole.drill_from must be one of: "
+                + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_DRILL_FROM))
+                + "."
+            )
+
+        normalized_target = {
+            "solid_ref": _normalize_detector_feature_object_ref(
+                target.get("solid_ref"),
+                "detector_feature_generators[].target.solid_ref",
+                required=True,
+            ),
+            "logical_volume_refs": _normalize_detector_feature_object_ref_list(
+                target.get("logical_volume_refs", []),
+                "detector_feature_generators[].target.logical_volume_refs",
+            ),
+        }
         normalized_pattern = {
             "count_x": _normalize_positive_int(
                 pattern.get("count_x"),
@@ -332,7 +378,69 @@ def _normalize_detector_feature_generator_entry(raw_entry):
             },
             "anchor": anchor,
         }
+        normalized_hole = {
+            "shape": hole_shape,
+            "diameter_mm": _normalize_positive_float(
+                hole.get("diameter_mm"),
+                "detector_feature_generators[].hole.diameter_mm",
+            ),
+            "depth_mm": _normalize_positive_float(
+                hole.get("depth_mm"),
+                "detector_feature_generators[].hole.depth_mm",
+            ),
+            "axis": hole_axis,
+            "drill_from": drill_from,
+        }
     elif generator_type == "circular_drilled_hole_array":
+        origin_offset_mm = pattern.get("origin_offset_mm", {})
+        if origin_offset_mm is None:
+            origin_offset_mm = {}
+        if not isinstance(origin_offset_mm, dict):
+            raise ValueError("detector_feature_generators[].pattern.origin_offset_mm must be an object.")
+
+        anchor = _normalize_non_empty_string(pattern.get("anchor")) or "target_center"
+        if anchor not in _SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS:
+            raise ValueError(
+                "detector_feature_generators[].pattern.anchor must be one of: "
+                + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS))
+                + "."
+            )
+
+        hole_shape = _normalize_non_empty_string(hole.get("shape")) or "cylindrical"
+        if hole_shape not in _SUPPORTED_DETECTOR_FEATURE_HOLE_SHAPES:
+            raise ValueError(
+                "detector_feature_generators[].hole.shape must be one of: "
+                + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_HOLE_SHAPES))
+                + "."
+            )
+
+        hole_axis = _normalize_non_empty_string(hole.get("axis")) or "z"
+        if hole_axis not in _SUPPORTED_DETECTOR_FEATURE_HOLE_AXES:
+            raise ValueError(
+                "detector_feature_generators[].hole.axis must be one of: "
+                + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_HOLE_AXES))
+                + "."
+            )
+
+        drill_from = _normalize_non_empty_string(hole.get("drill_from")) or "positive_z_face"
+        if drill_from not in _SUPPORTED_DETECTOR_FEATURE_DRILL_FROM:
+            raise ValueError(
+                "detector_feature_generators[].hole.drill_from must be one of: "
+                + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_DRILL_FROM))
+                + "."
+            )
+
+        normalized_target = {
+            "solid_ref": _normalize_detector_feature_object_ref(
+                target.get("solid_ref"),
+                "detector_feature_generators[].target.solid_ref",
+                required=True,
+            ),
+            "logical_volume_refs": _normalize_detector_feature_object_ref_list(
+                target.get("logical_volume_refs", []),
+                "detector_feature_generators[].target.logical_volume_refs",
+            ),
+        }
         normalized_pattern = {
             "count": _normalize_positive_int(
                 pattern.get("count", pattern.get("hole_count")),
@@ -361,6 +469,118 @@ def _normalize_detector_feature_generator_entry(raw_entry):
             },
             "anchor": anchor,
         }
+        normalized_hole = {
+            "shape": hole_shape,
+            "diameter_mm": _normalize_positive_float(
+                hole.get("diameter_mm"),
+                "detector_feature_generators[].hole.diameter_mm",
+            ),
+            "depth_mm": _normalize_positive_float(
+                hole.get("depth_mm"),
+                "detector_feature_generators[].hole.depth_mm",
+            ),
+            "axis": hole_axis,
+            "drill_from": drill_from,
+        }
+    elif generator_type == "layered_detector_stack":
+        stack_anchor = _normalize_non_empty_string(stack.get("anchor")) or "target_center"
+        if stack_anchor not in _SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS:
+            raise ValueError(
+                "detector_feature_generators[].stack.anchor must be one of: "
+                + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS))
+                + "."
+            )
+
+        module_size_mm = stack.get("module_size_mm", stack.get("size_mm", {}))
+        if not isinstance(module_size_mm, dict):
+            raise ValueError("detector_feature_generators[].stack.module_size_mm must be an object.")
+
+        origin_offset_mm = stack.get("origin_offset_mm", {})
+        if origin_offset_mm is None:
+            origin_offset_mm = {}
+        if not isinstance(origin_offset_mm, dict):
+            raise ValueError("detector_feature_generators[].stack.origin_offset_mm must be an object.")
+
+        normalized_target = {
+            "parent_logical_volume_ref": _normalize_detector_feature_object_ref(
+                target.get("parent_logical_volume_ref"),
+                "detector_feature_generators[].target.parent_logical_volume_ref",
+                required=True,
+            ),
+        }
+
+        normalized_layers = {}
+        total_thickness_mm = 0.0
+        for role in ("absorber", "sensor", "support"):
+            raw_layer = layers.get(role)
+            if not isinstance(raw_layer, dict):
+                raise ValueError(
+                    f"detector_feature_generators[].layers.{role} must be an object."
+                )
+
+            normalized_layer = {
+                "material_ref": _normalize_detector_feature_material_ref(
+                    raw_layer.get("material_ref", raw_layer.get("material")),
+                    f"detector_feature_generators[].layers.{role}.material_ref",
+                ),
+                "thickness_mm": _normalize_positive_float(
+                    raw_layer.get("thickness_mm"),
+                    f"detector_feature_generators[].layers.{role}.thickness_mm",
+                ),
+                "is_sensitive": bool(
+                    raw_layer.get("is_sensitive", role == "sensor")
+                ),
+            }
+            normalized_layers[role] = normalized_layer
+            total_thickness_mm += normalized_layer["thickness_mm"]
+
+        raw_module_pitch_mm = stack.get(
+            "module_pitch_mm",
+            stack.get("pitch_mm", stack.get("module_spacing_mm")),
+        )
+        if raw_module_pitch_mm is None:
+            module_pitch_mm = total_thickness_mm
+        else:
+            module_pitch_mm = _normalize_positive_float(
+                raw_module_pitch_mm,
+                "detector_feature_generators[].stack.module_pitch_mm",
+            )
+
+        normalized_stack = {
+            "module_size_mm": {
+                "x": _normalize_positive_float(
+                    module_size_mm.get("x"),
+                    "detector_feature_generators[].stack.module_size_mm.x",
+                ),
+                "y": _normalize_positive_float(
+                    module_size_mm.get("y"),
+                    "detector_feature_generators[].stack.module_size_mm.y",
+                ),
+            },
+            "module_count": _normalize_positive_int(
+                stack.get("module_count", stack.get("module_repeat_count", stack.get("count", 1))),
+                "detector_feature_generators[].stack.module_count",
+            ),
+            "module_pitch_mm": module_pitch_mm,
+            "origin_offset_mm": {
+                "x": _normalize_float(
+                    origin_offset_mm.get("x"),
+                    0.0,
+                    "detector_feature_generators[].stack.origin_offset_mm.x",
+                ),
+                "y": _normalize_float(
+                    origin_offset_mm.get("y"),
+                    0.0,
+                    "detector_feature_generators[].stack.origin_offset_mm.y",
+                ),
+                "z": _normalize_float(
+                    origin_offset_mm.get("z"),
+                    0.0,
+                    "detector_feature_generators[].stack.origin_offset_mm.z",
+                ),
+            },
+            "anchor": stack_anchor,
+        }
     else:
         raise ValueError(
             "detector feature generator type must be one of: "
@@ -375,31 +595,7 @@ def _normalize_detector_feature_generator_entry(raw_entry):
         "schema_version": schema_version,
         "generator_type": generator_type,
         "enabled": enabled,
-        "target": {
-            "solid_ref": _normalize_detector_feature_object_ref(
-                target.get("solid_ref"),
-                "detector_feature_generators[].target.solid_ref",
-                required=True,
-            ),
-            "logical_volume_refs": _normalize_detector_feature_object_ref_list(
-                target.get("logical_volume_refs", []),
-                "detector_feature_generators[].target.logical_volume_refs",
-            ),
-        },
-        "pattern": normalized_pattern,
-        "hole": {
-            "shape": hole_shape,
-            "diameter_mm": _normalize_positive_float(
-                hole.get("diameter_mm"),
-                "detector_feature_generators[].hole.diameter_mm",
-            ),
-            "depth_mm": _normalize_positive_float(
-                hole.get("depth_mm"),
-                "detector_feature_generators[].hole.depth_mm",
-            ),
-            "axis": hole_axis,
-            "drill_from": drill_from,
-        },
+        "target": normalized_target,
         "realization": {
             "mode": realization_mode,
             "status": realization_status,
@@ -424,6 +620,15 @@ def _normalize_detector_feature_generator_entry(raw_entry):
             },
         },
     }
+
+    if normalized_pattern is not None:
+        normalized_entry["pattern"] = normalized_pattern
+    if normalized_hole is not None:
+        normalized_entry["hole"] = normalized_hole
+    if normalized_stack is not None:
+        normalized_entry["stack"] = normalized_stack
+    if normalized_layers is not None:
+        normalized_entry["layers"] = normalized_layers
 
     return normalized_entry
 

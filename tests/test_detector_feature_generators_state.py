@@ -244,6 +244,82 @@ def test_circular_detector_feature_generator_contract_defaults():
     }
 
 
+def test_layered_detector_stack_contract_defaults():
+    loaded = GeometryState.from_dict(
+        {
+            "detector_feature_generators": [
+                {
+                    "generator_type": "layered_detector_stack",
+                    "target": {
+                        "parent_logical_volume_ref": {"name": "World"},
+                    },
+                    "stack": {
+                        "module_size_mm": {"x": "24", "y": 18},
+                        "module_count": "3",
+                    },
+                    "layers": {
+                        "absorber": {
+                            "material": "G4_Pb",
+                            "thickness_mm": "4.5",
+                        },
+                        "sensor": {
+                            "material_ref": "G4_Si",
+                            "thickness_mm": 1,
+                        },
+                        "support": {
+                            "material_ref": "G4_Al",
+                            "thickness_mm": 2.5,
+                        },
+                    },
+                },
+            ]
+        }
+    )
+
+    assert len(loaded.detector_feature_generators) == 1
+    entry = loaded.detector_feature_generators[0]
+    assert entry["generator_id"].startswith("detector_feature_generator_")
+    assert entry["name"].startswith("layered_detector_stack_")
+    assert entry["generator_type"] == "layered_detector_stack"
+    assert entry["target"] == {
+        "parent_logical_volume_ref": {"name": "World"},
+    }
+    assert entry["stack"] == {
+        "module_size_mm": {"x": 24.0, "y": 18.0},
+        "module_count": 3,
+        "module_pitch_mm": 8.0,
+        "origin_offset_mm": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "anchor": "target_center",
+    }
+    assert entry["layers"] == {
+        "absorber": {
+            "material_ref": "G4_Pb",
+            "thickness_mm": 4.5,
+            "is_sensitive": False,
+        },
+        "sensor": {
+            "material_ref": "G4_Si",
+            "thickness_mm": 1.0,
+            "is_sensitive": True,
+        },
+        "support": {
+            "material_ref": "G4_Al",
+            "thickness_mm": 2.5,
+            "is_sensitive": False,
+        },
+    }
+    assert entry["realization"] == {
+        "mode": "layered_stack",
+        "status": "spec_only",
+        "result_solid_ref": None,
+        "generated_object_refs": {
+            "solid_refs": [],
+            "logical_volume_refs": [],
+            "placement_refs": [],
+        },
+    }
+
+
 def test_detector_feature_generator_contract_roundtrips_through_project_manager():
     valid_payload = {
         "generator_id": "dfg_rect_holes_fixture",
@@ -350,6 +426,68 @@ def test_detector_feature_generator_contract_roundtrips_through_project_manager(
     pm_round_tripped = ProjectManager(ExpressionEvaluator())
     pm_round_tripped.load_project_from_json_string(json_string)
     assert pm_round_tripped.current_geometry_state.detector_feature_generators == [expected_payload]
+
+
+def test_layered_detector_stack_roundtrips_through_project_manager():
+    valid_payload = {
+        "generator_id": "dfg_layered_fixture",
+        "name": "fixture_layered_stack",
+        "schema_version": 1,
+        "generator_type": "layered_detector_stack",
+        "enabled": True,
+        "target": {
+            "parent_logical_volume_ref": {"id": "lv-world-1", "name": "World"},
+        },
+        "stack": {
+            "module_size_mm": {"x": 28.0, "y": 16.0},
+            "module_count": 2,
+            "module_pitch_mm": 9.5,
+            "origin_offset_mm": {"x": 1.5, "y": -2.0, "z": 3.0},
+            "anchor": "target_center",
+        },
+        "layers": {
+            "absorber": {"material_ref": "G4_Pb", "thickness_mm": 4.0, "is_sensitive": False},
+            "sensor": {"material_ref": "G4_Si", "thickness_mm": 1.0, "is_sensitive": True},
+            "support": {"material_ref": "G4_Al", "thickness_mm": 2.0, "is_sensitive": False},
+        },
+        "realization": {
+            "mode": "layered_stack",
+            "status": "generated",
+            "result_solid_ref": {"id": "solid-module-1", "name": "fixture_layered_stack__module_solid"},
+            "generated_object_refs": {
+                "solid_refs": [
+                    {"id": "solid-module-1", "name": "fixture_layered_stack__module_solid"},
+                    {"id": "solid-abs-1", "name": "fixture_layered_stack__absorber_solid"},
+                    {"id": "solid-sensor-1", "name": "fixture_layered_stack__sensor_solid"},
+                    {"id": "solid-support-1", "name": "fixture_layered_stack__support_solid"},
+                ],
+                "logical_volume_refs": [
+                    {"id": "lv-module-1", "name": "fixture_layered_stack__module_lv"},
+                    {"id": "lv-abs-1", "name": "fixture_layered_stack__absorber_lv"},
+                    {"id": "lv-sensor-1", "name": "fixture_layered_stack__sensor_lv"},
+                    {"id": "lv-support-1", "name": "fixture_layered_stack__support_lv"},
+                ],
+                "placement_refs": [
+                    {"id": "pv-module-1", "name": "fixture_layered_stack__module_1_pv"},
+                    {"id": "pv-layer-1", "name": "fixture_layered_stack__absorber_pv"},
+                ],
+            },
+        },
+    }
+
+    state = GeometryState.from_dict({"detector_feature_generators": [valid_payload]})
+    assert state.detector_feature_generators == [valid_payload]
+
+    pm = ProjectManager(ExpressionEvaluator())
+    pm.current_geometry_state.detector_feature_generators = [valid_payload]
+
+    json_string = pm.save_project_to_json_string()
+    saved_payload = json.loads(json_string)
+    assert saved_payload["detector_feature_generators"] == [valid_payload]
+
+    pm_round_tripped = ProjectManager(ExpressionEvaluator())
+    pm_round_tripped.load_project_from_json_string(json_string)
+    assert pm_round_tripped.current_geometry_state.detector_feature_generators == [valid_payload]
 
 
 def test_rectangular_drilled_hole_generator_realization_creates_boolean_geometry_and_updates_targets():
@@ -739,6 +877,190 @@ def test_upsert_detector_feature_generator_saves_and_regenerates_in_place():
             (3.0, 0.0, 1.0),
         ]
     )
+
+
+def test_layered_detector_stack_realization_creates_module_geometry_and_repeated_placements():
+    pm = _make_pm()
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+
+    pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
+        {
+            "generator_id": "dfg_layered_runtime",
+            "name": "fixture_layered_stack",
+            "generator_type": "layered_detector_stack",
+            "target": {
+                "parent_logical_volume_ref": {
+                    "id": world_lv.id,
+                    "name": "World",
+                },
+            },
+            "stack": {
+                "module_size_mm": {"x": 24, "y": 18},
+                "module_count": 3,
+                "module_pitch_mm": 8.5,
+                "origin_offset_mm": {"x": 1.5, "y": -2.0, "z": 3.0},
+            },
+            "layers": {
+                "absorber": {"material_ref": "G4_Pb", "thickness_mm": 4.0},
+                "sensor": {"material_ref": "G4_Si", "thickness_mm": 1.2, "is_sensitive": True},
+                "support": {"material_ref": "G4_Al", "thickness_mm": 2.3},
+            },
+        }
+    ])
+
+    result, error_msg = pm.realize_detector_feature_generator("dfg_layered_runtime")
+    assert error_msg is None
+    assert result["module_count"] == 3
+    assert result["layer_count"] == 3
+    assert result["parent_logical_volume_name"] == "World"
+    assert result["module_logical_volume_name"] == "fixture_layered_stack__module_lv"
+    assert result["total_thickness_mm"] == pytest.approx(7.5)
+
+    module_solid = pm.current_geometry_state.solids[result["result_solid_name"]]
+    absorber_solid = pm.current_geometry_state.solids["fixture_layered_stack__absorber_solid"]
+    sensor_solid = pm.current_geometry_state.solids["fixture_layered_stack__sensor_solid"]
+    support_solid = pm.current_geometry_state.solids["fixture_layered_stack__support_solid"]
+    assert module_solid.type == "box"
+    assert float(module_solid.raw_parameters["x"]) == pytest.approx(24.0)
+    assert float(module_solid.raw_parameters["y"]) == pytest.approx(18.0)
+    assert float(module_solid.raw_parameters["z"]) == pytest.approx(7.5)
+    assert float(absorber_solid.raw_parameters["z"]) == pytest.approx(4.0)
+    assert float(sensor_solid.raw_parameters["z"]) == pytest.approx(1.2)
+    assert float(support_solid.raw_parameters["z"]) == pytest.approx(2.3)
+
+    module_lv = pm.current_geometry_state.logical_volumes["fixture_layered_stack__module_lv"]
+    absorber_lv = pm.current_geometry_state.logical_volumes["fixture_layered_stack__absorber_lv"]
+    sensor_lv = pm.current_geometry_state.logical_volumes["fixture_layered_stack__sensor_lv"]
+    support_lv = pm.current_geometry_state.logical_volumes["fixture_layered_stack__support_lv"]
+    assert module_lv.material_ref == "G4_Galactic"
+    assert absorber_lv.material_ref == "G4_Pb"
+    assert sensor_lv.material_ref == "G4_Si"
+    assert support_lv.material_ref == "G4_Al"
+    assert absorber_lv.is_sensitive is False
+    assert sensor_lv.is_sensitive is True
+    assert support_lv.is_sensitive is False
+
+    assert [pv.name for pv in module_lv.content] == [
+        "fixture_layered_stack__absorber_pv",
+        "fixture_layered_stack__sensor_pv",
+        "fixture_layered_stack__support_pv",
+    ]
+    assert [
+        float(pv.position["z"])
+        for pv in module_lv.content
+    ] == pytest.approx([-1.75, 0.85, 2.6])
+
+    world_module_pvs = [
+        pv for pv in pm.current_geometry_state.logical_volumes["World"].content
+        if pv.name.startswith("fixture_layered_stack__module_")
+    ]
+    assert len(world_module_pvs) == 3
+    assert [
+        (float(pv.position["x"]), float(pv.position["y"]), float(pv.position["z"]))
+        for pv in world_module_pvs
+    ] == pytest.approx([
+        (1.5, -2.0, -5.5),
+        (1.5, -2.0, 3.0),
+        (1.5, -2.0, 11.5),
+    ])
+
+    entry = pm.current_geometry_state.detector_feature_generators[0]
+    assert entry["realization"]["status"] == "generated"
+    assert entry["realization"]["mode"] == "layered_stack"
+    assert entry["realization"]["result_solid_ref"] == {
+        "id": module_solid.id,
+        "name": "fixture_layered_stack__module_solid",
+    }
+    assert entry["realization"]["generated_object_refs"]["solid_refs"] == [
+        {"id": module_solid.id, "name": "fixture_layered_stack__module_solid"},
+        {"id": absorber_solid.id, "name": "fixture_layered_stack__absorber_solid"},
+        {"id": sensor_solid.id, "name": "fixture_layered_stack__sensor_solid"},
+        {"id": support_solid.id, "name": "fixture_layered_stack__support_solid"},
+    ]
+    assert entry["realization"]["generated_object_refs"]["logical_volume_refs"] == [
+        {"id": module_lv.id, "name": "fixture_layered_stack__module_lv"},
+        {"id": absorber_lv.id, "name": "fixture_layered_stack__absorber_lv"},
+        {"id": sensor_lv.id, "name": "fixture_layered_stack__sensor_lv"},
+        {"id": support_lv.id, "name": "fixture_layered_stack__support_lv"},
+    ]
+    assert len(entry["realization"]["generated_object_refs"]["placement_refs"]) == 6
+
+
+def test_layered_detector_stack_realization_replaces_old_module_placements_on_revision():
+    pm = _make_pm()
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+
+    pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
+        {
+            "generator_id": "dfg_layered_refresh",
+            "name": "refresh_layered_stack",
+            "generator_type": "layered_detector_stack",
+            "target": {
+                "parent_logical_volume_ref": {
+                    "id": world_lv.id,
+                    "name": "World",
+                },
+            },
+            "stack": {
+                "module_size_mm": {"x": 20, "y": 12},
+                "module_count": 2,
+                "module_pitch_mm": 7.0,
+                "origin_offset_mm": {"x": 0.0, "y": 0.0, "z": 0.0},
+            },
+            "layers": {
+                "absorber": {"material_ref": "G4_Pb", "thickness_mm": 3.0},
+                "sensor": {"material_ref": "G4_Si", "thickness_mm": 1.0, "is_sensitive": True},
+                "support": {"material_ref": "G4_Al", "thickness_mm": 1.0},
+            },
+        }
+    ])
+
+    first_result, error_msg = pm.realize_detector_feature_generator("dfg_layered_refresh")
+    assert error_msg is None
+
+    entry = pm.current_geometry_state.detector_feature_generators[0]
+    entry["stack"]["module_count"] = 4
+    entry["stack"]["module_pitch_mm"] = 9.0
+    entry["layers"]["sensor"]["thickness_mm"] = 1.5
+
+    second_result, error_msg = pm.realize_detector_feature_generator("dfg_layered_refresh")
+    assert error_msg is None
+    assert second_result["result_solid_name"] == first_result["result_solid_name"]
+    assert second_result["module_logical_volume_name"] == first_result["module_logical_volume_name"]
+    assert second_result["total_thickness_mm"] == pytest.approx(5.5)
+
+    module_solid = pm.current_geometry_state.solids[first_result["result_solid_name"]]
+    assert float(module_solid.raw_parameters["z"]) == pytest.approx(5.5)
+
+    module_lv = pm.current_geometry_state.logical_volumes[first_result["module_logical_volume_name"]]
+    assert [
+        float(pv.position["z"])
+        for pv in module_lv.content
+    ] == pytest.approx([-1.25, 1.0, 2.25])
+
+    world_module_pvs = [
+        pv for pv in pm.current_geometry_state.logical_volumes["World"].content
+        if pv.name.startswith("refresh_layered_stack__module_")
+    ]
+    assert len(world_module_pvs) == 4
+    assert [
+        float(pv.position["z"])
+        for pv in world_module_pvs
+    ] == pytest.approx([-13.5, -4.5, 4.5, 13.5])
+
+    placement_names = [
+        ref["name"]
+        for ref in pm.current_geometry_state.detector_feature_generators[0]["realization"]["generated_object_refs"]["placement_refs"]
+    ]
+    assert placement_names == [
+        "refresh_layered_stack__module_1_pv",
+        "refresh_layered_stack__module_2_pv",
+        "refresh_layered_stack__module_3_pv",
+        "refresh_layered_stack__module_4_pv",
+        "refresh_layered_stack__absorber_pv",
+        "refresh_layered_stack__sensor_pv",
+        "refresh_layered_stack__support_pv",
+    ]
 
 
 def test_patterned_hole_starter_example_roundtrips_saved_generators():

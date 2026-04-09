@@ -1,5 +1,6 @@
 const RECTANGULAR_DRILLED_HOLE_ARRAY = 'rectangular_drilled_hole_array';
 const CIRCULAR_DRILLED_HOLE_ARRAY = 'circular_drilled_hole_array';
+const LAYERED_DETECTOR_STACK = 'layered_detector_stack';
 
 function normalizeString(value, fallback = '') {
     const text = String(value ?? '').trim();
@@ -73,8 +74,11 @@ function getLogicalVolumeNamesForSolid(projectState, solidName) {
         .sort((a, b) => a.localeCompare(b));
 }
 
-function buildDefaultGeneratorName(targetSolidName) {
-    const base = normalizeString(targetSolidName, 'patterned_holes').replace(/[^\w]+/g, '_');
+function buildDefaultGeneratorName(targetName, generatorType) {
+    const base = normalizeString(targetName, 'detector_feature').replace(/[^\w]+/g, '_');
+    if (generatorType === LAYERED_DETECTOR_STACK) {
+        return `${base}_detector_stack`;
+    }
     return `${base}_holes`;
 }
 
@@ -107,10 +111,33 @@ function resolveSelectedTargetSolidName(projectState, selectedItems) {
     return '';
 }
 
-function getGeneratorType(rawType) {
-    return normalizeString(rawType, RECTANGULAR_DRILLED_HOLE_ARRAY) === CIRCULAR_DRILLED_HOLE_ARRAY
-        ? CIRCULAR_DRILLED_HOLE_ARRAY
-        : RECTANGULAR_DRILLED_HOLE_ARRAY;
+function resolveSelectedParentLogicalVolumeName(projectState, selectedItems) {
+    const logicalVolumes = projectState?.logical_volumes || {};
+
+    for (const item of normalizeSelectedItems(selectedItems)) {
+        if (item.type !== 'logical_volume') {
+            continue;
+        }
+        const lvName = normalizeString(item.name || item.id, '');
+        const lv = logicalVolumes[lvName];
+        const contentType = normalizeString(lv?.content_type, 'physvol');
+        if (lvName && lv && contentType === 'physvol') {
+            return lvName;
+        }
+    }
+
+    return '';
+}
+
+function getGeneratorType(rawType, fallbackType = RECTANGULAR_DRILLED_HOLE_ARRAY) {
+    const normalizedType = normalizeString(rawType, fallbackType);
+    if (normalizedType === CIRCULAR_DRILLED_HOLE_ARRAY) {
+        return CIRCULAR_DRILLED_HOLE_ARRAY;
+    }
+    if (normalizedType === LAYERED_DETECTOR_STACK) {
+        return LAYERED_DETECTOR_STACK;
+    }
+    return RECTANGULAR_DRILLED_HOLE_ARRAY;
 }
 
 export function listDetectorFeatureGeneratorTargetOptions(projectState) {
@@ -133,37 +160,82 @@ export function listDetectorFeatureGeneratorTargetOptions(projectState) {
         .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export function listDetectorFeatureGeneratorParentOptions(projectState) {
+    const logicalVolumes = projectState?.logical_volumes || {};
+
+    return Object.values(logicalVolumes)
+        .filter((lv) => lv && normalizeString(lv.content_type, 'physvol') === 'physvol')
+        .map((lv) => {
+            const placementCount = Array.isArray(lv.content) ? lv.content.length : 0;
+            return {
+                id: normalizeString(lv.id, ''),
+                name: normalizeString(lv.name, ''),
+                placementCount,
+                placementSummary: placementCount > 0
+                    ? pluralize(placementCount, 'child placement')
+                    : 'no child placements yet',
+            };
+        })
+        .filter((option) => option.name)
+        .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export function buildDetectorFeatureGeneratorEditorModel(projectState, generatorEntry = null, selectedItems = []) {
-    const targetOptions = listDetectorFeatureGeneratorTargetOptions(projectState);
-    const fallbackTargetName = targetOptions[0]?.name || '';
-    const existingTargetName = generatorEntry
-        ? resolveObjectName(generatorEntry.target?.solid_ref, projectState?.solids || {})
-        : '';
-    const selectedTargetName = existingTargetName
-        || resolveSelectedTargetSolidName(projectState, selectedItems)
-        || fallbackTargetName;
-    const selectedTarget = targetOptions.find((option) => option.name === selectedTargetName) || targetOptions[0] || null;
+    const holeTargetOptions = listDetectorFeatureGeneratorTargetOptions(projectState);
+    const stackTargetOptions = listDetectorFeatureGeneratorParentOptions(projectState);
+    const fallbackType = holeTargetOptions.length > 0
+        ? RECTANGULAR_DRILLED_HOLE_ARRAY
+        : LAYERED_DETECTOR_STACK;
+    const generatorType = getGeneratorType(generatorEntry?.generator_type, fallbackType);
+
+    const selectedHoleTargetName = (
+        generatorEntry
+            ? resolveObjectName(generatorEntry.target?.solid_ref, projectState?.solids || {})
+            : ''
+    ) || resolveSelectedTargetSolidName(projectState, selectedItems) || holeTargetOptions[0]?.name || '';
+    const selectedStackTargetName = (
+        generatorEntry
+            ? resolveObjectName(generatorEntry.target?.parent_logical_volume_ref, projectState?.logical_volumes || {})
+            : ''
+    ) || resolveSelectedParentLogicalVolumeName(projectState, selectedItems) || stackTargetOptions[0]?.name || '';
+
+    const selectedHoleTarget = holeTargetOptions.find((option) => option.name === selectedHoleTargetName) || holeTargetOptions[0] || null;
+    const selectedStackTarget = stackTargetOptions.find((option) => option.name === selectedStackTargetName) || stackTargetOptions[0] || null;
 
     const pattern = generatorEntry?.pattern || {};
     const pitch = pattern.pitch_mm || {};
-    const originOffset = pattern.origin_offset_mm || {};
+    const patternOriginOffset = pattern.origin_offset_mm || {};
     const hole = generatorEntry?.hole || {};
-    const generatorType = getGeneratorType(generatorEntry?.generator_type);
+    const stack = generatorEntry?.stack || {};
+    const stackSize = stack.module_size_mm || {};
+    const stackOriginOffset = stack.origin_offset_mm || {};
+    const layers = generatorEntry?.layers || {};
+    const absorber = layers.absorber || {};
+    const sensor = layers.sensor || {};
+    const support = layers.support || {};
+
+    const defaultTargetName = generatorType === LAYERED_DETECTOR_STACK
+        ? selectedStackTarget?.name || 'detector_stack'
+        : selectedHoleTarget?.name || 'patterned_holes';
 
     return {
         isEdit: Boolean(generatorEntry),
         generatorId: normalizeString(generatorEntry?.generator_id, ''),
         generatorType,
-        title: generatorEntry ? 'Edit Patterned-Hole Generator' : 'New Patterned-Hole Generator',
+        title: generatorEntry ? 'Edit Detector Feature Generator' : 'New Detector Feature Generator',
         confirmLabel: generatorEntry ? 'Save & Generate' : 'Create & Generate',
-        targetOptions,
-        selectedTargetName: selectedTarget?.name || '',
-        selectedTargetId: selectedTarget?.id || '',
-        selectedTargetLogicalVolumeNames: selectedTarget?.logicalVolumeNames || [],
-        selectedTargetLogicalVolumeSummary: selectedTarget?.logicalVolumeSummary || 'No eligible box solids.',
+        holeTargetOptions,
+        stackTargetOptions,
+        selectedHoleTargetName: selectedHoleTarget?.name || '',
+        selectedHoleTargetId: selectedHoleTarget?.id || '',
+        selectedHoleTargetLogicalVolumeNames: selectedHoleTarget?.logicalVolumeNames || [],
+        selectedHoleTargetLogicalVolumeSummary: selectedHoleTarget?.logicalVolumeSummary || 'No eligible box solids.',
+        selectedStackTargetName: selectedStackTarget?.name || '',
+        selectedStackTargetId: selectedStackTarget?.id || '',
+        selectedStackTargetPlacementSummary: selectedStackTarget?.placementSummary || 'No eligible parent logical volumes.',
         targetLocked: Boolean(generatorEntry),
         typeLocked: Boolean(generatorEntry),
-        name: normalizeString(generatorEntry?.name, buildDefaultGeneratorName(selectedTarget?.name || 'patterned_holes')),
+        name: normalizeString(generatorEntry?.name, buildDefaultGeneratorName(defaultTargetName, generatorType)),
         countX: Number.isFinite(Number(pattern.count_x)) ? Number(pattern.count_x) : 3,
         countY: Number.isFinite(Number(pattern.count_y)) ? Number(pattern.count_y) : 3,
         pitchX: Number.isFinite(Number(pitch.x)) ? Number(pitch.x) : 5,
@@ -171,10 +243,26 @@ export function buildDetectorFeatureGeneratorEditorModel(projectState, generator
         circularCount: Number.isFinite(Number(pattern.count)) ? Number(pattern.count) : 6,
         circularRadius: Number.isFinite(Number(pattern.radius_mm)) ? Number(pattern.radius_mm) : 8,
         circularOrientation: Number.isFinite(Number(pattern.orientation_deg)) ? Number(pattern.orientation_deg) : 0,
-        offsetX: Number.isFinite(Number(originOffset.x)) ? Number(originOffset.x) : 0,
-        offsetY: Number.isFinite(Number(originOffset.y)) ? Number(originOffset.y) : 0,
+        offsetX: Number.isFinite(Number(
+            generatorType === LAYERED_DETECTOR_STACK ? stackOriginOffset.x : patternOriginOffset.x
+        )) ? Number(generatorType === LAYERED_DETECTOR_STACK ? stackOriginOffset.x : patternOriginOffset.x) : 0,
+        offsetY: Number.isFinite(Number(
+            generatorType === LAYERED_DETECTOR_STACK ? stackOriginOffset.y : patternOriginOffset.y
+        )) ? Number(generatorType === LAYERED_DETECTOR_STACK ? stackOriginOffset.y : patternOriginOffset.y) : 0,
+        offsetZ: Number.isFinite(Number(stackOriginOffset.z)) ? Number(stackOriginOffset.z) : 0,
         holeDiameter: Number.isFinite(Number(hole.diameter_mm)) ? Number(hole.diameter_mm) : 2,
         holeDepth: Number.isFinite(Number(hole.depth_mm)) ? Number(hole.depth_mm) : 5,
+        moduleSizeX: Number.isFinite(Number(stackSize.x)) ? Number(stackSize.x) : 24,
+        moduleSizeY: Number.isFinite(Number(stackSize.y)) ? Number(stackSize.y) : 18,
+        moduleCount: Number.isFinite(Number(stack.module_count)) ? Number(stack.module_count) : 3,
+        modulePitch: Number.isFinite(Number(stack.module_pitch_mm)) ? Number(stack.module_pitch_mm) : 8,
+        absorberThickness: Number.isFinite(Number(absorber.thickness_mm)) ? Number(absorber.thickness_mm) : 4,
+        absorberMaterial: normalizeString(absorber.material_ref, 'G4_Pb'),
+        sensorThickness: Number.isFinite(Number(sensor.thickness_mm)) ? Number(sensor.thickness_mm) : 1,
+        sensorMaterial: normalizeString(sensor.material_ref, 'G4_Si'),
+        sensorSensitive: Boolean(sensor.is_sensitive ?? true),
+        supportThickness: Number.isFinite(Number(support.thickness_mm)) ? Number(support.thickness_mm) : 2,
+        supportMaterial: normalizeString(support.material_ref, 'G4_Al'),
     };
 }
 
@@ -182,35 +270,82 @@ export function describeDetectorFeatureGenerator(rawEntry, projectState) {
     const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : {};
     const generatorType = getGeneratorType(entry.generator_type);
     const target = entry.target && typeof entry.target === 'object' ? entry.target : {};
-    const pattern = entry.pattern && typeof entry.pattern === 'object' ? entry.pattern : {};
-    const pitch = pattern.pitch_mm && typeof pattern.pitch_mm === 'object' ? pattern.pitch_mm : {};
-    const originOffset = pattern.origin_offset_mm && typeof pattern.origin_offset_mm === 'object' ? pattern.origin_offset_mm : {};
-    const hole = entry.hole && typeof entry.hole === 'object' ? entry.hole : {};
     const realization = entry.realization && typeof entry.realization === 'object'
         ? entry.realization
         : {};
     const generatedRefs = realization.generated_object_refs && typeof realization.generated_object_refs === 'object'
         ? realization.generated_object_refs
         : {};
+    const generatorName = normalizeString(entry.name, 'detector_feature_generator');
+    const generatorId = normalizeString(entry.generator_id, 'unknown_generator');
+    const status = normalizeString(realization.status, 'spec_only');
+    const generatedSolidNames = Array.isArray(generatedRefs.solid_refs)
+        ? generatedRefs.solid_refs.map((ref) => resolveObjectName(ref, projectState?.solids || {})).filter(Boolean)
+        : [];
+    const generatedLogicalVolumeNames = Array.isArray(generatedRefs.logical_volume_refs)
+        ? generatedRefs.logical_volume_refs.map((ref) => resolveObjectName(ref, projectState?.logical_volumes || {})).filter(Boolean)
+        : [];
+    const generatedPlacementNames = Array.isArray(generatedRefs.placement_refs)
+        ? generatedRefs.placement_refs.map((ref) => resolveObjectName(ref, projectState?.logical_volumes || {})).filter(Boolean)
+        : [];
 
+    if (generatorType === LAYERED_DETECTOR_STACK) {
+        const stack = entry.stack && typeof entry.stack === 'object' ? entry.stack : {};
+        const stackSize = stack.module_size_mm && typeof stack.module_size_mm === 'object' ? stack.module_size_mm : {};
+        const stackOriginOffset = stack.origin_offset_mm && typeof stack.origin_offset_mm === 'object' ? stack.origin_offset_mm : {};
+        const layers = entry.layers && typeof entry.layers === 'object' ? entry.layers : {};
+        const absorber = layers.absorber && typeof layers.absorber === 'object' ? layers.absorber : {};
+        const sensor = layers.sensor && typeof layers.sensor === 'object' ? layers.sensor : {};
+        const support = layers.support && typeof layers.support === 'object' ? layers.support : {};
+        const moduleCount = Number.isFinite(Number(stack.module_count)) ? Number(stack.module_count) : 0;
+        const modulePitch = formatNumber(stack.module_pitch_mm);
+        const moduleSizeX = formatNumber(stackSize.x);
+        const moduleSizeY = formatNumber(stackSize.y);
+        const offsetX = formatNumber(stackOriginOffset.x);
+        const offsetY = formatNumber(stackOriginOffset.y);
+        const offsetZ = formatNumber(stackOriginOffset.z);
+        const parentLogicalVolumeName = resolveObjectName(
+            target.parent_logical_volume_ref,
+            projectState?.logical_volumes || {},
+        ) || 'unknown_parent';
+        const layerSummary = [
+            `absorber ${formatNumber(absorber.thickness_mm)} mm ${normalizeString(absorber.material_ref, 'unknown')}`,
+            `sensor ${formatNumber(sensor.thickness_mm)} mm ${normalizeString(sensor.material_ref, 'unknown')}`,
+            `support ${formatNumber(support.thickness_mm)} mm ${normalizeString(support.material_ref, 'unknown')}`,
+        ].join(' · ');
+
+        return {
+            title: generatorName,
+            summary: `Layered stack in ${parentLogicalVolumeName} · ${moduleCount} modules @ ${modulePitch} mm pitch · ${moduleSizeX} x ${moduleSizeY} mm sandwich`,
+            statusBadge: status === 'generated' ? 'generated' : 'spec only',
+            detailRows: [
+                { label: 'Generator ID', value: generatorId },
+                { label: 'Status', value: status === 'generated' ? 'Generated geometry is current.' : 'Saved spec only.' },
+                { label: 'Parent Logical Volume', value: parentLogicalVolumeName },
+                { label: 'Module Layout', value: `${moduleCount} modules @ ${modulePitch} mm pitch` },
+                { label: 'Module Size', value: `${moduleSizeX} x ${moduleSizeY} mm` },
+                { label: 'Origin Offset', value: `${offsetX}, ${offsetY}, ${offsetZ} mm` },
+                { label: 'Layers', value: layerSummary },
+                { label: 'Generated Logical Volumes', value: buildListValue(generatedLogicalVolumeNames, 'No generated logical volumes recorded') },
+                { label: 'Generated Solids', value: buildListValue(generatedSolidNames, 'No generated solids recorded') },
+                { label: 'Generated Placements', value: buildListValue(generatedPlacementNames, 'No generated placements recorded') },
+            ],
+        };
+    }
+
+    const pattern = entry.pattern && typeof entry.pattern === 'object' ? entry.pattern : {};
+    const pitch = pattern.pitch_mm && typeof pattern.pitch_mm === 'object' ? pattern.pitch_mm : {};
+    const originOffset = pattern.origin_offset_mm && typeof pattern.origin_offset_mm === 'object' ? pattern.origin_offset_mm : {};
+    const hole = entry.hole && typeof entry.hole === 'object' ? entry.hole : {};
     const targetSolidName = resolveObjectName(target.solid_ref, projectState?.solids || {}) || 'unknown_target';
     const resultSolidName = realization.result_solid_ref
         ? resolveObjectName(realization.result_solid_ref, projectState?.solids || {})
         : '';
-
     const targetedLogicalVolumeNames = Array.isArray(target.logical_volume_refs) && target.logical_volume_refs.length > 0
         ? target.logical_volume_refs.map((ref) => resolveObjectName(ref, projectState?.logical_volumes || {})).filter(Boolean)
         : (Array.isArray(generatedRefs.logical_volume_refs) && generatedRefs.logical_volume_refs.length > 0
             ? generatedRefs.logical_volume_refs.map((ref) => resolveObjectName(ref, projectState?.logical_volumes || {})).filter(Boolean)
             : getLogicalVolumeNamesForSolid(projectState, targetSolidName));
-
-    const generatedSolidNames = Array.isArray(generatedRefs.solid_refs)
-        ? generatedRefs.solid_refs.map((ref) => resolveObjectName(ref, projectState?.solids || {})).filter(Boolean)
-        : [];
-
-    const generatorName = normalizeString(entry.name, 'patterned_holes');
-    const generatorId = normalizeString(entry.generator_id, 'unknown_generator');
-    const status = normalizeString(realization.status, 'spec_only');
     const offsetX = formatNumber(originOffset.x);
     const offsetY = formatNumber(originOffset.y);
     const holeDiameter = formatNumber(hole.diameter_mm);

@@ -950,6 +950,73 @@ def test_ai_tool_manage_detector_feature_generator_supports_circular_patterns(pm
     }
 
 
+def test_ai_tool_manage_detector_feature_generator_supports_layered_stacks(pm):
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+
+    result = dispatch_ai_tool(pm, "manage_detector_feature_generator", {
+        "id": "dfg_ai_layered_fixture",
+        "type": "layered_detector_stack",
+        "name": "ai_layered_stack",
+        "target": {
+            "parent_logical_volume": "World",
+        },
+        "stack": {
+            "module_size_mm": {"x": 22.0, "y": 14.0},
+            "module_count": 2,
+            "module_pitch_mm": 7.5,
+            "origin_offset_mm": {"x": 1.0, "y": -1.5, "z": 2.5},
+        },
+        "layers": {
+            "absorber": {
+                "material_ref": "G4_Pb",
+                "thickness_mm": 3.0,
+            },
+            "sensor": {
+                "material_ref": "G4_Si",
+                "thickness_mm": 1.0,
+                "is_sensitive": True,
+            },
+            "support": {
+                "material_ref": "G4_Al",
+                "thickness_mm": 1.5,
+            },
+        },
+        "realize": True,
+    })
+
+    assert result["success"], result
+    assert result["detector_feature_generator"]["generator_type"] == "layered_detector_stack"
+    assert result["detector_feature_generator"]["target"] == {
+        "parent_logical_volume_ref": {
+            "id": world_lv.id,
+            "name": "World",
+        },
+    }
+    assert result["detector_feature_generator"]["stack"] == {
+        "module_size_mm": {"x": 22.0, "y": 14.0},
+        "module_count": 2,
+        "module_pitch_mm": 7.5,
+        "origin_offset_mm": {"x": 1.0, "y": -1.5, "z": 2.5},
+        "anchor": "target_center",
+    }
+    assert result["detector_feature_realization"]["module_count"] == 2
+    assert result["detector_feature_realization"]["module_logical_volume_name"] == "ai_layered_stack__module_lv"
+
+    world_module_pvs = [
+        pv for pv in pm.current_geometry_state.logical_volumes["World"].content
+        if pv.name.startswith("ai_layered_stack__module_")
+    ]
+    assert len(world_module_pvs) == 2
+
+    details = dispatch_ai_tool(pm, "get_component_details", {
+        "component_type": "detector_feature_generator",
+        "name": "dfg_ai_layered_fixture",
+    })
+    assert details["success"], details
+    assert details["result"]["name"] == "ai_layered_stack"
+    assert details["result"]["realization"]["mode"] == "layered_stack"
+
+
 def test_ai_tool_create_primitive_solid(pm):
     res = dispatch_ai_tool(pm, "create_primitive_solid", {
         "name": "AI_Box",

@@ -2,6 +2,7 @@ import { buildDetectorFeatureGeneratorEditorModel } from './detectorFeatureGener
 
 const RECTANGULAR_DRILLED_HOLE_ARRAY = 'rectangular_drilled_hole_array';
 const CIRCULAR_DRILLED_HOLE_ARRAY = 'circular_drilled_hole_array';
+const LAYERED_DETECTOR_STACK = 'layered_detector_stack';
 
 let modalElement;
 let titleElement;
@@ -9,7 +10,8 @@ let confirmButton;
 let cancelButton;
 let nameInput;
 let generatorTypeSelect;
-let targetSolidSelect;
+let targetLabel;
+let targetSelect;
 let targetSummary;
 let targetLockNotice;
 let rectangularFields;
@@ -21,14 +23,32 @@ let circularFields;
 let circularCountInput;
 let circularRadiusInput;
 let circularOrientationInput;
+let layeredFields;
+let moduleSizeXInput;
+let moduleSizeYInput;
+let moduleCountInput;
+let modulePitchInput;
+let absorberThicknessInput;
+let absorberMaterialInput;
+let sensorThicknessInput;
+let sensorMaterialInput;
+let sensorSensitiveInput;
+let supportThicknessInput;
+let supportMaterialInput;
 let offsetXInput;
 let offsetYInput;
+let offsetZRow;
+let offsetZInput;
+let holeFields;
 let holeDiameterInput;
 let holeDepthInput;
 
 let onConfirmCallback = null;
 let currentGeneratorEntry = null;
-let currentTargetOptions = [];
+let currentHoleTargetOptions = [];
+let currentStackTargetOptions = [];
+let currentSelectedHoleTargetName = '';
+let currentSelectedStackTargetName = '';
 
 export function initDetectorFeatureGeneratorEditor(callbacks) {
     onConfirmCallback = callbacks.onConfirm;
@@ -39,7 +59,8 @@ export function initDetectorFeatureGeneratorEditor(callbacks) {
     cancelButton = document.getElementById('detectorFeatureGeneratorCancel');
     nameInput = document.getElementById('detectorFeatureGeneratorName');
     generatorTypeSelect = document.getElementById('detectorFeatureGeneratorType');
-    targetSolidSelect = document.getElementById('detectorFeatureGeneratorTargetSolid');
+    targetLabel = document.getElementById('detectorFeatureGeneratorTargetLabel');
+    targetSelect = document.getElementById('detectorFeatureGeneratorTargetSolid');
     targetSummary = document.getElementById('detectorFeatureGeneratorTargetSummary');
     targetLockNotice = document.getElementById('detectorFeatureGeneratorTargetLockNotice');
     rectangularFields = document.getElementById('detectorFeatureGeneratorRectangularFields');
@@ -51,26 +72,44 @@ export function initDetectorFeatureGeneratorEditor(callbacks) {
     circularCountInput = document.getElementById('detectorFeatureGeneratorCircularCount');
     circularRadiusInput = document.getElementById('detectorFeatureGeneratorCircularRadius');
     circularOrientationInput = document.getElementById('detectorFeatureGeneratorCircularOrientation');
+    layeredFields = document.getElementById('detectorFeatureGeneratorLayeredFields');
+    moduleSizeXInput = document.getElementById('detectorFeatureGeneratorModuleSizeX');
+    moduleSizeYInput = document.getElementById('detectorFeatureGeneratorModuleSizeY');
+    moduleCountInput = document.getElementById('detectorFeatureGeneratorModuleCount');
+    modulePitchInput = document.getElementById('detectorFeatureGeneratorModulePitch');
+    absorberThicknessInput = document.getElementById('detectorFeatureGeneratorAbsorberThickness');
+    absorberMaterialInput = document.getElementById('detectorFeatureGeneratorAbsorberMaterial');
+    sensorThicknessInput = document.getElementById('detectorFeatureGeneratorSensorThickness');
+    sensorMaterialInput = document.getElementById('detectorFeatureGeneratorSensorMaterial');
+    sensorSensitiveInput = document.getElementById('detectorFeatureGeneratorSensorSensitive');
+    supportThicknessInput = document.getElementById('detectorFeatureGeneratorSupportThickness');
+    supportMaterialInput = document.getElementById('detectorFeatureGeneratorSupportMaterial');
     offsetXInput = document.getElementById('detectorFeatureGeneratorOffsetX');
     offsetYInput = document.getElementById('detectorFeatureGeneratorOffsetY');
+    offsetZRow = document.getElementById('detectorFeatureGeneratorOffsetZRow');
+    offsetZInput = document.getElementById('detectorFeatureGeneratorOffsetZ');
+    holeFields = document.getElementById('detectorFeatureGeneratorHoleFields');
     holeDiameterInput = document.getElementById('detectorFeatureGeneratorHoleDiameter');
     holeDepthInput = document.getElementById('detectorFeatureGeneratorHoleDepth');
 
     cancelButton.addEventListener('click', hide);
     confirmButton.addEventListener('click', handleConfirm);
-    generatorTypeSelect.addEventListener('change', updatePatternSectionVisibility);
-    targetSolidSelect.addEventListener('change', updateTargetSummary);
+    generatorTypeSelect.addEventListener('change', updateGeneratorTypeSections);
+    targetSelect.addEventListener('change', updateTargetSummary);
 }
 
 export function show(generatorEntry, projectState, selectedItems = []) {
     const model = buildDetectorFeatureGeneratorEditorModel(projectState, generatorEntry, selectedItems);
-    if (model.targetOptions.length === 0) {
-        alert('Create a box solid before adding a patterned-hole generator.');
+    if (model.holeTargetOptions.length === 0 && model.stackTargetOptions.length === 0) {
+        alert('Create a box solid or choose a logical volume before adding a detector feature generator.');
         return;
     }
 
     currentGeneratorEntry = generatorEntry && typeof generatorEntry === 'object' ? generatorEntry : null;
-    currentTargetOptions = model.targetOptions;
+    currentHoleTargetOptions = model.holeTargetOptions;
+    currentStackTargetOptions = model.stackTargetOptions;
+    currentSelectedHoleTargetName = model.selectedHoleTargetName;
+    currentSelectedStackTargetName = model.selectedStackTargetName;
 
     titleElement.textContent = model.title;
     confirmButton.textContent = model.confirmLabel;
@@ -83,57 +122,105 @@ export function show(generatorEntry, projectState, selectedItems = []) {
     circularCountInput.value = String(model.circularCount);
     circularRadiusInput.value = String(model.circularRadius);
     circularOrientationInput.value = String(model.circularOrientation);
+    moduleSizeXInput.value = String(model.moduleSizeX);
+    moduleSizeYInput.value = String(model.moduleSizeY);
+    moduleCountInput.value = String(model.moduleCount);
+    modulePitchInput.value = String(model.modulePitch);
+    absorberThicknessInput.value = String(model.absorberThickness);
+    absorberMaterialInput.value = model.absorberMaterial;
+    sensorThicknessInput.value = String(model.sensorThickness);
+    sensorMaterialInput.value = model.sensorMaterial;
+    sensorSensitiveInput.checked = Boolean(model.sensorSensitive);
+    supportThicknessInput.value = String(model.supportThickness);
+    supportMaterialInput.value = model.supportMaterial;
     offsetXInput.value = String(model.offsetX);
     offsetYInput.value = String(model.offsetY);
+    offsetZInput.value = String(model.offsetZ);
     holeDiameterInput.value = String(model.holeDiameter);
     holeDepthInput.value = String(model.holeDepth);
 
-    populateTargetOptions(model.targetOptions, model.selectedTargetName);
-    targetSolidSelect.disabled = model.targetLocked;
+    targetSelect.disabled = model.targetLocked;
     generatorTypeSelect.disabled = model.typeLocked;
     if (targetLockNotice) {
         targetLockNotice.hidden = !(model.targetLocked || model.typeLocked);
     }
 
-    updatePatternSectionVisibility();
-    updateTargetSummary();
+    updateGeneratorTypeSections();
     modalElement.style.display = 'block';
 }
 
 function hide() {
     modalElement.style.display = 'none';
     currentGeneratorEntry = null;
-    currentTargetOptions = [];
-    targetSolidSelect.disabled = false;
+    currentHoleTargetOptions = [];
+    currentStackTargetOptions = [];
+    currentSelectedHoleTargetName = '';
+    currentSelectedStackTargetName = '';
+    targetSelect.disabled = false;
     generatorTypeSelect.disabled = false;
     if (targetLockNotice) {
         targetLockNotice.hidden = true;
     }
-    updatePatternSectionVisibility();
+    updateGeneratorTypeSections();
 }
 
-function populateTargetOptions(options, selectedName) {
-    targetSolidSelect.innerHTML = '';
+function getCurrentGeneratorType() {
+    return String(generatorTypeSelect?.value || RECTANGULAR_DRILLED_HOLE_ARRAY).trim();
+}
+
+function getCurrentTargetOptions() {
+    return getCurrentGeneratorType() === LAYERED_DETECTOR_STACK
+        ? currentStackTargetOptions
+        : currentHoleTargetOptions;
+}
+
+function getCurrentSelectedTargetName() {
+    return getCurrentGeneratorType() === LAYERED_DETECTOR_STACK
+        ? currentSelectedStackTargetName
+        : currentSelectedHoleTargetName;
+}
+
+function populateTargetOptions(options, selectedName, targetType) {
+    targetSelect.innerHTML = '';
 
     options.forEach((optionData) => {
         const option = document.createElement('option');
         option.value = optionData.name;
         option.textContent = optionData.name;
-        option.dataset.solidId = optionData.id || '';
-        targetSolidSelect.appendChild(option);
+        if (targetType === 'parent') {
+            option.dataset.parentLogicalVolumeId = optionData.id || '';
+        } else {
+            option.dataset.solidId = optionData.id || '';
+        }
+        targetSelect.appendChild(option);
     });
 
     if (selectedName) {
-        targetSolidSelect.value = selectedName;
+        targetSelect.value = selectedName;
+    }
+
+    if (!targetSelect.value && options[0]) {
+        targetSelect.value = options[0].name;
     }
 }
 
 function updateTargetSummary() {
-    const selectedName = targetSolidSelect.value;
-    const optionData = currentTargetOptions.find((option) => option.name === selectedName);
+    const generatorType = getCurrentGeneratorType();
+    const selectedName = targetSelect.value;
+    const optionData = getCurrentTargetOptions().find((option) => option.name === selectedName);
+
     if (!optionData) {
-        targetSummary.textContent = 'Select a box solid to target.';
+        targetSummary.textContent = generatorType === LAYERED_DETECTOR_STACK
+            ? 'Select a parent logical volume for the generated stack.'
+            : 'Select a box solid to target.';
         targetSummary.title = '';
+        return;
+    }
+
+    if (generatorType === LAYERED_DETECTOR_STACK) {
+        targetSummary.textContent = `Parent logical volume: ${optionData.placementSummary}. Generated modules will be centered on the saved offset.`;
+        targetSummary.title = '';
+        currentSelectedStackTargetName = optionData.name;
         return;
     }
 
@@ -141,6 +228,7 @@ function updateTargetSummary() {
     if (names.length === 0) {
         targetSummary.textContent = 'Matching logical volumes: none yet. The saved spec will still target this box solid.';
         targetSummary.title = '';
+        currentSelectedHoleTargetName = optionData.name;
         return;
     }
 
@@ -148,16 +236,39 @@ function updateTargetSummary() {
     const extraCount = names.length > 3 ? `, +${names.length - 3} more` : '';
     targetSummary.textContent = `Matching logical volumes: ${preview}${extraCount}.`;
     targetSummary.title = names.join('\n');
+    currentSelectedHoleTargetName = optionData.name;
 }
 
-function updatePatternSectionVisibility() {
-    const generatorType = String(generatorTypeSelect?.value || RECTANGULAR_DRILLED_HOLE_ARRAY).trim();
+function updateGeneratorTypeSections() {
+    const generatorType = getCurrentGeneratorType();
+    const isLayeredStack = generatorType === LAYERED_DETECTOR_STACK;
+
     if (rectangularFields) {
         rectangularFields.hidden = generatorType !== RECTANGULAR_DRILLED_HOLE_ARRAY;
     }
     if (circularFields) {
         circularFields.hidden = generatorType !== CIRCULAR_DRILLED_HOLE_ARRAY;
     }
+    if (layeredFields) {
+        layeredFields.hidden = !isLayeredStack;
+    }
+    if (holeFields) {
+        holeFields.hidden = isLayeredStack;
+    }
+    if (offsetZRow) {
+        offsetZRow.hidden = !isLayeredStack;
+    }
+    if (targetLabel) {
+        targetLabel.textContent = isLayeredStack ? 'Parent LV:' : 'Target Solid:';
+    }
+
+    if (isLayeredStack) {
+        populateTargetOptions(currentStackTargetOptions, currentSelectedStackTargetName, 'parent');
+    } else {
+        populateTargetOptions(currentHoleTargetOptions, currentSelectedHoleTargetName, 'solid');
+    }
+
+    updateTargetSummary();
 }
 
 function readPositiveInteger(input, labelText) {
@@ -180,6 +291,14 @@ function readFiniteNumber(input, labelText) {
     const value = Number(input.value);
     if (!Number.isFinite(value)) {
         throw new Error(`${labelText} must be a finite number.`);
+    }
+    return value;
+}
+
+function readRequiredText(input, labelText) {
+    const value = String(input.value || '').trim();
+    if (!value) {
+        throw new Error(`${labelText} is required.`);
     }
     return value;
 }
@@ -212,6 +331,42 @@ function buildPatternPayload(generatorType) {
     };
 }
 
+function buildLayeredStackPayload() {
+    return {
+        stack: {
+            module_size_mm: {
+                x: readPositiveNumber(moduleSizeXInput, 'Module size X'),
+                y: readPositiveNumber(moduleSizeYInput, 'Module size Y'),
+            },
+            module_count: readPositiveInteger(moduleCountInput, 'Module count'),
+            module_pitch_mm: readPositiveNumber(modulePitchInput, 'Module pitch'),
+            origin_offset_mm: {
+                x: readFiniteNumber(offsetXInput, 'Offset X'),
+                y: readFiniteNumber(offsetYInput, 'Offset Y'),
+                z: readFiniteNumber(offsetZInput, 'Offset Z'),
+            },
+            anchor: 'target_center',
+        },
+        layers: {
+            absorber: {
+                material_ref: readRequiredText(absorberMaterialInput, 'Absorber material'),
+                thickness_mm: readPositiveNumber(absorberThicknessInput, 'Absorber thickness'),
+                is_sensitive: false,
+            },
+            sensor: {
+                material_ref: readRequiredText(sensorMaterialInput, 'Sensor material'),
+                thickness_mm: readPositiveNumber(sensorThicknessInput, 'Sensor thickness'),
+                is_sensitive: Boolean(sensorSensitiveInput.checked),
+            },
+            support: {
+                material_ref: readRequiredText(supportMaterialInput, 'Support material'),
+                thickness_mm: readPositiveNumber(supportThicknessInput, 'Support thickness'),
+                is_sensitive: false,
+            },
+        },
+    };
+}
+
 function handleConfirm() {
     if (!onConfirmCallback) {
         return;
@@ -223,12 +378,31 @@ function handleConfirm() {
             throw new Error('Please provide a generator name.');
         }
 
-        const generatorType = String(generatorTypeSelect.value || RECTANGULAR_DRILLED_HOLE_ARRAY).trim();
-        const targetSolidName = String(targetSolidSelect.value || '').trim();
-        const selectedOption = targetSolidSelect.selectedOptions?.[0];
-        const targetSolidId = String(selectedOption?.dataset?.solidId || '').trim();
-        if (!targetSolidName) {
-            throw new Error('Please choose a target solid.');
+        const generatorType = getCurrentGeneratorType();
+        const selectedOption = targetSelect.selectedOptions?.[0];
+        const targetName = String(targetSelect.value || '').trim();
+        if (!targetName) {
+            throw new Error(generatorType === LAYERED_DETECTOR_STACK
+                ? 'Please choose a parent logical volume.'
+                : 'Please choose a target solid.');
+        }
+
+        if (generatorType === LAYERED_DETECTOR_STACK) {
+            onConfirmCallback({
+                generator_id: currentGeneratorEntry?.generator_id,
+                generator_type: generatorType,
+                name: generatorName,
+                target: {
+                    parent_logical_volume_ref: {
+                        id: String(selectedOption?.dataset?.parentLogicalVolumeId || '').trim(),
+                        name: targetName,
+                    },
+                },
+                ...buildLayeredStackPayload(),
+                realize_now: true,
+            });
+            hide();
+            return;
         }
 
         onConfirmCallback({
@@ -237,8 +411,8 @@ function handleConfirm() {
             name: generatorName,
             target: {
                 solid_ref: {
-                    id: targetSolidId,
-                    name: targetSolidName,
+                    id: String(selectedOption?.dataset?.solidId || '').trim(),
+                    name: targetName,
                 },
                 logical_volume_refs: [],
             },

@@ -2483,7 +2483,7 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
 
     const intro = document.createElement('p');
     intro.className = 'detector-feature-generators-intro';
-    intro.textContent = 'Create rectangular or circular drilled-hole patterns against box solids and keep the saved generator parameters editable.';
+    intro.textContent = 'Create drilled-hole patterns against box solids or a fixed absorber/sensor/support detector stack inside a parent logical volume, then keep the saved generator parameters editable.';
     detectorFeatureGeneratorsPanelRoot.appendChild(intro);
 
     const toolbar = document.createElement('div');
@@ -2493,8 +2493,8 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
     addButton.type = 'button';
     addButton.className = 'history-action-btn';
     addButton.textContent = 'New Generator...';
-    addButton.title = 'Create a new patterned-hole generator.';
-    addButton.disabled = targetOptions.length === 0;
+    addButton.title = 'Create a new detector feature generator.';
+    addButton.disabled = targetOptions.length === 0 && Object.keys(projectState?.logical_volumes || {}).length === 0;
     addButton.addEventListener('click', () => {
         if (callbacks.onAddDetectorFeatureGeneratorClicked) {
             callbacks.onAddDetectorFeatureGeneratorClicked();
@@ -2506,9 +2506,8 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
     if (targetOptions.length === 0) {
         const empty = document.createElement('p');
         empty.className = 'detector-feature-generators-empty';
-        empty.textContent = 'No box solids are available yet. Create a box solid first, then add a patterned-hole generator.';
+        empty.textContent = 'No box solids are available yet. You can still create a layered detector stack under an existing logical volume.';
         detectorFeatureGeneratorsPanelRoot.appendChild(empty);
-        return;
     }
 
     if (generators.length === 0) {
@@ -2564,7 +2563,7 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
         editButton.type = 'button';
         editButton.className = 'history-action-btn';
         editButton.textContent = 'Edit...';
-        editButton.title = 'Revise the saved patterned-hole generator parameters.';
+        editButton.title = 'Revise the saved detector-feature-generator parameters.';
         editButton.addEventListener('click', (event) => {
             event.stopPropagation();
             if (callbacks.onEditDetectorFeatureGeneratorClicked) {
@@ -2590,7 +2589,9 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
 
         const note = document.createElement('p');
         note.className = 'detector-feature-note';
-        note.textContent = 'This first UI slice keeps the target solid fixed after creation and focuses revisions on counts, pitch, offsets, and hole size.';
+        note.textContent = rawEntry?.generator_type === 'layered_detector_stack'
+            ? 'This first stack slice keeps the parent LV fixed after creation and focuses revisions on module layout plus absorber/sensor/support sandwich parameters.'
+            : 'This first patterned-hole slice keeps the target solid fixed after creation and focuses revisions on counts, pitch, offsets, and hole size.';
         body.appendChild(note);
 
         card.appendChild(body);

@@ -1042,6 +1042,104 @@ class ProjectManager:
 
         return object_ref or None
 
+    def _find_detector_feature_generated_name(self, object_refs, objects_by_name, *, suffix=None, object_type=None):
+        for object_ref in object_refs or []:
+            candidate_name = (
+                self._resolve_detector_feature_object_name(object_ref, objects_by_name)
+                or self._get_detector_feature_object_name_hint(object_ref)
+            )
+            if not candidate_name or candidate_name not in objects_by_name:
+                continue
+
+            candidate_obj = objects_by_name[candidate_name]
+            if object_type and getattr(candidate_obj, 'type', None) != object_type:
+                continue
+            if suffix and not candidate_name.endswith(suffix):
+                continue
+
+            return candidate_name
+
+        return None
+
+    def _remove_detector_feature_generated_placements(self, placement_refs):
+        if not self.current_geometry_state:
+            return
+
+        placement_ids = set()
+        placement_names = set()
+        for object_ref in placement_refs or []:
+            if not isinstance(object_ref, dict):
+                continue
+            object_id = object_ref.get('id')
+            object_name = object_ref.get('name')
+            if isinstance(object_id, str) and object_id.strip():
+                placement_ids.add(object_id.strip())
+            if isinstance(object_name, str) and object_name.strip():
+                placement_names.add(object_name.strip())
+
+        if not placement_ids and not placement_names:
+            return
+
+        for lv in self.current_geometry_state.logical_volumes.values():
+            if lv.content_type != 'physvol' or not isinstance(lv.content, list):
+                continue
+            lv.content = [
+                pv for pv in lv.content
+                if pv.id not in placement_ids and pv.name not in placement_names
+            ]
+
+    @staticmethod
+    def _build_layered_stack_vis_attributes(role):
+        role_colors = {
+            'absorber': {'r': 0.55, 'g': 0.58, 'b': 0.63, 'a': 0.85},
+            'sensor': {'r': 0.18, 'g': 0.68, 'b': 0.78, 'a': 0.75},
+            'support': {'r': 0.78, 'g': 0.58, 'b': 0.2, 'a': 0.7},
+            'module': {'r': 0.72, 'g': 0.76, 'b': 0.84, 'a': 0.08},
+        }
+        return {'color': role_colors.get(role, role_colors['module'])}
+
+    def _upsert_detector_feature_generated_solid(self, solid_name, solid_type, raw_parameters):
+        state = self.current_geometry_state
+        solid = state.solids.get(solid_name)
+        if solid is None:
+            solid = Solid(solid_name, solid_type, raw_parameters)
+            state.add_solid(solid)
+        else:
+            solid.type = solid_type
+            solid.raw_parameters = raw_parameters
+        return solid
+
+    def _upsert_detector_feature_generated_logical_volume(
+        self,
+        lv_name,
+        *,
+        solid_ref,
+        material_ref,
+        vis_attributes,
+        is_sensitive=False,
+    ):
+        state = self.current_geometry_state
+        lv = state.logical_volumes.get(lv_name)
+        if lv is None:
+            lv = LogicalVolume(
+                lv_name,
+                solid_ref,
+                material_ref,
+                vis_attributes=vis_attributes,
+                is_sensitive=is_sensitive,
+            )
+            state.add_logical_volume(lv)
+        else:
+            lv.solid_ref = solid_ref
+            lv.material_ref = material_ref
+            lv.vis_attributes = vis_attributes
+            lv.is_sensitive = bool(is_sensitive)
+
+        lv.content_type = 'physvol'
+        if not isinstance(lv.content, list):
+            lv.content = []
+        return lv
+
     def _find_detector_feature_generator(self, generator_id):
         if not self.current_geometry_state or not isinstance(generator_id, str) or not generator_id.strip():
             return None, None
@@ -1398,12 +1496,303 @@ class ProjectManager:
             hole_positions_xy,
         )
 
+    def _realize_layered_detector_stack(self, generator_entry):
+        state = self.current_geometry_state
+        generator_id = generator_entry.get('generator_id')
+        generator_name = generator_entry.get('name') or generator_id or 'detector_feature_generator'
+        target_section = generator_entry.get('target', {}) or {}
+        stack = generator_entry.get('stack', {}) or {}
+        layers = generator_entry.get('layers', {}) or {}
+        realization = generator_entry.get('realization', {}) or {}
+        generated_refs = realization.get('generated_object_refs', {}) or {}
+
+        parent_lv_name = self._resolve_detector_feature_object_name(
+            target_section.get('parent_logical_volume_ref'),
+            state.logical_volumes,
+        )
+        if not parent_lv_name:
+            requested_name = (
+                self._get_detector_feature_object_name_hint(target_section.get('parent_logical_volume_ref'))
+                or (target_section.get('parent_logical_volume_ref') or {}).get('id')
+                or '<unknown>'
+            )
+            return None, f"Parent logical volume '{requested_name}' was not found."
+
+        parent_lv = state.logical_volumes.get(parent_lv_name)
+        if parent_lv is None:
+            return None, f"Parent logical volume '{parent_lv_name}' was not found."
+        if parent_lv.content_type != 'physvol':
+            return None, (
+                f"Layered detector-stack generators require parent logical volume "
+                f"'{parent_lv_name}' to use standard placements."
+            )
+
+        if stack.get('anchor') != 'target_center':
+            return None, "Layered detector-stack generators currently require anchor 'target_center'."
+
+        module_size = stack.get('module_size_mm') or {}
+        module_size_x = float(module_size.get('x') or 0.0)
+        module_size_y = float(module_size.get('y') or 0.0)
+        module_count = int(stack.get('module_count') or 0)
+        module_pitch_mm = float(stack.get('module_pitch_mm') or 0.0)
+        origin_offset = stack.get('origin_offset_mm') or {}
+        offset_x = float(origin_offset.get('x') or 0.0)
+        offset_y = float(origin_offset.get('y') or 0.0)
+        offset_z = float(origin_offset.get('z') or 0.0)
+        if module_size_x <= 0.0 or module_size_y <= 0.0:
+            return None, "Layered detector-stack generators require positive module X/Y sizes."
+        if module_count <= 0:
+            return None, "Layered detector-stack generators require a positive module count."
+        if module_pitch_mm <= 0.0:
+            return None, "Layered detector-stack generators require a positive module pitch."
+
+        layer_order = ('absorber', 'sensor', 'support')
+        layer_specs = []
+        total_thickness_mm = 0.0
+        for role in layer_order:
+            layer_entry = layers.get(role) or {}
+            material_ref = str(layer_entry.get('material_ref') or '').strip()
+            thickness_mm = float(layer_entry.get('thickness_mm') or 0.0)
+            if not material_ref:
+                return None, f"Layered detector-stack generators require a material for layer '{role}'."
+            if thickness_mm <= 0.0:
+                return None, f"Layered detector-stack generators require positive thickness for layer '{role}'."
+
+            layer_specs.append({
+                'role': role,
+                'material_ref': material_ref,
+                'thickness_mm': thickness_mm,
+                'is_sensitive': bool(layer_entry.get('is_sensitive', role == 'sensor')),
+            })
+            total_thickness_mm += thickness_mm
+
+        if module_pitch_mm + 1e-9 < total_thickness_mm:
+            return None, (
+                f"Layered detector-stack generator '{generator_name}' requires module_pitch_mm "
+                "to be at least the total layer thickness."
+            )
+
+        prior_result_name = (
+            self._resolve_detector_feature_object_name(realization.get('result_solid_ref'), state.solids)
+            or self._get_detector_feature_object_name_hint(realization.get('result_solid_ref'))
+        )
+        prior_solid_refs = generated_refs.get('solid_refs', []) or []
+        prior_lv_refs = generated_refs.get('logical_volume_refs', []) or []
+        prior_placement_refs = generated_refs.get('placement_refs', []) or []
+
+        module_solid_name = self._find_detector_feature_generated_name(
+            prior_solid_refs,
+            state.solids,
+            suffix='__module_solid',
+            object_type='box',
+        )
+        if module_solid_name is None and prior_result_name in state.solids:
+            prior_result_solid = state.solids[prior_result_name]
+            if prior_result_solid.type == 'box':
+                module_solid_name = prior_result_name
+        if module_solid_name is None:
+            module_solid_name = self._generate_unique_name(
+                f"{generator_name}__module_solid",
+                state.solids,
+            )
+
+        layer_solid_names = {}
+        for role in layer_order:
+            layer_solid_name = self._find_detector_feature_generated_name(
+                prior_solid_refs,
+                state.solids,
+                suffix=f"__{role}_solid",
+                object_type='box',
+            )
+            if layer_solid_name is None:
+                layer_solid_name = self._generate_unique_name(
+                    f"{generator_name}__{role}_solid",
+                    state.solids,
+                )
+            layer_solid_names[role] = layer_solid_name
+
+        module_lv_name = self._find_detector_feature_generated_name(
+            prior_lv_refs,
+            state.logical_volumes,
+            suffix='__module_lv',
+        )
+        if module_lv_name is None:
+            module_lv_name = self._generate_unique_name(
+                f"{generator_name}__module_lv",
+                state.logical_volumes,
+            )
+
+        layer_lv_names = {}
+        for role in layer_order:
+            layer_lv_name = self._find_detector_feature_generated_name(
+                prior_lv_refs,
+                state.logical_volumes,
+                suffix=f"__{role}_lv",
+            )
+            if layer_lv_name is None:
+                layer_lv_name = self._generate_unique_name(
+                    f"{generator_name}__{role}_lv",
+                    state.logical_volumes,
+                )
+            layer_lv_names[role] = layer_lv_name
+
+        self._remove_detector_feature_generated_placements(prior_placement_refs)
+
+        def _fmt(value):
+            return f"{float(value):.12g}"
+
+        module_solid = self._upsert_detector_feature_generated_solid(
+            module_solid_name,
+            'box',
+            {
+                'x': _fmt(module_size_x),
+                'y': _fmt(module_size_y),
+                'z': _fmt(total_thickness_mm),
+            },
+        )
+
+        layer_solids = {}
+        layer_lvs = {}
+        for layer_spec in layer_specs:
+            role = layer_spec['role']
+            layer_solids[role] = self._upsert_detector_feature_generated_solid(
+                layer_solid_names[role],
+                'box',
+                {
+                    'x': _fmt(module_size_x),
+                    'y': _fmt(module_size_y),
+                    'z': _fmt(layer_spec['thickness_mm']),
+                },
+            )
+            layer_lvs[role] = self._upsert_detector_feature_generated_logical_volume(
+                layer_lv_names[role],
+                solid_ref=layer_solid_names[role],
+                material_ref=layer_spec['material_ref'],
+                vis_attributes=self._build_layered_stack_vis_attributes(role),
+                is_sensitive=layer_spec['is_sensitive'],
+            )
+
+        module_lv = self._upsert_detector_feature_generated_logical_volume(
+            module_lv_name,
+            solid_ref=module_solid_name,
+            material_ref=parent_lv.material_ref,
+            vis_attributes=self._build_layered_stack_vis_attributes('module'),
+            is_sensitive=False,
+        )
+        module_lv.content = []
+
+        layer_placements = []
+        z_cursor = -total_thickness_mm / 2.0
+        for layer_index, layer_spec in enumerate(layer_specs, start=1):
+            role = layer_spec['role']
+            z_center = z_cursor + (layer_spec['thickness_mm'] / 2.0)
+            layer_pv = PhysicalVolumePlacement(
+                name=f"{generator_name}__{role}_pv",
+                volume_ref=layer_lv_names[role],
+                parent_lv_name=module_lv_name,
+                copy_number_expr=str(layer_index),
+                position_val_or_ref={
+                    'x': '0',
+                    'y': '0',
+                    'z': _fmt(z_center),
+                },
+                rotation_val_or_ref={'x': '0', 'y': '0', 'z': '0'},
+                scale_val_or_ref={'x': '1', 'y': '1', 'z': '1'},
+            )
+            module_lv.content.append(layer_pv)
+            layer_placements.append(layer_pv)
+            z_cursor += layer_spec['thickness_mm']
+
+        parent_copy_start = self._get_next_copy_number(parent_lv)
+        module_placements = []
+        z_origin = offset_z - (((module_count - 1) * module_pitch_mm) / 2.0)
+        for index in range(module_count):
+            module_pv = PhysicalVolumePlacement(
+                name=f"{generator_name}__module_{index + 1}_pv",
+                volume_ref=module_lv_name,
+                parent_lv_name=parent_lv_name,
+                copy_number_expr=str(parent_copy_start + index),
+                position_val_or_ref={
+                    'x': _fmt(offset_x),
+                    'y': _fmt(offset_y),
+                    'z': _fmt(z_origin + (index * module_pitch_mm)),
+                },
+                rotation_val_or_ref={'x': '0', 'y': '0', 'z': '0'},
+                scale_val_or_ref={'x': '1', 'y': '1', 'z': '1'},
+            )
+            module_placements.append(module_pv)
+
+        parent_lv.content.extend(module_placements)
+
+        layer_detail_parts = [
+            f"{layer_spec['role']}={_fmt(layer_spec['thickness_mm'])} mm {layer_spec['material_ref']}"
+            for layer_spec in layer_specs
+        ]
+
+        generator_entry['realization'] = {
+            'mode': 'layered_stack',
+            'status': 'generated',
+            'result_solid_ref': self._build_detector_feature_object_ref(module_solid),
+            'generated_object_refs': {
+                'solid_refs': [
+                    self._build_detector_feature_object_ref(module_solid),
+                    *[
+                        self._build_detector_feature_object_ref(layer_solids[role])
+                        for role in layer_order
+                    ],
+                ],
+                'logical_volume_refs': [
+                    self._build_detector_feature_object_ref(module_lv),
+                    *[
+                        self._build_detector_feature_object_ref(layer_lvs[role])
+                        for role in layer_order
+                    ],
+                ],
+                'placement_refs': [
+                    *[
+                        self._build_detector_feature_object_ref(module_pv)
+                        for module_pv in module_placements
+                    ],
+                    *[
+                        self._build_detector_feature_object_ref(layer_pv)
+                        for layer_pv in layer_placements
+                    ],
+                ],
+            },
+        }
+
+        return {
+            'generator_id': generator_id,
+            'generator_name': generator_name,
+            'generated_solid_names': [
+                module_solid_name,
+                *[layer_solid_names[role] for role in layer_order],
+            ],
+            'generated_logical_volume_names': [
+                module_lv_name,
+                *[layer_lv_names[role] for role in layer_order],
+            ],
+            'generated_placement_names': [
+                *[module_pv.name for module_pv in module_placements],
+                *[layer_pv.name for layer_pv in layer_placements],
+            ],
+            'result_solid_name': module_solid_name,
+            'module_logical_volume_name': module_lv_name,
+            'parent_logical_volume_name': parent_lv_name,
+            'module_count': module_count,
+            'layer_count': len(layer_specs),
+            'total_thickness_mm': total_thickness_mm,
+            'layer_summary': ", ".join(layer_detail_parts),
+        }, None
+
     def _realize_detector_feature_generator_entry(self, generator_entry):
         generator_type = generator_entry.get('generator_type')
         if generator_type == 'rectangular_drilled_hole_array':
             return self._realize_rectangular_drilled_hole_array(generator_entry)
         if generator_type == 'circular_drilled_hole_array':
             return self._realize_circular_drilled_hole_array(generator_entry)
+        if generator_type == 'layered_detector_stack':
+            return self._realize_layered_detector_stack(generator_entry)
 
         return None, (
             f"Detector feature generator type '{generator_type}' is not supported for realization."
@@ -1428,6 +1817,10 @@ class ProjectManager:
                 candidate_entry['target'] = deepcopy(existing_entry.get('target', {}))
             if 'pattern' not in candidate_entry:
                 candidate_entry['pattern'] = deepcopy(existing_entry.get('pattern', {}))
+            if 'stack' not in candidate_entry:
+                candidate_entry['stack'] = deepcopy(existing_entry.get('stack', {}))
+            if 'layers' not in candidate_entry:
+                candidate_entry['layers'] = deepcopy(existing_entry.get('layers', {}))
             if 'hole' not in candidate_entry:
                 candidate_entry['hole'] = deepcopy(existing_entry.get('hole', {}))
             if 'realization' not in candidate_entry:
@@ -1465,8 +1858,13 @@ class ProjectManager:
                 if not success:
                     raise ValueError(error_msg)
             else:
+                realization_mode = (
+                    'layered_stack'
+                    if generator_entry.get('generator_type') == 'layered_detector_stack'
+                    else 'boolean_subtraction'
+                )
                 generator_entry['realization'] = {
-                    'mode': 'boolean_subtraction',
+                    'mode': realization_mode,
                     'status': 'spec_only',
                     'result_solid_ref': None,
                     'generated_object_refs': {

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     buildDetectorFeatureGeneratorEditorModel,
     describeDetectorFeatureGenerator,
+    listDetectorFeatureGeneratorParentOptions,
     listDetectorFeatureGeneratorTargetOptions,
 } from '../../static/detectorFeatureGeneratorsUi.js';
 
@@ -29,10 +30,10 @@ test('detector feature generator editor model prefers the selected box target', 
         [{ type: 'logical_volume', id: 'collimator_lv', name: 'collimator_lv' }],
     );
 
-    assert.equal(model.selectedTargetName, 'collimator_block');
-    assert.equal(model.selectedTargetId, 'solid-box-1');
+    assert.equal(model.selectedHoleTargetName, 'collimator_block');
+    assert.equal(model.selectedHoleTargetId, 'solid-box-1');
     assert.equal(model.name, 'collimator_block_holes');
-    assert.deepEqual(model.selectedTargetLogicalVolumeNames, ['collimator_lv']);
+    assert.deepEqual(model.selectedHoleTargetLogicalVolumeNames, ['collimator_lv']);
     assert.equal(model.targetLocked, false);
     assert.equal(model.generatorType, 'rectangular_drilled_hole_array');
 });
@@ -180,5 +181,127 @@ test('circular detector feature generator model and description stay determinist
     assert.equal(
         described.detailRows.find((row) => row.label === 'Orientation').value,
         '30 deg',
+    );
+});
+
+test('layered detector stack model and description stay deterministic', () => {
+    const projectState = {
+        solids: {
+            layered_stack__module_solid: {
+                id: 'solid-module-1',
+                name: 'layered_stack__module_solid',
+                type: 'box',
+            },
+            layered_stack__absorber_solid: {
+                id: 'solid-abs-1',
+                name: 'layered_stack__absorber_solid',
+                type: 'box',
+            },
+        },
+        logical_volumes: {
+            World: { id: 'lv-world', name: 'World', solid_ref: 'world_box', content_type: 'physvol', content: [] },
+            layered_stack__module_lv: {
+                id: 'lv-module-1',
+                name: 'layered_stack__module_lv',
+                solid_ref: 'layered_stack__module_solid',
+                content_type: 'physvol',
+                content: [],
+            },
+            layered_stack__absorber_lv: {
+                id: 'lv-abs-1',
+                name: 'layered_stack__absorber_lv',
+                solid_ref: 'layered_stack__absorber_solid',
+                content_type: 'physvol',
+                content: [],
+            },
+            layered_stack__sensor_lv: {
+                id: 'lv-sensor-1',
+                name: 'layered_stack__sensor_lv',
+                solid_ref: 'layered_stack__sensor_solid',
+                content_type: 'physvol',
+                content: [],
+            },
+            layered_stack__support_lv: {
+                id: 'lv-support-1',
+                name: 'layered_stack__support_lv',
+                solid_ref: 'layered_stack__support_solid',
+                content_type: 'physvol',
+                content: [],
+            },
+        },
+    };
+
+    const parentOptions = listDetectorFeatureGeneratorParentOptions(projectState);
+    assert.deepEqual(parentOptions.map((option) => option.name), [
+        'layered_stack__absorber_lv',
+        'layered_stack__module_lv',
+        'layered_stack__sensor_lv',
+        'layered_stack__support_lv',
+        'World',
+    ]);
+
+    const entry = {
+        generator_id: 'dfg_layered_fixture',
+        generator_type: 'layered_detector_stack',
+        name: 'fixture_layered_stack',
+        target: {
+            parent_logical_volume_ref: { id: 'lv-world', name: 'World' },
+        },
+        stack: {
+            module_size_mm: { x: 24, y: 18 },
+            module_count: 3,
+            module_pitch_mm: 8.5,
+            origin_offset_mm: { x: 1.5, y: -2.0, z: 3.0 },
+        },
+        layers: {
+            absorber: { material_ref: 'G4_Pb', thickness_mm: 4.0, is_sensitive: false },
+            sensor: { material_ref: 'G4_Si', thickness_mm: 1.0, is_sensitive: true },
+            support: { material_ref: 'G4_Al', thickness_mm: 2.0, is_sensitive: false },
+        },
+        realization: {
+            status: 'generated',
+            generated_object_refs: {
+                solid_refs: [
+                    { id: 'solid-module-1', name: 'layered_stack__module_solid' },
+                    { id: 'solid-abs-1', name: 'layered_stack__absorber_solid' },
+                ],
+                logical_volume_refs: [
+                    { id: 'lv-module-1', name: 'layered_stack__module_lv' },
+                    { id: 'lv-abs-1', name: 'layered_stack__absorber_lv' },
+                    { id: 'lv-sensor-1', name: 'layered_stack__sensor_lv' },
+                    { id: 'lv-support-1', name: 'layered_stack__support_lv' },
+                ],
+                placement_refs: [
+                    { id: 'pv-module-1', name: 'fixture_layered_stack__module_1_pv' },
+                    { id: 'pv-module-2', name: 'fixture_layered_stack__module_2_pv' },
+                ],
+            },
+        },
+    };
+
+    const model = buildDetectorFeatureGeneratorEditorModel(projectState, entry);
+    assert.equal(model.generatorType, 'layered_detector_stack');
+    assert.equal(model.selectedStackTargetName, 'World');
+    assert.equal(model.selectedStackTargetId, 'lv-world');
+    assert.equal(model.moduleSizeX, 24);
+    assert.equal(model.moduleSizeY, 18);
+    assert.equal(model.moduleCount, 3);
+    assert.equal(model.modulePitch, 8.5);
+    assert.equal(model.absorberMaterial, 'G4_Pb');
+    assert.equal(model.sensorSensitive, true);
+    assert.equal(model.typeLocked, true);
+
+    const described = describeDetectorFeatureGenerator(entry, projectState);
+    assert.equal(
+        described.summary,
+        'Layered stack in World · 3 modules @ 8.5 mm pitch · 24 x 18 mm sandwich',
+    );
+    assert.equal(
+        described.detailRows.find((row) => row.label === 'Module Layout').value,
+        '3 modules @ 8.5 mm pitch',
+    );
+    assert.equal(
+        described.detailRows.find((row) => row.label === 'Layers').value,
+        'absorber 4 mm G4_Pb · sensor 1 mm G4_Si · support 2 mm G4_Al',
     );
 });

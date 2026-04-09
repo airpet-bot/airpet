@@ -9942,7 +9942,10 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
         raw_target = normalized_args.get('target')
 
         if isinstance(raw_target, str):
-            raw_target = {'solid_ref': raw_target}
+            if normalized_args.get('generator_type') == 'layered_detector_stack':
+                raw_target = {'parent_logical_volume_ref': raw_target}
+            else:
+                raw_target = {'solid_ref': raw_target}
 
         if isinstance(raw_target, dict):
             normalized_target = dict(raw_target)
@@ -9974,6 +9977,19 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 if normalized_lv_ref:
                     normalized_lv_refs.append(normalized_lv_ref)
             normalized_target['logical_volume_refs'] = normalized_lv_refs
+
+            raw_parent_lv_ref = normalized_target.get('parent_logical_volume_ref')
+            if raw_parent_lv_ref is None and normalized_target.get('parent_logical_volume') is not None:
+                raw_parent_lv_ref = normalized_target.get('parent_logical_volume')
+            if raw_parent_lv_ref is None and normalized_target.get('parent_lv_ref') is not None:
+                raw_parent_lv_ref = normalized_target.get('parent_lv_ref')
+            if raw_parent_lv_ref is None and normalized_target.get('parent_lv_name') is not None:
+                raw_parent_lv_ref = normalized_target.get('parent_lv_name')
+
+            normalized_target['parent_logical_volume_ref'] = to_detector_feature_object_ref(
+                raw_parent_lv_ref,
+                pm.current_geometry_state.logical_volumes,
+            )
             normalized_args['target'] = normalized_target
 
         return normalized_args

@@ -4655,7 +4655,7 @@
     <div id="detectorFeatureGeneratorModal" class="editor-modal">
         <div class="modal-content" style="width: 560px; height: auto;">
             <div class="modal-header">
-                <h4 id="detectorFeatureGeneratorTitle">New Patterned-Hole Generator</h4>
+                <h4 id="detectorFeatureGeneratorTitle">New Detector Feature Generator</h4>
             </div>
             <div class="modal-body" style="flex-direction: column;">
                 <div class="property_item">
@@ -4663,18 +4663,19 @@
                     <input type="text" id="detectorFeatureGeneratorName" placeholder="e.g., collimator_block_holes">
                 </div>
                 <div class="property_item">
-                    <label for="detectorFeatureGeneratorType">Pattern Layout:</label>
+                    <label for="detectorFeatureGeneratorType">Generator Type:</label>
                     <select id="detectorFeatureGeneratorType">
                         <option value="rectangular_drilled_hole_array">Rectangular Grid</option>
                         <option value="circular_drilled_hole_array">Circular (Bolt Circle)</option>
+                        <option value="layered_detector_stack">Layered Detector Stack</option>
                     </select>
                 </div>
                 <div class="property_item">
-                    <label for="detectorFeatureGeneratorTargetSolid">Target Solid:</label>
+                    <label id="detectorFeatureGeneratorTargetLabel" for="detectorFeatureGeneratorTargetSolid">Target Solid:</label>
                     <select id="detectorFeatureGeneratorTargetSolid"></select>
                 </div>
                 <p id="detectorFeatureGeneratorTargetSummary">Matching logical volumes will be updated on generation.</p>
-                <p id="detectorFeatureGeneratorTargetLockNotice" hidden>The target solid and pattern layout are fixed after creation in this first UI slice.</p>
+                <p id="detectorFeatureGeneratorTargetLockNotice" hidden>The target and generator type are fixed after creation in this first UI slice.</p>
                 <hr>
                 <div id="detectorFeatureGeneratorRectangularFields">
                     <div class="property_item">
@@ -4708,6 +4709,52 @@
                         <input type="number" id="detectorFeatureGeneratorCircularOrientation" step="any" value="0">
                     </div>
                 </div>
+                <div id="detectorFeatureGeneratorLayeredFields" hidden>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorModuleSizeX">Module Size X (mm):</label>
+                        <input type="number" id="detectorFeatureGeneratorModuleSizeX" min="0.001" step="any" value="24">
+                    </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorModuleSizeY">Module Size Y (mm):</label>
+                        <input type="number" id="detectorFeatureGeneratorModuleSizeY" min="0.001" step="any" value="18">
+                    </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorModuleCount">Module Count:</label>
+                        <input type="number" id="detectorFeatureGeneratorModuleCount" min="1" step="1" value="3">
+                    </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorModulePitch">Module Pitch Z (mm):</label>
+                        <input type="number" id="detectorFeatureGeneratorModulePitch" min="0.001" step="any" value="8">
+                    </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorAbsorberThickness">Absorber Thickness (mm):</label>
+                        <input type="number" id="detectorFeatureGeneratorAbsorberThickness" min="0.001" step="any" value="4">
+                    </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorAbsorberMaterial">Absorber Material:</label>
+                        <input type="text" id="detectorFeatureGeneratorAbsorberMaterial" value="G4_Pb" placeholder="e.g., G4_Pb">
+                    </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorSensorThickness">Sensor Thickness (mm):</label>
+                        <input type="number" id="detectorFeatureGeneratorSensorThickness" min="0.001" step="any" value="1">
+                    </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorSensorMaterial">Sensor Material:</label>
+                        <input type="text" id="detectorFeatureGeneratorSensorMaterial" value="G4_Si" placeholder="e.g., G4_Si">
+                    </div>
+                    <div class="property_item">
+                        <input type="checkbox" id="detectorFeatureGeneratorSensorSensitive" checked>
+                        <label for="detectorFeatureGeneratorSensorSensitive" style="width:auto;">Mark the sensor layer as sensitive</label>
+                    </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorSupportThickness">Support Thickness (mm):</label>
+                        <input type="number" id="detectorFeatureGeneratorSupportThickness" min="0.001" step="any" value="2">
+                    </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorSupportMaterial">Support Material:</label>
+                        <input type="text" id="detectorFeatureGeneratorSupportMaterial" value="G4_Al" placeholder="e.g., G4_Al">
+                    </div>
+                </div>
                 <div class="property_item">
                     <label for="detectorFeatureGeneratorOffsetX">Offset X (mm):</label>
                     <input type="number" id="detectorFeatureGeneratorOffsetX" step="any" value="0">
@@ -4716,15 +4763,21 @@
                     <label for="detectorFeatureGeneratorOffsetY">Offset Y (mm):</label>
                     <input type="number" id="detectorFeatureGeneratorOffsetY" step="any" value="0">
                 </div>
-                <div class="property_item">
-                    <label for="detectorFeatureGeneratorHoleDiameter">Hole Diameter (mm):</label>
-                    <input type="number" id="detectorFeatureGeneratorHoleDiameter" min="0.001" step="any" value="2">
+                <div class="property_item" id="detectorFeatureGeneratorOffsetZRow" hidden>
+                    <label for="detectorFeatureGeneratorOffsetZ">Offset Z (mm):</label>
+                    <input type="number" id="detectorFeatureGeneratorOffsetZ" step="any" value="0">
                 </div>
-                <div class="property_item">
-                    <label for="detectorFeatureGeneratorHoleDepth">Hole Depth (mm):</label>
-                    <input type="number" id="detectorFeatureGeneratorHoleDepth" min="0.001" step="any" value="5">
+                <div id="detectorFeatureGeneratorHoleFields">
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorHoleDiameter">Hole Diameter (mm):</label>
+                        <input type="number" id="detectorFeatureGeneratorHoleDiameter" min="0.001" step="any" value="2">
+                    </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorHoleDepth">Hole Depth (mm):</label>
+                        <input type="number" id="detectorFeatureGeneratorHoleDepth" min="0.001" step="any" value="5">
+                    </div>
                 </div>
-                <p style="margin: 8px 0 0 0; font-size: 11px; color: #64748b;">Patterned-hole generators currently use the target center anchor and drill cylindrical holes along +Z into box solids.</p>
+                <p style="margin: 8px 0 0 0; font-size: 11px; color: #64748b;">Hole generators drill cylindrical holes along +Z into box solids. Layered stacks generate a fixed absorber/sensor/support sandwich and place repeated modules along +Z inside the selected parent logical volume.</p>
             </div>
             <div class="modal-footer">
                 <button id="detectorFeatureGeneratorCancel">Cancel</button>
