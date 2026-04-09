@@ -356,7 +356,7 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
             "Create or update a saved detector feature generator. Current MVP supports "
             "rectangular drilled-hole arrays, a narrow circular bolt-circle variant, "
             "a fixed absorber/sensor/support layered detector stack, a rectangular tiled sensor array, "
-            "a repeated support-rib array, and a straight channel-cut array. "
+            "a repeated support-rib array, a straight channel-cut array, and an annular shield sleeve. "
             "Reuse generator_id to update an existing generator and keep realize_now=true "
             "when you want regenerated geometry plus a deterministic realization summary back."
         ),
@@ -380,6 +380,7 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
                         "tiled_sensor_array",
                         "support_rib_array",
                         "channel_cut_array",
+                        "annular_shield_sleeve",
                     ],
                     "description": "Detector feature generator type.",
                 },
@@ -407,7 +408,7 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
                             "items": object_ref_schema,
                         },
                         "parent_logical_volume_ref": _detector_feature_object_ref_param(
-                            "Parent logical-volume reference for layered detector stacks, tiled sensor arrays, and support-rib arrays."
+                            "Parent logical-volume reference for layered detector stacks, tiled sensor arrays, support-rib arrays, and annular shield sleeves."
                         ),
                     },
                 },
@@ -554,6 +555,31 @@ def _create_manage_detector_feature_generator_tool() -> Dict[str, Any]:
                     "properties": {
                         "width_mm": {"type": "number"},
                         "depth_mm": {"type": "number"},
+                    },
+                },
+                "shield": {
+                    "type": "object",
+                    "description": (
+                        "Annular shield-sleeve parameters. Provide inner_radius_mm, outer_radius_mm, "
+                        "length_mm, material_ref, and optional origin_offset_mm."
+                    ),
+                    "properties": {
+                        "inner_radius_mm": {"type": "number"},
+                        "outer_radius_mm": {"type": "number"},
+                        "length_mm": {"type": "number"},
+                        "material_ref": {"type": "string"},
+                        "origin_offset_mm": {
+                            "type": "object",
+                            "properties": {
+                                "x": {"type": "number"},
+                                "y": {"type": "number"},
+                                "z": {"type": "number"},
+                            },
+                        },
+                        "anchor": {
+                            "type": "string",
+                            "enum": ["target_center"],
+                        },
                     },
                 },
                 "sensor": {

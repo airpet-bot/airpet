@@ -2483,7 +2483,7 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
 
     const intro = document.createElement('p');
     intro.className = 'detector-feature-generators-intro';
-    intro.textContent = 'Create drilled-hole patterns or straight channel cuts against box solids, plus fixed detector stacks, support-rib arrays, or tiled sensor arrays inside a parent logical volume, then keep the saved generator parameters editable.';
+    intro.textContent = 'Create drilled-hole patterns or straight channel cuts against box solids, plus fixed detector stacks, support-rib arrays, tiled sensor arrays, or annular shield sleeves inside a parent logical volume, then keep the saved generator parameters editable.';
     detectorFeatureGeneratorsPanelRoot.appendChild(intro);
 
     const toolbar = document.createElement('div');
@@ -2506,7 +2506,7 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
     if (targetOptions.length === 0) {
         const empty = document.createElement('p');
         empty.className = 'detector-feature-generators-empty';
-        empty.textContent = 'No box solids are available yet. You can still create a layered detector stack or support-rib array under an existing logical volume.';
+        empty.textContent = 'No box solids are available yet. You can still create a layered detector stack, support-rib array, or annular shield sleeve under an existing logical volume.';
         detectorFeatureGeneratorsPanelRoot.appendChild(empty);
     }
 
@@ -2595,6 +2595,8 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
                 ? 'This first tiled-array slice keeps the parent LV fixed after creation and focuses revisions on grid counts, pitch, offsets, and the generated sensor-cell geometry.'
                 : rawEntry?.generator_type === 'support_rib_array'
                     ? 'This first support-rib slice keeps the parent LV fixed after creation and focuses revisions on linear rib count, pitch, offsets, and rib geometry/material.'
+                    : rawEntry?.generator_type === 'annular_shield_sleeve'
+                        ? 'This first shield-recipe slice keeps the parent LV fixed after creation and focuses revisions on inner/outer radii, axial length, material, and offset.'
                     : rawEntry?.generator_type === 'channel_cut_array'
                         ? 'This first channel-cut slice keeps the target solid fixed after creation and focuses revisions on linear channel count, pitch, offsets, and cut depth/width.'
                 : 'This first patterned-hole slice keeps the target solid fixed after creation and focuses revisions on counts, pitch, offsets, and hole size.';

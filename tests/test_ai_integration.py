@@ -123,6 +123,7 @@ def test_detector_feature_generator_ai_schema_exposes_manage_and_inspect_tools()
         "tiled_sensor_array",
         "support_rib_array",
         "channel_cut_array",
+        "annular_shield_sleeve",
     ]
     assert "target" in manage_properties
     assert "pattern" in manage_properties
@@ -132,6 +133,7 @@ def test_detector_feature_generator_ai_schema_exposes_manage_and_inspect_tools()
     assert "sensor" in manage_properties
     assert "rib" in manage_properties
     assert "channel" in manage_properties
+    assert "shield" in manage_properties
     assert "layers" in manage_properties
     assert "realize_now" in manage_properties
     assert "generator_type" in manage_required

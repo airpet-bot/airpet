@@ -1094,6 +1094,7 @@ class ProjectManager:
             'absorber': {'r': 0.55, 'g': 0.58, 'b': 0.63, 'a': 0.85},
             'sensor': {'r': 0.18, 'g': 0.68, 'b': 0.78, 'a': 0.75},
             'support': {'r': 0.78, 'g': 0.58, 'b': 0.2, 'a': 0.7},
+            'shield': {'r': 0.46, 'g': 0.48, 'b': 0.25, 'a': 0.72},
             'module': {'r': 0.72, 'g': 0.76, 'b': 0.84, 'a': 0.08},
         }
         return {'color': role_colors.get(role, role_colors['module'])}
@@ -2373,6 +2374,168 @@ class ProjectManager:
             'pitch_mm': linear_pitch_mm,
         }, None
 
+    def _realize_annular_shield_sleeve(self, generator_entry):
+        state = self.current_geometry_state
+        generator_id = generator_entry.get('generator_id')
+        generator_name = generator_entry.get('name') or generator_id or 'detector_feature_generator'
+        target_section = generator_entry.get('target', {}) or {}
+        shield = generator_entry.get('shield', {}) or {}
+        realization = generator_entry.get('realization', {}) or {}
+        generated_refs = realization.get('generated_object_refs', {}) or {}
+
+        parent_lv_name = self._resolve_detector_feature_object_name(
+            target_section.get('parent_logical_volume_ref'),
+            state.logical_volumes,
+        )
+        if not parent_lv_name:
+            requested_name = (
+                self._get_detector_feature_object_name_hint(target_section.get('parent_logical_volume_ref'))
+                or (target_section.get('parent_logical_volume_ref') or {}).get('id')
+                or '<unknown>'
+            )
+            return None, f"Parent logical volume '{requested_name}' was not found."
+
+        parent_lv = state.logical_volumes.get(parent_lv_name)
+        if parent_lv is None:
+            return None, f"Parent logical volume '{parent_lv_name}' was not found."
+        if parent_lv.content_type != 'physvol':
+            return None, (
+                f"Annular shield-sleeve generators require parent logical volume "
+                f"'{parent_lv_name}' to use standard placements."
+            )
+
+        if shield.get('anchor') != 'target_center':
+            return None, "Annular shield-sleeve generators currently require anchor 'target_center'."
+
+        inner_radius_mm = float(shield.get('inner_radius_mm') or 0.0)
+        outer_radius_mm = float(shield.get('outer_radius_mm') or 0.0)
+        length_mm = float(shield.get('length_mm') or 0.0)
+        material_ref = str(shield.get('material_ref') or '').strip()
+        origin_offset = shield.get('origin_offset_mm') or {}
+        offset_x = float(origin_offset.get('x') or 0.0)
+        offset_y = float(origin_offset.get('y') or 0.0)
+        offset_z = float(origin_offset.get('z') or 0.0)
+
+        if inner_radius_mm <= 0.0:
+            return None, "Annular shield-sleeve generators require a positive inner radius."
+        if outer_radius_mm <= inner_radius_mm:
+            return None, (
+                f"Annular shield-sleeve generator '{generator_name}' requires outer_radius_mm "
+                "to be greater than inner_radius_mm."
+            )
+        if length_mm <= 0.0:
+            return None, "Annular shield-sleeve generators require a positive axial length."
+        if not material_ref:
+            return None, "Annular shield-sleeve generators require a shield material."
+
+        prior_result_name = (
+            self._resolve_detector_feature_object_name(realization.get('result_solid_ref'), state.solids)
+            or self._get_detector_feature_object_name_hint(realization.get('result_solid_ref'))
+        )
+        prior_solid_refs = generated_refs.get('solid_refs', []) or []
+        prior_lv_refs = generated_refs.get('logical_volume_refs', []) or []
+        prior_placement_refs = generated_refs.get('placement_refs', []) or []
+
+        shield_solid_name = self._find_detector_feature_generated_name(
+            prior_solid_refs,
+            state.solids,
+            suffix='__shield_solid',
+            object_type='tube',
+        )
+        if shield_solid_name is None and prior_result_name in state.solids:
+            prior_result_solid = state.solids[prior_result_name]
+            if prior_result_solid.type == 'tube':
+                shield_solid_name = prior_result_name
+        if shield_solid_name is None:
+            shield_solid_name = self._generate_unique_name(
+                f"{generator_name}__shield_solid",
+                state.solids,
+            )
+
+        shield_lv_name = self._find_detector_feature_generated_name(
+            prior_lv_refs,
+            state.logical_volumes,
+            suffix='__shield_lv',
+        )
+        if shield_lv_name is None:
+            shield_lv_name = self._generate_unique_name(
+                f"{generator_name}__shield_lv",
+                state.logical_volumes,
+            )
+
+        self._remove_detector_feature_generated_placements(prior_placement_refs)
+
+        def _fmt(value):
+            return f"{float(value):.12g}"
+
+        shield_solid = self._upsert_detector_feature_generated_solid(
+            shield_solid_name,
+            'tube',
+            {
+                'rmin': _fmt(inner_radius_mm),
+                'rmax': _fmt(outer_radius_mm),
+                'z': _fmt(length_mm),
+                'startphi': '0',
+                'deltaphi': '360',
+            },
+        )
+
+        shield_lv = self._upsert_detector_feature_generated_logical_volume(
+            shield_lv_name,
+            solid_ref=shield_solid_name,
+            material_ref=material_ref,
+            vis_attributes=self._build_layered_stack_vis_attributes('shield'),
+            is_sensitive=False,
+        )
+        shield_lv.content = []
+
+        shield_pv = PhysicalVolumePlacement(
+            name=f"{generator_name}__shield_pv",
+            volume_ref=shield_lv_name,
+            parent_lv_name=parent_lv_name,
+            copy_number_expr=str(self._get_next_copy_number(parent_lv)),
+            position_val_or_ref={
+                'x': _fmt(offset_x),
+                'y': _fmt(offset_y),
+                'z': _fmt(offset_z),
+            },
+            rotation_val_or_ref={'x': '0', 'y': '0', 'z': '0'},
+            scale_val_or_ref={'x': '1', 'y': '1', 'z': '1'},
+        )
+        parent_lv.content.append(shield_pv)
+
+        generator_entry['realization'] = {
+            'mode': 'placement_array',
+            'status': 'generated',
+            'result_solid_ref': self._build_detector_feature_object_ref(shield_solid),
+            'generated_object_refs': {
+                'solid_refs': [
+                    self._build_detector_feature_object_ref(shield_solid),
+                ],
+                'logical_volume_refs': [
+                    self._build_detector_feature_object_ref(shield_lv),
+                ],
+                'placement_refs': [
+                    self._build_detector_feature_object_ref(shield_pv),
+                ],
+            },
+        }
+
+        return {
+            'generator_id': generator_id,
+            'generator_name': generator_name,
+            'generated_solid_names': [shield_solid_name],
+            'generated_logical_volume_names': [shield_lv_name],
+            'generated_placement_names': [shield_pv.name],
+            'result_solid_name': shield_solid_name,
+            'shield_logical_volume_name': shield_lv_name,
+            'parent_logical_volume_name': parent_lv_name,
+            'inner_radius_mm': inner_radius_mm,
+            'outer_radius_mm': outer_radius_mm,
+            'length_mm': length_mm,
+            'material_ref': material_ref,
+        }, None
+
     def _realize_detector_feature_generator_entry(self, generator_entry):
         generator_type = generator_entry.get('generator_type')
         if generator_type == 'rectangular_drilled_hole_array':
@@ -2387,6 +2550,8 @@ class ProjectManager:
             return self._realize_support_rib_array(generator_entry)
         if generator_type == 'channel_cut_array':
             return self._realize_channel_cut_array(generator_entry)
+        if generator_type == 'annular_shield_sleeve':
+            return self._realize_annular_shield_sleeve(generator_entry)
 
         return None, (
             f"Detector feature generator type '{generator_type}' is not supported for realization."
@@ -2419,6 +2584,8 @@ class ProjectManager:
                 candidate_entry['layers'] = deepcopy(existing_entry.get('layers', {}))
             if 'sensor' not in candidate_entry:
                 candidate_entry['sensor'] = deepcopy(existing_entry.get('sensor', {}))
+            if 'shield' not in candidate_entry:
+                candidate_entry['shield'] = deepcopy(existing_entry.get('shield', {}))
             if 'hole' not in candidate_entry:
                 candidate_entry['hole'] = deepcopy(existing_entry.get('hole', {}))
             if 'realization' not in candidate_entry:
@@ -2460,7 +2627,7 @@ class ProjectManager:
                     'layered_stack'
                     if generator_entry.get('generator_type') == 'layered_detector_stack'
                     else 'placement_array'
-                    if generator_entry.get('generator_type') in {'tiled_sensor_array', 'support_rib_array'}
+                    if generator_entry.get('generator_type') in {'tiled_sensor_array', 'support_rib_array', 'annular_shield_sleeve'}
                     else 'boolean_subtraction'
                 )
                 generator_entry['realization'] = {

@@ -480,6 +480,80 @@ test('support rib array model and description stay deterministic', () => {
     );
 });
 
+test('annular shield sleeve model and description stay deterministic', () => {
+    const projectState = {
+        solids: {
+            annular_shield__shield_solid: {
+                id: 'solid-shield-1',
+                name: 'annular_shield__shield_solid',
+                type: 'tube',
+            },
+        },
+        logical_volumes: {
+            World: { id: 'lv-world', name: 'World', solid_ref: 'world_box', content_type: 'physvol', content: [] },
+            annular_shield__shield_lv: {
+                id: 'lv-shield-1',
+                name: 'annular_shield__shield_lv',
+                solid_ref: 'annular_shield__shield_solid',
+                content_type: 'physvol',
+                content: [],
+            },
+        },
+    };
+
+    const entry = {
+        generator_id: 'dfg_shield_fixture',
+        generator_type: 'annular_shield_sleeve',
+        name: 'fixture_shield_sleeve',
+        target: {
+            parent_logical_volume_ref: { id: 'lv-world', name: 'World' },
+        },
+        shield: {
+            inner_radius_mm: 9.5,
+            outer_radius_mm: 14.0,
+            length_mm: 42.0,
+            material_ref: 'G4_Pb',
+            origin_offset_mm: { x: 1.5, y: -2.0, z: 3.0 },
+        },
+        realization: {
+            status: 'generated',
+            generated_object_refs: {
+                solid_refs: [
+                    { id: 'solid-shield-1', name: 'annular_shield__shield_solid' },
+                ],
+                logical_volume_refs: [
+                    { id: 'lv-shield-1', name: 'annular_shield__shield_lv' },
+                ],
+                placement_refs: [
+                    { id: 'pv-shield-1', name: 'fixture_shield_sleeve__shield_pv' },
+                ],
+            },
+        },
+    };
+
+    const model = buildDetectorFeatureGeneratorEditorModel(projectState, entry);
+    assert.equal(model.generatorType, 'annular_shield_sleeve');
+    assert.equal(model.selectedStackTargetName, 'World');
+    assert.equal(model.shieldInnerRadius, 9.5);
+    assert.equal(model.shieldOuterRadius, 14);
+    assert.equal(model.shieldLength, 42);
+    assert.equal(model.shieldMaterial, 'G4_Pb');
+
+    const described = describeDetectorFeatureGenerator(entry, projectState);
+    assert.equal(
+        described.summary,
+        'Annular shield sleeve in World · r 9.5 to 14 mm x 42 mm G4_Pb',
+    );
+    assert.equal(
+        described.detailRows.find((row) => row.label === 'Shield Geometry').value,
+        'rmin 9.5 mm, rmax 14 mm, length 42 mm',
+    );
+    assert.equal(
+        described.detailRows.find((row) => row.label === 'Material').value,
+        'G4_Pb',
+    );
+});
+
 test('channel cut array model and description stay deterministic', () => {
     const projectState = {
         solids: {

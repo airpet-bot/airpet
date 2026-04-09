@@ -6,6 +6,7 @@ const LAYERED_DETECTOR_STACK = 'layered_detector_stack';
 const TILED_SENSOR_ARRAY = 'tiled_sensor_array';
 const SUPPORT_RIB_ARRAY = 'support_rib_array';
 const CHANNEL_CUT_ARRAY = 'channel_cut_array';
+const ANNULAR_SHIELD_SLEEVE = 'annular_shield_sleeve';
 
 let modalElement;
 let titleElement;
@@ -56,6 +57,11 @@ let ribSensitiveInput;
 let channelFields;
 let channelWidthInput;
 let channelDepthInput;
+let shieldFields;
+let shieldInnerRadiusInput;
+let shieldOuterRadiusInput;
+let shieldLengthInput;
+let shieldMaterialInput;
 let offsetXInput;
 let offsetYInput;
 let offsetZRow;
@@ -123,6 +129,11 @@ export function initDetectorFeatureGeneratorEditor(callbacks) {
     channelFields = document.getElementById('detectorFeatureGeneratorChannelFields');
     channelWidthInput = document.getElementById('detectorFeatureGeneratorChannelWidth');
     channelDepthInput = document.getElementById('detectorFeatureGeneratorChannelDepth');
+    shieldFields = document.getElementById('detectorFeatureGeneratorShieldFields');
+    shieldInnerRadiusInput = document.getElementById('detectorFeatureGeneratorShieldInnerRadius');
+    shieldOuterRadiusInput = document.getElementById('detectorFeatureGeneratorShieldOuterRadius');
+    shieldLengthInput = document.getElementById('detectorFeatureGeneratorShieldLength');
+    shieldMaterialInput = document.getElementById('detectorFeatureGeneratorShieldMaterial');
     offsetXInput = document.getElementById('detectorFeatureGeneratorOffsetX');
     offsetYInput = document.getElementById('detectorFeatureGeneratorOffsetY');
     offsetZRow = document.getElementById('detectorFeatureGeneratorOffsetZRow');
@@ -186,6 +197,10 @@ export function show(generatorEntry, projectState, selectedItems = []) {
     ribSensitiveInput.checked = Boolean(model.ribSensitive);
     channelWidthInput.value = String(model.channelWidth);
     channelDepthInput.value = String(model.channelDepth);
+    shieldInnerRadiusInput.value = String(model.shieldInnerRadius);
+    shieldOuterRadiusInput.value = String(model.shieldOuterRadius);
+    shieldLengthInput.value = String(model.shieldLength);
+    shieldMaterialInput.value = model.shieldMaterial;
     offsetXInput.value = String(model.offsetX);
     offsetYInput.value = String(model.offsetY);
     offsetZInput.value = String(model.offsetZ);
@@ -226,6 +241,7 @@ function usesParentLogicalVolumeTarget(generatorType) {
         generatorType === LAYERED_DETECTOR_STACK
         || generatorType === TILED_SENSOR_ARRAY
         || generatorType === SUPPORT_RIB_ARRAY
+        || generatorType === ANNULAR_SHIELD_SLEEVE
     );
 }
 
@@ -237,6 +253,32 @@ function getCurrentTargetOptions() {
     return usesParentLogicalVolumeTarget(getCurrentGeneratorType())
         ? currentStackTargetOptions
         : currentHoleTargetOptions;
+}
+
+function getEmptyParentTargetSummary(generatorType) {
+    if (generatorType === TILED_SENSOR_ARRAY) {
+        return 'Select a parent logical volume for the tiled sensors.';
+    }
+    if (generatorType === SUPPORT_RIB_ARRAY) {
+        return 'Select a parent logical volume for the generated support ribs.';
+    }
+    if (generatorType === ANNULAR_SHIELD_SLEEVE) {
+        return 'Select a parent logical volume for the generated shield sleeve.';
+    }
+    return 'Select a parent logical volume for the generated stack.';
+}
+
+function getParentTargetSummary(generatorType, optionData) {
+    if (generatorType === TILED_SENSOR_ARRAY) {
+        return `Parent logical volume: ${optionData.placementSummary}. Generated sensor cells will be centered on the saved X/Y/Z offset.`;
+    }
+    if (generatorType === SUPPORT_RIB_ARRAY) {
+        return `Parent logical volume: ${optionData.placementSummary}. Generated ribs will be centered on the saved X/Y/Z offset.`;
+    }
+    if (generatorType === ANNULAR_SHIELD_SLEEVE) {
+        return `Parent logical volume: ${optionData.placementSummary}. Generated shield sleeves will be centered on the saved X/Y/Z offset.`;
+    }
+    return `Parent logical volume: ${optionData.placementSummary}. Generated modules will be centered on the saved offset.`;
 }
 
 function populateTargetOptions(options, selectedName, targetType) {
@@ -270,22 +312,14 @@ function updateTargetSummary() {
 
     if (!optionData) {
         targetSummary.textContent = usesParentLogicalVolumeTarget(generatorType)
-            ? generatorType === TILED_SENSOR_ARRAY
-                ? 'Select a parent logical volume for the tiled sensors.'
-                : generatorType === SUPPORT_RIB_ARRAY
-                    ? 'Select a parent logical volume for the generated support ribs.'
-                    : 'Select a parent logical volume for the generated stack.'
+            ? getEmptyParentTargetSummary(generatorType)
             : 'Select a box solid to target.';
         targetSummary.title = '';
         return;
     }
 
     if (usesParentLogicalVolumeTarget(generatorType)) {
-        targetSummary.textContent = generatorType === TILED_SENSOR_ARRAY
-            ? `Parent logical volume: ${optionData.placementSummary}. Generated sensor cells will be centered on the saved X/Y/Z offset.`
-            : generatorType === SUPPORT_RIB_ARRAY
-                ? `Parent logical volume: ${optionData.placementSummary}. Generated ribs will be centered on the saved X/Y/Z offset.`
-                : `Parent logical volume: ${optionData.placementSummary}. Generated modules will be centered on the saved offset.`;
+        targetSummary.textContent = getParentTargetSummary(generatorType, optionData);
         targetSummary.title = '';
         currentSelectedStackTargetName = optionData.name;
         return;
@@ -314,6 +348,7 @@ function updateGeneratorTypeSections() {
     const isTiledSensorArray = generatorType === TILED_SENSOR_ARRAY;
     const isSupportRibArray = generatorType === SUPPORT_RIB_ARRAY;
     const isChannelCutArray = generatorType === CHANNEL_CUT_ARRAY;
+    const isShieldSleeve = generatorType === ANNULAR_SHIELD_SLEEVE;
     const isLinearStripArray = usesLinearStripArray(generatorType);
 
     if (rectangularFields) {
@@ -340,11 +375,14 @@ function updateGeneratorTypeSections() {
     if (channelFields) {
         channelFields.hidden = !isChannelCutArray;
     }
+    if (shieldFields) {
+        shieldFields.hidden = !isShieldSleeve;
+    }
     if (holeFields) {
-        holeFields.hidden = isLayeredStack || isTiledSensorArray || isSupportRibArray || isChannelCutArray;
+        holeFields.hidden = isLayeredStack || isTiledSensorArray || isSupportRibArray || isChannelCutArray || isShieldSleeve;
     }
     if (offsetZRow) {
-        offsetZRow.hidden = !isLayeredStack && !isTiledSensorArray && !isSupportRibArray;
+        offsetZRow.hidden = !isLayeredStack && !isTiledSensorArray && !isSupportRibArray && !isShieldSleeve;
     }
     if (targetLabel) {
         targetLabel.textContent = usesParentLogicalVolumeTarget(generatorType) ? 'Parent LV:' : 'Target Solid:';
@@ -525,6 +563,23 @@ function buildChannelCutPayload() {
     };
 }
 
+function buildShieldPayload() {
+    return {
+        shield: {
+            inner_radius_mm: readPositiveNumber(shieldInnerRadiusInput, 'Shield inner radius'),
+            outer_radius_mm: readPositiveNumber(shieldOuterRadiusInput, 'Shield outer radius'),
+            length_mm: readPositiveNumber(shieldLengthInput, 'Shield length'),
+            material_ref: readRequiredText(shieldMaterialInput, 'Shield material'),
+            origin_offset_mm: {
+                x: readFiniteNumber(offsetXInput, 'Offset X'),
+                y: readFiniteNumber(offsetYInput, 'Offset Y'),
+                z: readFiniteNumber(offsetZInput, 'Offset Z'),
+            },
+            anchor: 'target_center',
+        },
+    };
+}
+
 function handleConfirm() {
     if (!onConfirmCallback) {
         return;
@@ -556,7 +611,9 @@ function handleConfirm() {
                         name: targetName,
                     },
                 },
-                ...(generatorType === TILED_SENSOR_ARRAY
+                ...(generatorType === ANNULAR_SHIELD_SLEEVE
+                    ? buildShieldPayload()
+                    : generatorType === TILED_SENSOR_ARRAY
                     ? buildTiledSensorArrayPayload()
                     : generatorType === SUPPORT_RIB_ARRAY
                         ? buildSupportRibPayload()

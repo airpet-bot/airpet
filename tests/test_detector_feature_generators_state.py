@@ -435,6 +435,55 @@ def test_support_rib_array_contract_defaults():
     }
 
 
+def test_annular_shield_sleeve_contract_defaults():
+    loaded = GeometryState.from_dict(
+        {
+            "detector_feature_generators": [
+                {
+                    "generator_type": "annular_shield_sleeve",
+                    "target": {
+                        "parent_logical_volume_ref": {"name": "World"},
+                    },
+                    "shield": {
+                        "inner_radius_mm": "9.5",
+                        "outer_radius_mm": 14,
+                        "length_mm": "42",
+                        "material": "G4_Pb",
+                        "origin_offset_mm": {"x": "1.5", "y": -2, "z": "3.25"},
+                    },
+                },
+            ]
+        }
+    )
+
+    assert len(loaded.detector_feature_generators) == 1
+    entry = loaded.detector_feature_generators[0]
+    assert entry["generator_id"].startswith("detector_feature_generator_")
+    assert entry["name"].startswith("annular_shield_sleeve_")
+    assert entry["generator_type"] == "annular_shield_sleeve"
+    assert entry["target"] == {
+        "parent_logical_volume_ref": {"name": "World"},
+    }
+    assert entry["shield"] == {
+        "inner_radius_mm": 9.5,
+        "outer_radius_mm": 14.0,
+        "length_mm": 42.0,
+        "material_ref": "G4_Pb",
+        "origin_offset_mm": {"x": 1.5, "y": -2.0, "z": 3.25},
+        "anchor": "target_center",
+    }
+    assert entry["realization"] == {
+        "mode": "placement_array",
+        "status": "spec_only",
+        "result_solid_ref": None,
+        "generated_object_refs": {
+            "solid_refs": [],
+            "logical_volume_refs": [],
+            "placement_refs": [],
+        },
+    }
+
+
 def test_channel_cut_array_contract_defaults():
     loaded = GeometryState.from_dict(
         {
@@ -641,6 +690,57 @@ def test_layered_detector_stack_roundtrips_through_project_manager():
                 "placement_refs": [
                     {"id": "pv-module-1", "name": "fixture_layered_stack__module_1_pv"},
                     {"id": "pv-layer-1", "name": "fixture_layered_stack__absorber_pv"},
+                ],
+            },
+        },
+    }
+
+    state = GeometryState.from_dict({"detector_feature_generators": [valid_payload]})
+    assert state.detector_feature_generators == [valid_payload]
+
+    pm = ProjectManager(ExpressionEvaluator())
+    pm.current_geometry_state.detector_feature_generators = [valid_payload]
+
+    json_string = pm.save_project_to_json_string()
+    saved_payload = json.loads(json_string)
+    assert saved_payload["detector_feature_generators"] == [valid_payload]
+
+    pm_round_tripped = ProjectManager(ExpressionEvaluator())
+    pm_round_tripped.load_project_from_json_string(json_string)
+    assert pm_round_tripped.current_geometry_state.detector_feature_generators == [valid_payload]
+
+
+def test_annular_shield_sleeve_roundtrips_through_project_manager():
+    valid_payload = {
+        "generator_id": "dfg_shield_fixture",
+        "name": "fixture_shield_sleeve",
+        "schema_version": 1,
+        "generator_type": "annular_shield_sleeve",
+        "enabled": True,
+        "target": {
+            "parent_logical_volume_ref": {"id": "lv-world-1", "name": "World"},
+        },
+        "shield": {
+            "inner_radius_mm": 9.5,
+            "outer_radius_mm": 14.0,
+            "length_mm": 42.0,
+            "material_ref": "G4_Pb",
+            "origin_offset_mm": {"x": 1.5, "y": -2.0, "z": 3.0},
+            "anchor": "target_center",
+        },
+        "realization": {
+            "mode": "placement_array",
+            "status": "generated",
+            "result_solid_ref": {"id": "solid-shield-1", "name": "fixture_shield_sleeve__shield_solid"},
+            "generated_object_refs": {
+                "solid_refs": [
+                    {"id": "solid-shield-1", "name": "fixture_shield_sleeve__shield_solid"},
+                ],
+                "logical_volume_refs": [
+                    {"id": "lv-shield-1", "name": "fixture_shield_sleeve__shield_lv"},
+                ],
+                "placement_refs": [
+                    {"id": "pv-shield-1", "name": "fixture_shield_sleeve__shield_pv"},
                 ],
             },
         },
@@ -1583,6 +1683,141 @@ def test_support_rib_array_realization_reuses_generated_objects_and_replaces_old
         "refresh_support_ribs__rib_2_pv",
         "refresh_support_ribs__rib_3_pv",
         "refresh_support_ribs__rib_4_pv",
+    ]
+
+
+def test_annular_shield_sleeve_realization_creates_tube_geometry_and_generated_refs():
+    pm = _make_pm()
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+
+    pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
+        {
+            "generator_id": "dfg_shield_runtime",
+            "name": "fixture_shield_sleeve",
+            "generator_type": "annular_shield_sleeve",
+            "target": {
+                "parent_logical_volume_ref": {
+                    "id": world_lv.id,
+                    "name": "World",
+                },
+            },
+            "shield": {
+                "inner_radius_mm": 10.0,
+                "outer_radius_mm": 14.5,
+                "length_mm": 36.0,
+                "material_ref": "G4_Pb",
+                "origin_offset_mm": {"x": 1.0, "y": -2.0, "z": 3.5},
+            },
+        }
+    ])
+
+    result, error_msg = pm.realize_detector_feature_generator("dfg_shield_runtime")
+    assert error_msg is None
+    assert result["parent_logical_volume_name"] == "World"
+    assert result["shield_logical_volume_name"] == "fixture_shield_sleeve__shield_lv"
+
+    shield_solid = pm.current_geometry_state.solids[result["result_solid_name"]]
+    shield_lv = pm.current_geometry_state.logical_volumes[result["shield_logical_volume_name"]]
+    assert shield_solid.type == "tube"
+    assert float(shield_solid.raw_parameters["rmin"]) == pytest.approx(10.0)
+    assert float(shield_solid.raw_parameters["rmax"]) == pytest.approx(14.5)
+    assert float(shield_solid.raw_parameters["z"]) == pytest.approx(36.0)
+    assert shield_solid.raw_parameters["startphi"] == "0"
+    assert shield_solid.raw_parameters["deltaphi"] == "360"
+    assert shield_lv.material_ref == "G4_Pb"
+    assert shield_lv.is_sensitive is False
+
+    shield_pvs = [
+        pv for pv in pm.current_geometry_state.logical_volumes["World"].content
+        if pv.name.startswith("fixture_shield_sleeve__shield")
+    ]
+    assert len(shield_pvs) == 1
+    assert (
+        float(shield_pvs[0].position["x"]),
+        float(shield_pvs[0].position["y"]),
+        float(shield_pvs[0].position["z"]),
+    ) == pytest.approx((1.0, -2.0, 3.5))
+
+    entry = pm.current_geometry_state.detector_feature_generators[0]
+    assert entry["realization"]["status"] == "generated"
+    assert entry["realization"]["mode"] == "placement_array"
+    assert entry["realization"]["result_solid_ref"] == {
+        "id": shield_solid.id,
+        "name": "fixture_shield_sleeve__shield_solid",
+    }
+    assert entry["realization"]["generated_object_refs"]["solid_refs"] == [
+        {"id": shield_solid.id, "name": "fixture_shield_sleeve__shield_solid"},
+    ]
+    assert entry["realization"]["generated_object_refs"]["logical_volume_refs"] == [
+        {"id": shield_lv.id, "name": "fixture_shield_sleeve__shield_lv"},
+    ]
+    assert entry["realization"]["generated_object_refs"]["placement_refs"] == [
+        {"id": shield_pvs[0].id, "name": "fixture_shield_sleeve__shield_pv"},
+    ]
+
+
+def test_annular_shield_sleeve_realization_reuses_generated_objects_and_replaces_old_placements():
+    pm = _make_pm()
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+
+    pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
+        {
+            "generator_id": "dfg_shield_refresh",
+            "name": "refresh_shield_sleeve",
+            "generator_type": "annular_shield_sleeve",
+            "target": {
+                "parent_logical_volume_ref": {
+                    "id": world_lv.id,
+                    "name": "World",
+                },
+            },
+            "shield": {
+                "inner_radius_mm": 8.0,
+                "outer_radius_mm": 12.0,
+                "length_mm": 30.0,
+                "material_ref": "G4_Pb",
+                "origin_offset_mm": {"x": 0.0, "y": 0.0, "z": 1.0},
+            },
+        }
+    ])
+
+    first_result, error_msg = pm.realize_detector_feature_generator("dfg_shield_refresh")
+    assert error_msg is None
+
+    entry = pm.current_geometry_state.detector_feature_generators[0]
+    entry["shield"]["inner_radius_mm"] = 9.0
+    entry["shield"]["outer_radius_mm"] = 15.0
+    entry["shield"]["length_mm"] = 42.0
+    entry["shield"]["origin_offset_mm"]["x"] = 2.0
+    entry["shield"]["origin_offset_mm"]["z"] = 5.0
+
+    second_result, error_msg = pm.realize_detector_feature_generator("dfg_shield_refresh")
+    assert error_msg is None
+    assert second_result["result_solid_name"] == first_result["result_solid_name"]
+    assert second_result["shield_logical_volume_name"] == first_result["shield_logical_volume_name"]
+
+    shield_solid = pm.current_geometry_state.solids[first_result["result_solid_name"]]
+    assert float(shield_solid.raw_parameters["rmin"]) == pytest.approx(9.0)
+    assert float(shield_solid.raw_parameters["rmax"]) == pytest.approx(15.0)
+    assert float(shield_solid.raw_parameters["z"]) == pytest.approx(42.0)
+
+    shield_pvs = [
+        pv for pv in pm.current_geometry_state.logical_volumes["World"].content
+        if pv.name.startswith("refresh_shield_sleeve__shield")
+    ]
+    assert len(shield_pvs) == 1
+    assert (
+        float(shield_pvs[0].position["x"]),
+        float(shield_pvs[0].position["y"]),
+        float(shield_pvs[0].position["z"]),
+    ) == pytest.approx((2.0, 0.0, 5.0))
+
+    placement_names = [
+        ref["name"]
+        for ref in pm.current_geometry_state.detector_feature_generators[0]["realization"]["generated_object_refs"]["placement_refs"]
+    ]
+    assert placement_names == [
+        "refresh_shield_sleeve__shield_pv",
     ]
 
 

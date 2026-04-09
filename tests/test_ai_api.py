@@ -1145,6 +1145,59 @@ def test_ai_tool_manage_detector_feature_generator_supports_support_rib_arrays(p
     assert details["result"]["realization"]["mode"] == "placement_array"
 
 
+def test_ai_tool_manage_detector_feature_generator_supports_annular_shield_sleeves(pm):
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+
+    result = dispatch_ai_tool(pm, "manage_detector_feature_generator", {
+        "id": "dfg_ai_shield_fixture",
+        "type": "annular_shield_sleeve",
+        "name": "ai_shield_sleeve",
+        "target": {
+            "parent_logical_volume": "World",
+        },
+        "shield": {
+            "inner_radius_mm": 10.0,
+            "outer_radius_mm": 14.5,
+            "length_mm": 36.0,
+            "material_ref": "G4_Pb",
+            "origin_offset_mm": {"x": 1.0, "y": -2.0, "z": 3.5},
+        },
+        "realize": True,
+    })
+
+    assert result["success"], result
+    assert result["detector_feature_generator"]["generator_type"] == "annular_shield_sleeve"
+    assert result["detector_feature_generator"]["target"] == {
+        "parent_logical_volume_ref": {
+            "id": world_lv.id,
+            "name": "World",
+        },
+    }
+    assert result["detector_feature_generator"]["shield"] == {
+        "inner_radius_mm": 10.0,
+        "outer_radius_mm": 14.5,
+        "length_mm": 36.0,
+        "material_ref": "G4_Pb",
+        "origin_offset_mm": {"x": 1.0, "y": -2.0, "z": 3.5},
+        "anchor": "target_center",
+    }
+    assert result["detector_feature_realization"]["shield_logical_volume_name"] == "ai_shield_sleeve__shield_lv"
+
+    world_shield_pvs = [
+        pv for pv in pm.current_geometry_state.logical_volumes["World"].content
+        if pv.name.startswith("ai_shield_sleeve__shield")
+    ]
+    assert len(world_shield_pvs) == 1
+
+    details = dispatch_ai_tool(pm, "get_component_details", {
+        "component_type": "detector_feature_generator",
+        "name": "dfg_ai_shield_fixture",
+    })
+    assert details["success"], details
+    assert details["result"]["name"] == "ai_shield_sleeve"
+    assert details["result"]["realization"]["mode"] == "placement_array"
+
+
 def test_ai_tool_manage_detector_feature_generator_supports_channel_cut_arrays(pm):
     solid, error = pm.add_solid(
         "ai_channel_block",

@@ -4,6 +4,7 @@ const LAYERED_DETECTOR_STACK = 'layered_detector_stack';
 const TILED_SENSOR_ARRAY = 'tiled_sensor_array';
 const SUPPORT_RIB_ARRAY = 'support_rib_array';
 const CHANNEL_CUT_ARRAY = 'channel_cut_array';
+const ANNULAR_SHIELD_SLEEVE = 'annular_shield_sleeve';
 
 function normalizeString(value, fallback = '') {
     const text = String(value ?? '').trim();
@@ -91,6 +92,9 @@ function buildDefaultGeneratorName(targetName, generatorType) {
     if (generatorType === CHANNEL_CUT_ARRAY) {
         return `${base}_channels`;
     }
+    if (generatorType === ANNULAR_SHIELD_SLEEVE) {
+        return `${base}_shield`;
+    }
     return `${base}_holes`;
 }
 
@@ -99,6 +103,7 @@ function usesParentLogicalVolumeTarget(generatorType) {
         generatorType === LAYERED_DETECTOR_STACK
         || generatorType === TILED_SENSOR_ARRAY
         || generatorType === SUPPORT_RIB_ARRAY
+        || generatorType === ANNULAR_SHIELD_SLEEVE
     );
 }
 
@@ -169,6 +174,9 @@ function getGeneratorType(rawType, fallbackType = RECTANGULAR_DRILLED_HOLE_ARRAY
     }
     if (normalizedType === CHANNEL_CUT_ARRAY) {
         return CHANNEL_CUT_ARRAY;
+    }
+    if (normalizedType === ANNULAR_SHIELD_SLEEVE) {
+        return ANNULAR_SHIELD_SLEEVE;
     }
     return RECTANGULAR_DRILLED_HOLE_ARRAY;
 }
@@ -258,6 +266,15 @@ export function buildDetectorFeatureGeneratorEditorModel(projectState, generator
     const tiledSensorSize = tiledSensor.size_mm || {};
     const rib = generatorEntry?.rib || {};
     const channel = generatorEntry?.channel || {};
+    const shield = generatorEntry?.shield || {};
+    const shieldOriginOffset = shield.origin_offset_mm || {};
+    const parentOriginOffset = (
+        generatorType === TILED_SENSOR_ARRAY || generatorType === SUPPORT_RIB_ARRAY
+    )
+        ? arrayOriginOffset
+        : generatorType === ANNULAR_SHIELD_SLEEVE
+            ? shieldOriginOffset
+            : stackOriginOffset;
 
     const defaultTargetName = usesParentLogicalVolumeTarget(generatorType)
         ? selectedStackTarget?.name || 'detector_stack'
@@ -302,29 +319,33 @@ export function buildDetectorFeatureGeneratorEditorModel(projectState, generator
         circularOrientation: Number.isFinite(Number(pattern.orientation_deg)) ? Number(pattern.orientation_deg) : 0,
         offsetX: Number.isFinite(Number(
             usesParentLogicalVolumeTarget(generatorType)
-                ? generatorType === TILED_SENSOR_ARRAY || isLinearStripArray ? arrayOriginOffset.x : stackOriginOffset.x
+                ? parentOriginOffset.x
                 : isLinearStripArray ? arrayOriginOffset.x : patternOriginOffset.x
         )) ? Number(
             usesParentLogicalVolumeTarget(generatorType)
-                ? generatorType === TILED_SENSOR_ARRAY || isLinearStripArray ? arrayOriginOffset.x : stackOriginOffset.x
+                ? parentOriginOffset.x
                 : isLinearStripArray ? arrayOriginOffset.x : patternOriginOffset.x
         ) : 0,
         offsetY: Number.isFinite(Number(
             usesParentLogicalVolumeTarget(generatorType)
-                ? generatorType === TILED_SENSOR_ARRAY || isLinearStripArray ? arrayOriginOffset.y : stackOriginOffset.y
+                ? parentOriginOffset.y
                 : isLinearStripArray ? arrayOriginOffset.y : patternOriginOffset.y
         )) ? Number(
             usesParentLogicalVolumeTarget(generatorType)
-                ? generatorType === TILED_SENSOR_ARRAY || isLinearStripArray ? arrayOriginOffset.y : stackOriginOffset.y
+                ? parentOriginOffset.y
                 : isLinearStripArray ? arrayOriginOffset.y : patternOriginOffset.y
         ) : 0,
         offsetZ: Number.isFinite(Number(
             generatorType === TILED_SENSOR_ARRAY || generatorType === SUPPORT_RIB_ARRAY
                 ? arrayOriginOffset.z
+                : generatorType === ANNULAR_SHIELD_SLEEVE
+                    ? shieldOriginOffset.z
                 : stackOriginOffset.z
         )) ? Number(
             generatorType === TILED_SENSOR_ARRAY || generatorType === SUPPORT_RIB_ARRAY
                 ? arrayOriginOffset.z
+                : generatorType === ANNULAR_SHIELD_SLEEVE
+                    ? shieldOriginOffset.z
                 : stackOriginOffset.z
         ) : 0,
         holeDiameter: Number.isFinite(Number(hole.diameter_mm)) ? Number(hole.diameter_mm) : 2,
@@ -351,6 +372,10 @@ export function buildDetectorFeatureGeneratorEditorModel(projectState, generator
         ribSensitive: Boolean(rib.is_sensitive ?? false),
         channelWidth: Number.isFinite(Number(channel.width_mm)) ? Number(channel.width_mm) : 1.5,
         channelDepth: Number.isFinite(Number(channel.depth_mm)) ? Number(channel.depth_mm) : 4,
+        shieldInnerRadius: Number.isFinite(Number(shield.inner_radius_mm)) ? Number(shield.inner_radius_mm) : 8,
+        shieldOuterRadius: Number.isFinite(Number(shield.outer_radius_mm)) ? Number(shield.outer_radius_mm) : 12,
+        shieldLength: Number.isFinite(Number(shield.length_mm)) ? Number(shield.length_mm) : 30,
+        shieldMaterial: normalizeString(shield.material_ref, 'G4_Pb'),
     };
 }
 
@@ -492,6 +517,41 @@ export function describeDetectorFeatureGenerator(rawEntry, projectState) {
                 { label: 'Origin Offset', value: `${offsetX}, ${offsetY}, ${offsetZ} mm` },
                 { label: 'Rib Geometry', value: `${ribWidth} mm wide x ${ribHeight} mm tall ${ribMaterial}` },
                 { label: 'Sensitive', value: rib.is_sensitive === true ? 'Yes' : 'No' },
+                { label: 'Generated Logical Volumes', value: buildListValue(generatedLogicalVolumeNames, 'No generated logical volumes recorded') },
+                { label: 'Generated Solids', value: buildListValue(generatedSolidNames, 'No generated solids recorded') },
+                { label: 'Generated Placements', value: buildListValue(generatedPlacementNames, 'No generated placements recorded') },
+            ],
+        };
+    }
+
+    if (generatorType === ANNULAR_SHIELD_SLEEVE) {
+        const shield = entry.shield && typeof entry.shield === 'object' ? entry.shield : {};
+        const originOffset = shield.origin_offset_mm && typeof shield.origin_offset_mm === 'object'
+            ? shield.origin_offset_mm
+            : {};
+        const innerRadius = formatNumber(shield.inner_radius_mm);
+        const outerRadius = formatNumber(shield.outer_radius_mm);
+        const length = formatNumber(shield.length_mm);
+        const material = normalizeString(shield.material_ref, 'unknown');
+        const offsetX = formatNumber(originOffset.x);
+        const offsetY = formatNumber(originOffset.y);
+        const offsetZ = formatNumber(originOffset.z);
+        const parentLogicalVolumeName = resolveObjectName(
+            target.parent_logical_volume_ref,
+            projectState?.logical_volumes || {},
+        ) || 'unknown_parent';
+
+        return {
+            title: generatorName,
+            summary: `Annular shield sleeve in ${parentLogicalVolumeName} · r ${innerRadius} to ${outerRadius} mm x ${length} mm ${material}`,
+            statusBadge: status === 'generated' ? 'generated' : 'spec only',
+            detailRows: [
+                { label: 'Generator ID', value: generatorId },
+                { label: 'Status', value: status === 'generated' ? 'Generated geometry is current.' : 'Saved spec only.' },
+                { label: 'Parent Logical Volume', value: parentLogicalVolumeName },
+                { label: 'Shield Geometry', value: `rmin ${innerRadius} mm, rmax ${outerRadius} mm, length ${length} mm` },
+                { label: 'Origin Offset', value: `${offsetX}, ${offsetY}, ${offsetZ} mm` },
+                { label: 'Material', value: material },
                 { label: 'Generated Logical Volumes', value: buildListValue(generatedLogicalVolumeNames, 'No generated logical volumes recorded') },
                 { label: 'Generated Solids', value: buildListValue(generatedSolidNames, 'No generated solids recorded') },
                 { label: 'Generated Placements', value: buildListValue(generatedPlacementNames, 'No generated placements recorded') },

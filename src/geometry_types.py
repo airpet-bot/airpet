@@ -50,6 +50,7 @@ _SUPPORTED_DETECTOR_FEATURE_GENERATOR_TYPES = {
     "tiled_sensor_array",
     "support_rib_array",
     "channel_cut_array",
+    "annular_shield_sleeve",
 }
 _SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS = {"target_center"}
 _SUPPORTED_DETECTOR_FEATURE_LINEAR_AXES = {"x", "y"}
@@ -274,6 +275,12 @@ def _normalize_detector_feature_generator_entry(raw_entry):
     if not isinstance(channel, dict):
         raise ValueError("detector_feature_generators[].channel must be an object.")
 
+    shield = raw_entry.get("shield", {})
+    if shield is None:
+        shield = {}
+    if not isinstance(shield, dict):
+        raise ValueError("detector_feature_generators[].shield must be an object.")
+
     hole = raw_entry.get("hole", {})
     if hole is None:
         hole = {}
@@ -290,7 +297,7 @@ def _normalize_detector_feature_generator_entry(raw_entry):
         "layered_stack"
         if generator_type == "layered_detector_stack"
         else "placement_array"
-        if generator_type in {"tiled_sensor_array", "support_rib_array"}
+        if generator_type in {"tiled_sensor_array", "support_rib_array", "annular_shield_sleeve"}
         else "boolean_subtraction"
     )
     realization_mode = _normalize_non_empty_string(realization.get("mode")) or default_realization_mode
@@ -323,6 +330,7 @@ def _normalize_detector_feature_generator_entry(raw_entry):
     normalized_sensor = None
     normalized_rib = None
     normalized_channel = None
+    normalized_shield = None
     normalized_hole = None
 
     if generator_type == "rectangular_drilled_hole_array":
@@ -851,6 +859,72 @@ def _normalize_detector_feature_generator_entry(raw_entry):
                 "detector_feature_generators[].channel.depth_mm",
             ),
         }
+    elif generator_type == "annular_shield_sleeve":
+        shield_anchor = _normalize_non_empty_string(shield.get("anchor")) or "target_center"
+        if shield_anchor not in _SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS:
+            raise ValueError(
+                "detector_feature_generators[].shield.anchor must be one of: "
+                + ", ".join(sorted(_SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS))
+                + "."
+            )
+
+        origin_offset_mm = shield.get("origin_offset_mm", {})
+        if origin_offset_mm is None:
+            origin_offset_mm = {}
+        if not isinstance(origin_offset_mm, dict):
+            raise ValueError("detector_feature_generators[].shield.origin_offset_mm must be an object.")
+
+        normalized_target = {
+            "parent_logical_volume_ref": _normalize_detector_feature_object_ref(
+                target.get("parent_logical_volume_ref"),
+                "detector_feature_generators[].target.parent_logical_volume_ref",
+                required=True,
+            ),
+        }
+
+        inner_radius_mm = _normalize_positive_float(
+            shield.get("inner_radius_mm"),
+            "detector_feature_generators[].shield.inner_radius_mm",
+        )
+        outer_radius_mm = _normalize_positive_float(
+            shield.get("outer_radius_mm"),
+            "detector_feature_generators[].shield.outer_radius_mm",
+        )
+        if outer_radius_mm <= inner_radius_mm:
+            raise ValueError(
+                "detector_feature_generators[].shield.outer_radius_mm must be greater than inner_radius_mm."
+            )
+
+        normalized_shield = {
+            "inner_radius_mm": inner_radius_mm,
+            "outer_radius_mm": outer_radius_mm,
+            "length_mm": _normalize_positive_float(
+                shield.get("length_mm", shield.get("axial_length_mm")),
+                "detector_feature_generators[].shield.length_mm",
+            ),
+            "material_ref": _normalize_detector_feature_material_ref(
+                shield.get("material_ref", shield.get("material")),
+                "detector_feature_generators[].shield.material_ref",
+            ),
+            "origin_offset_mm": {
+                "x": _normalize_float(
+                    origin_offset_mm.get("x"),
+                    0.0,
+                    "detector_feature_generators[].shield.origin_offset_mm.x",
+                ),
+                "y": _normalize_float(
+                    origin_offset_mm.get("y"),
+                    0.0,
+                    "detector_feature_generators[].shield.origin_offset_mm.y",
+                ),
+                "z": _normalize_float(
+                    origin_offset_mm.get("z"),
+                    0.0,
+                    "detector_feature_generators[].shield.origin_offset_mm.z",
+                ),
+            },
+            "anchor": shield_anchor,
+        }
     else:
         raise ValueError(
             "detector feature generator type must be one of: "
@@ -907,6 +981,8 @@ def _normalize_detector_feature_generator_entry(raw_entry):
         normalized_entry["rib"] = normalized_rib
     if normalized_channel is not None:
         normalized_entry["channel"] = normalized_channel
+    if normalized_shield is not None:
+        normalized_entry["shield"] = normalized_shield
 
     return normalized_entry
 
