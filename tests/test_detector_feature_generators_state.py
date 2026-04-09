@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import sys
 import types
 
@@ -83,6 +84,19 @@ def _normalize_detector_feature_generators(raw_generators):
     return GeometryState.from_dict(
         {"detector_feature_generators": raw_generators}
     ).detector_feature_generators
+
+
+def _load_patterned_hole_starter_pm():
+    pm = ProjectManager(ExpressionEvaluator())
+    starter_path = (
+        Path(__file__).resolve().parents[1]
+        / "examples"
+        / "detector_feature_generators"
+        / "patterned_hole_starter.project.json"
+    )
+    with starter_path.open("r", encoding="utf-8") as handle:
+        pm.load_project_from_json_string(handle.read())
+    return pm
 
 
 def test_detector_feature_generator_contract_defaults_and_invalid_entries():
@@ -723,5 +737,131 @@ def test_upsert_detector_feature_generator_saves_and_regenerates_in_place():
             (-3.0, 0.0, 1.0),
             (0.0, 0.0, 1.0),
             (3.0, 0.0, 1.0),
+        ]
+    )
+
+
+def test_patterned_hole_starter_example_roundtrips_saved_generators():
+    pm = _load_patterned_hole_starter_pm()
+
+    generators = {
+        entry["generator_id"]: entry
+        for entry in pm.current_geometry_state.detector_feature_generators
+    }
+    assert sorted(generators) == [
+        "dfg_example_circular",
+        "dfg_example_rectangular",
+    ]
+
+    rectangular = generators["dfg_example_rectangular"]
+    assert rectangular["generator_type"] == "rectangular_drilled_hole_array"
+    assert rectangular["realization"]["status"] == "generated"
+    assert rectangular["pattern"] == {
+        "count_x": 3,
+        "count_y": 2,
+        "pitch_mm": {"x": 4.5, "y": 5.0},
+        "origin_offset_mm": {"x": 0.75, "y": -0.5},
+        "anchor": "target_center",
+    }
+
+    circular = generators["dfg_example_circular"]
+    assert circular["generator_type"] == "circular_drilled_hole_array"
+    assert circular["realization"]["status"] == "generated"
+    assert circular["pattern"] == {
+        "count": 5,
+        "radius_mm": 3.5,
+        "orientation_deg": 18.0,
+        "origin_offset_mm": {"x": -0.5, "y": 1.0},
+        "anchor": "target_center",
+    }
+
+    assert pm.current_geometry_state.logical_volumes["starter_rect_lv"].solid_ref == "starter_rectangular_holes__result"
+    assert pm.current_geometry_state.logical_volumes["starter_circular_lv"].solid_ref == "starter_circular_holes__result"
+
+    saved_payload = json.loads(pm.save_project_to_json_string())
+    saved_generators = {
+        entry["generator_id"]: entry
+        for entry in saved_payload["detector_feature_generators"]
+    }
+    assert saved_generators["dfg_example_rectangular"]["target"]["solid_ref"]["name"] == "starter_rect_block"
+    assert saved_generators["dfg_example_circular"]["target"]["solid_ref"]["name"] == "starter_circular_block"
+    assert saved_generators["dfg_example_rectangular"]["realization"]["result_solid_ref"]["name"] == "starter_rectangular_holes__result"
+    assert saved_generators["dfg_example_circular"]["realization"]["result_solid_ref"]["name"] == "starter_circular_holes__result"
+
+
+def test_patterned_hole_starter_example_rebuilds_hole_recipes_deterministically():
+    pm = _load_patterned_hole_starter_pm()
+
+    rectangular_entry = next(
+        entry
+        for entry in pm.current_geometry_state.detector_feature_generators
+        if entry["generator_id"] == "dfg_example_rectangular"
+    )
+    circular_entry = next(
+        entry
+        for entry in pm.current_geometry_state.detector_feature_generators
+        if entry["generator_id"] == "dfg_example_circular"
+    )
+
+    rectangular_result, error_msg = pm.realize_detector_feature_generator("dfg_example_rectangular")
+    assert error_msg is None
+    assert rectangular_result["hole_count"] == 6
+    assert rectangular_result["result_solid_name"] == rectangular_entry["realization"]["result_solid_ref"]["name"]
+    assert rectangular_result["cutter_solid_name"] == rectangular_entry["realization"]["generated_object_refs"]["solid_refs"][1]["name"]
+    assert sorted(
+        name for name in pm.current_geometry_state.solids
+        if name.startswith("starter_rectangular_holes__")
+    ) == [
+        "starter_rectangular_holes__cutter",
+        "starter_rectangular_holes__result",
+    ]
+
+    rectangular_recipe = pm.current_geometry_state.solids["starter_rectangular_holes__result"].raw_parameters["recipe"]
+    assert [
+        (
+            float(item["transform"]["position"]["x"]),
+            float(item["transform"]["position"]["y"]),
+            float(item["transform"]["position"]["z"]),
+        )
+        for item in rectangular_recipe[1:]
+    ] == pytest.approx(
+        [
+            (-3.75, -3.0, 1.0),
+            (0.75, -3.0, 1.0),
+            (5.25, -3.0, 1.0),
+            (-3.75, 2.0, 1.0),
+            (0.75, 2.0, 1.0),
+            (5.25, 2.0, 1.0),
+        ]
+    )
+
+    circular_result, error_msg = pm.realize_detector_feature_generator("dfg_example_circular")
+    assert error_msg is None
+    assert circular_result["hole_count"] == 5
+    assert circular_result["result_solid_name"] == circular_entry["realization"]["result_solid_ref"]["name"]
+    assert circular_result["cutter_solid_name"] == circular_entry["realization"]["generated_object_refs"]["solid_refs"][1]["name"]
+    assert sorted(
+        name for name in pm.current_geometry_state.solids
+        if name.startswith("starter_circular_holes__")
+    ) == [
+        "starter_circular_holes__cutter",
+        "starter_circular_holes__result",
+    ]
+
+    circular_recipe = pm.current_geometry_state.solids["starter_circular_holes__result"].raw_parameters["recipe"]
+    assert [
+        (
+            float(item["transform"]["position"]["x"]),
+            float(item["transform"]["position"]["y"]),
+            float(item["transform"]["position"]["z"]),
+        )
+        for item in circular_recipe[1:]
+    ] == pytest.approx(
+        [
+            (2.82869780703, 2.08155948031, 1.5),
+            (-0.5, 4.5, 1.5),
+            (-3.82869780703, 2.08155948031, 1.5),
+            (-2.55724838302, -1.83155948031, 1.5),
+            (1.55724838302, -1.83155948031, 1.5),
         ]
     )
