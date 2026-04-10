@@ -612,6 +612,20 @@ test('support rib array model and description stay deterministic', () => {
         described.detailRows.find((row) => row.label === 'Rib Geometry').value,
         '1.5 mm wide x 2.5 mm tall G4_Al',
     );
+    assert.deepEqual(
+        described.detailRows.find((row) => row.label === 'Generated Logical Volumes').value,
+        {
+            text: 'support_ribs__rib_lv',
+            title: 'support_ribs__rib_lv',
+        },
+    );
+    assert.deepEqual(
+        described.detailRows.find((row) => row.label === 'Generated Placements').value,
+        {
+            text: 'fixture_support_ribs__rib_1_pv, fixture_support_ribs__rib_2_pv',
+            title: 'fixture_support_ribs__rib_1_pv\nfixture_support_ribs__rib_2_pv',
+        },
+    );
 });
 
 test('annular shield sleeve model and description stay deterministic', () => {

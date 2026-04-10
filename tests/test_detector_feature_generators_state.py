@@ -1740,9 +1740,76 @@ def test_support_rib_array_realization_creates_repeated_rib_geometry_and_generat
     ]
     assert len(entry["realization"]["generated_object_refs"]["placement_refs"]) == 3
 
+    scene_names = {
+        item["name"]
+        for item in pm.get_threejs_description()
+        if item.get("name", "").startswith("fixture_support_ribs__rib_")
+    }
+    assert scene_names == {
+        "fixture_support_ribs__rib_1_pv",
+        "fixture_support_ribs__rib_2_pv",
+        "fixture_support_ribs__rib_3_pv",
+    }
+
+
+def test_support_rib_array_realization_requires_instantiated_parent_lv():
+    pm = _make_pm()
+
+    solid_dict, error_msg = pm.add_solid(
+        "detached_support_parent_box",
+        "box",
+        {"x": "30", "y": "20", "z": "10"},
+    )
+    assert error_msg is None
+
+    parent_lv, error_msg = pm.add_logical_volume(
+        "detached_support_parent_lv",
+        solid_dict["name"],
+        "G4_Galactic",
+    )
+    assert error_msg is None
+
+    parent_lv_state = pm.current_geometry_state.logical_volumes[parent_lv["name"]]
+    pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
+        {
+            "generator_id": "dfg_support_ribs_detached_parent",
+            "name": "detached_support_ribs",
+            "generator_type": "support_rib_array",
+            "target": {
+                "parent_logical_volume_ref": {
+                    "id": parent_lv_state.id,
+                    "name": parent_lv_state.name,
+                },
+            },
+            "array": {
+                "count": 3,
+                "linear_pitch_mm": 8.0,
+                "axis": "x",
+                "origin_offset_mm": {"x": 0.0, "y": 0.0, "z": 0.0},
+            },
+            "rib": {
+                "width_mm": 1.0,
+                "height_mm": 2.0,
+                "material_ref": "G4_Al",
+                "is_sensitive": False,
+            },
+        }
+    ])
+
+    result, error_msg = pm.realize_detector_feature_generator("dfg_support_ribs_detached_parent")
+
+    assert result is None
+    assert error_msg == (
+        "Support-rib generators require parent logical volume "
+        "'detached_support_parent_lv' to already be placed in the live scene so generated ribs are visible."
+    )
+    assert parent_lv_state.content == []
+
 
 def test_support_rib_array_realization_reuses_generated_objects_and_replaces_old_placements():
     pm = _make_pm()
+
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
 
     _, error_msg = pm.add_solid(
         "refresh_support_parent_box",
@@ -1752,6 +1819,15 @@ def test_support_rib_array_realization_reuses_generated_objects_and_replaces_old
     assert error_msg is None
 
     parent_lv, error_msg = pm.add_logical_volume("refresh_support_parent_lv", "refresh_support_parent_box", "G4_Galactic")
+    assert error_msg is None
+    _, error_msg = pm.add_physical_volume(
+        world_lv.name,
+        "refresh_support_parent_pv",
+        parent_lv["name"],
+        {"x": "0", "y": "0", "z": "0"},
+        {"x": "0", "y": "0", "z": "0"},
+        {"x": "1", "y": "1", "z": "1"},
+    )
     assert error_msg is None
 
     pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
@@ -1825,6 +1901,18 @@ def test_support_rib_array_realization_reuses_generated_objects_and_replaces_old
         "refresh_support_ribs__rib_3_pv",
         "refresh_support_ribs__rib_4_pv",
     ]
+
+    scene_names = {
+        item["name"]
+        for item in pm.get_threejs_description()
+        if item.get("name", "").startswith("refresh_support_ribs__rib_")
+    }
+    assert scene_names == {
+        "refresh_support_ribs__rib_1_pv",
+        "refresh_support_ribs__rib_2_pv",
+        "refresh_support_ribs__rib_3_pv",
+        "refresh_support_ribs__rib_4_pv",
+    }
 
 
 def test_annular_shield_sleeve_realization_creates_tube_geometry_and_generated_refs():
