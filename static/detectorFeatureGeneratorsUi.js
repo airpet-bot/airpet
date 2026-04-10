@@ -162,6 +162,95 @@ function countInstantiatedLogicalVolumes(projectState) {
     return instanceCounts;
 }
 
+function listLiveScenePlacementRecords(projectState) {
+    const logicalVolumes = projectState?.logical_volumes || {};
+    const assemblies = projectState?.assemblies || {};
+    const worldVolumeName = normalizeString(projectState?.world_volume_ref, '');
+    const livePlacements = [];
+
+    function recordPlacement(placement) {
+        const placementId = normalizeString(placement?.id, '');
+        if (!placementId) {
+            return;
+        }
+
+        livePlacements.push({
+            id: placementId,
+            name: normalizeString(placement?.name, ''),
+            volumeRef: normalizeString(placement?.volume_ref, ''),
+        });
+    }
+
+    function visitPlacedRef(volumeRef, path = []) {
+        const normalizedRef = normalizeString(volumeRef, '');
+        if (!normalizedRef) {
+            return;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(logicalVolumes, normalizedRef)) {
+            visitLogicalVolume(normalizedRef, path);
+            return;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(assemblies, normalizedRef)) {
+            visitAssembly(normalizedRef, path);
+        }
+    }
+
+    function visitAssembly(assemblyName, path = []) {
+        const normalizedName = normalizeString(assemblyName, '');
+        const cycleKey = `ASM:${normalizedName}`;
+        if (!normalizedName || path.includes(cycleKey)) {
+            return;
+        }
+
+        const assembly = assemblies[normalizedName];
+        if (!assembly) {
+            return;
+        }
+
+        const nextPath = [...path, cycleKey];
+        const placements = Array.isArray(assembly.placements) ? assembly.placements : [];
+        placements.forEach((placement) => {
+            recordPlacement(placement);
+            visitPlacedRef(placement?.volume_ref, nextPath);
+        });
+    }
+
+    function visitLogicalVolume(logicalVolumeName, path = []) {
+        const normalizedName = normalizeString(logicalVolumeName, '');
+        const cycleKey = `LV:${normalizedName}`;
+        if (!normalizedName || path.includes(cycleKey)) {
+            return;
+        }
+
+        const logicalVolume = logicalVolumes[normalizedName];
+        if (!logicalVolume) {
+            return;
+        }
+
+        const nextPath = [...path, cycleKey];
+        const contentType = normalizeString(logicalVolume.content_type, 'physvol');
+        if (contentType === 'physvol') {
+            const placements = Array.isArray(logicalVolume.content) ? logicalVolume.content : [];
+            placements.forEach((placement) => {
+                recordPlacement(placement);
+                visitPlacedRef(placement?.volume_ref, nextPath);
+            });
+            return;
+        }
+
+        visitPlacedRef(logicalVolume.content?.volume_ref, nextPath);
+    }
+
+    if (!worldVolumeName || !Object.prototype.hasOwnProperty.call(logicalVolumes, worldVolumeName)) {
+        return livePlacements;
+    }
+
+    visitLogicalVolume(worldVolumeName, []);
+    return livePlacements;
+}
+
 function buildDefaultGeneratorName(targetName, generatorType) {
     const base = normalizeString(targetName, 'detector_feature').replace(/[^\w]+/g, '_');
     if (generatorType === LAYERED_DETECTOR_STACK) {
@@ -364,6 +453,85 @@ export function describeDetectorFeatureGeneratorPanelState(projectState) {
         hint: launchState.canLaunch && generators.length > 0 ? '' : launchState.hint,
         empty: generators.length > 0 ? '' : 'No detector feature generators saved yet.',
         defaultExpandedIndex: generators.length === 1 ? 0 : -1,
+    };
+}
+
+export function buildDetectorFeatureGeneratorSelectionContext(rawEntry, projectState) {
+    const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : {};
+    const target = entry.target && typeof entry.target === 'object' ? entry.target : {};
+    const realization = entry.realization && typeof entry.realization === 'object'
+        ? entry.realization
+        : {};
+    const generatedRefs = realization.generated_object_refs && typeof realization.generated_object_refs === 'object'
+        ? realization.generated_object_refs
+        : {};
+    const status = normalizeString(realization.status, 'spec_only');
+    const buttonLabel = 'Select Geometry';
+
+    if (status !== 'generated') {
+        return {
+            selectionIds: [],
+            selectionSummary: 'No generated geometry to select yet.',
+            buttonLabel,
+            buttonTitle: 'Generate this detector feature first to select related geometry.',
+        };
+    }
+
+    const livePlacements = listLiveScenePlacementRecords(projectState);
+    const livePlacementIds = new Set(livePlacements.map((placement) => placement.id));
+    const generatedPlacementIds = Array.isArray(generatedRefs.placement_refs)
+        ? generatedRefs.placement_refs
+            .map((ref) => normalizeObjectRef(ref).id)
+            .filter((placementId) => livePlacementIds.has(placementId))
+        : [];
+
+    if (generatedPlacementIds.length > 0) {
+        const selectionSummary = pluralize(generatedPlacementIds.length, 'generated placement');
+        return {
+            selectionIds: generatedPlacementIds,
+            selectionSummary,
+            buttonLabel,
+            buttonTitle: `Select ${selectionSummary} in the hierarchy and highlight ${generatedPlacementIds.length === 1 ? 'it' : 'them'} in the live scene.`,
+        };
+    }
+
+    const generatedLogicalVolumeNames = Array.isArray(generatedRefs.logical_volume_refs)
+        ? generatedRefs.logical_volume_refs
+            .map((ref) => resolveObjectName(ref, projectState?.logical_volumes || {}))
+            .filter(Boolean)
+        : [];
+    const targetedLogicalVolumeNames = Array.isArray(target.logical_volume_refs)
+        ? target.logical_volume_refs
+            .map((ref) => resolveObjectName(ref, projectState?.logical_volumes || {}))
+            .filter(Boolean)
+        : [];
+    const targetSolidName = resolveObjectName(target.solid_ref, projectState?.solids || {});
+    const fallbackLogicalVolumeNames = targetSolidName
+        ? getLogicalVolumeNamesForSolid(projectState, targetSolidName)
+        : [];
+    const logicalVolumeNames = generatedLogicalVolumeNames.length > 0
+        ? generatedLogicalVolumeNames
+        : (targetedLogicalVolumeNames.length > 0 ? targetedLogicalVolumeNames : fallbackLogicalVolumeNames);
+    const logicalVolumeNameSet = new Set(logicalVolumeNames);
+    const affectedPlacementIds = livePlacements
+        .filter((placement) => logicalVolumeNameSet.has(placement.volumeRef))
+        .map((placement) => placement.id);
+
+    if (affectedPlacementIds.length > 0) {
+        const selectionSummary = pluralize(affectedPlacementIds.length, 'affected placement');
+        return {
+            selectionIds: affectedPlacementIds,
+            selectionSummary,
+            buttonLabel,
+            buttonTitle: `Select ${selectionSummary} in the hierarchy and highlight ${affectedPlacementIds.length === 1 ? 'it' : 'them'} in the live scene.`,
+        };
+    }
+
+    return {
+        selectionIds: [],
+        selectionSummary: 'No live geometry available to select.',
+        buttonLabel,
+        buttonTitle: 'No generated or affected live-scene placements are available to select for this detector feature.',
     };
 }
 

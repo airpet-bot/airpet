@@ -4,6 +4,7 @@ import fs from 'node:fs';
 
 import {
     buildDetectorFeatureGeneratorEditorModel,
+    buildDetectorFeatureGeneratorSelectionContext,
     describeDetectorFeatureGeneratorLaunchState,
     describeDetectorFeatureGeneratorPanelState,
     describeDetectorFeatureGenerator,
@@ -431,6 +432,125 @@ test('detector generator panel state stays concise once saved generators exist',
         empty: '',
         defaultExpandedIndex: -1,
     });
+});
+
+test('placement-based generator selection context prefers generated live placements', () => {
+    const projectState = {
+        logical_volumes: {
+            World: {
+                id: 'lv-world',
+                name: 'World',
+                solid_ref: 'world_box',
+                content_type: 'physvol',
+                content: [
+                    { id: 'pv-sensor-1', name: 'fixture_sensor_array__sensor_r1_c1_pv', volume_ref: 'sensor_cell_lv' },
+                    { id: 'pv-sensor-2', name: 'fixture_sensor_array__sensor_r1_c2_pv', volume_ref: 'sensor_cell_lv' },
+                ],
+            },
+            sensor_cell_lv: {
+                id: 'lv-sensor-cell',
+                name: 'sensor_cell_lv',
+                solid_ref: 'sensor_cell_solid',
+                content_type: 'physvol',
+                content: [],
+            },
+        },
+        world_volume_ref: 'World',
+    };
+
+    const entry = {
+        generator_id: 'dfg_tiled_select_fixture',
+        generator_type: 'tiled_sensor_array',
+        name: 'fixture_sensor_array',
+        realization: {
+            status: 'generated',
+            generated_object_refs: {
+                logical_volume_refs: [
+                    { id: 'lv-sensor-cell', name: 'sensor_cell_lv' },
+                ],
+                placement_refs: [
+                    { id: 'pv-sensor-2', name: 'fixture_sensor_array__sensor_r1_c2_pv' },
+                    { id: 'pv-missing', name: 'fixture_sensor_array__sensor_r9_c9_pv' },
+                    { id: 'pv-sensor-1', name: 'fixture_sensor_array__sensor_r1_c1_pv' },
+                ],
+            },
+        },
+    };
+
+    assert.deepEqual(
+        buildDetectorFeatureGeneratorSelectionContext(entry, projectState),
+        {
+            selectionIds: ['pv-sensor-2', 'pv-sensor-1'],
+            selectionSummary: '2 generated placements',
+            buttonLabel: 'Select Geometry',
+            buttonTitle: 'Select 2 generated placements in the hierarchy and highlight them in the live scene.',
+        },
+    );
+});
+
+test('boolean-based generator selection context falls back to affected live placements', () => {
+    const projectState = {
+        solids: {
+            detector_block: { id: 'solid-target', name: 'detector_block', type: 'box' },
+        },
+        logical_volumes: {
+            World: {
+                id: 'lv-world',
+                name: 'World',
+                solid_ref: 'world_box',
+                content_type: 'physvol',
+                content: [
+                    { id: 'pv-live-1', name: 'detector_block_a_pv', volume_ref: 'detector_block_lv' },
+                    { id: 'pv-live-2', name: 'detector_block_b_pv', volume_ref: 'detector_block_lv' },
+                ],
+            },
+            detector_block_lv: {
+                id: 'lv-detector-block',
+                name: 'detector_block_lv',
+                solid_ref: 'detector_block__result',
+                content_type: 'physvol',
+                content: [],
+            },
+            Detached: {
+                id: 'lv-detached',
+                name: 'Detached',
+                solid_ref: 'fixture_box',
+                content_type: 'physvol',
+                content: [
+                    { id: 'pv-detached', name: 'detector_block_detached_pv', volume_ref: 'detector_block_lv' },
+                ],
+            },
+        },
+        world_volume_ref: 'World',
+    };
+
+    const entry = {
+        generator_id: 'dfg_rect_select_fixture',
+        generator_type: 'rectangular_drilled_hole_array',
+        name: 'fixture_detector_block_holes',
+        target: {
+            solid_ref: { id: 'solid-target', name: 'detector_block' },
+        },
+        realization: {
+            status: 'generated',
+            generated_object_refs: {
+                logical_volume_refs: [
+                    { id: 'lv-detector-block', name: 'detector_block_lv' },
+                ],
+                placement_refs: [],
+            },
+        },
+    };
+
+    assert.deepEqual(
+        buildDetectorFeatureGeneratorSelectionContext(entry, projectState),
+        {
+            selectionIds: ['pv-live-1', 'pv-live-2'],
+            selectionSummary: '2 affected placements',
+            buttonLabel: 'Select Geometry',
+            buttonTitle: 'Select 2 affected placements in the hierarchy and highlight them in the live scene.',
+        },
+    );
 });
 
 test('hierarchy tools template includes both detector generator and ring array launchers', () => {

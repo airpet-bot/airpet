@@ -59,6 +59,7 @@ import { buildCadImportBatchContext, buildCadImportSelectionContext, describeCad
 import {
     describeDetectorFeatureGeneratorPanelState,
     describeDetectorFeatureGenerator,
+    buildDetectorFeatureGeneratorSelectionContext,
 } from './detectorFeatureGeneratorsUi.js';
 
 // --- Module-level variables for DOM elements ---
@@ -2527,6 +2528,7 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
 
     generators.forEach((rawEntry, index) => {
         const described = describeDetectorFeatureGenerator(rawEntry, projectState);
+        const selectionContext = buildDetectorFeatureGeneratorSelectionContext(rawEntry, projectState);
         const card = document.createElement('details');
         card.className = 'detector-feature-card';
         card.open = panelState.defaultExpandedIndex === index;
@@ -2561,6 +2563,22 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
 
         const summaryActions = document.createElement('div');
         summaryActions.className = 'detector-feature-summary-actions';
+
+        if (selectionContext.selectionIds.length > 0) {
+            const selectButton = document.createElement('button');
+            selectButton.type = 'button';
+            selectButton.className = 'history-action-btn';
+            selectButton.textContent = selectionContext.buttonLabel;
+            selectButton.title = selectionContext.buttonTitle;
+            selectButton.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (callbacks.onSelectHierarchyItems) {
+                    callbacks.onSelectHierarchyItems(selectionContext.selectionIds);
+                }
+            });
+            summaryActions.appendChild(selectButton);
+        }
 
         const editButton = document.createElement('button');
         editButton.type = 'button';

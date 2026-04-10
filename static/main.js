@@ -1663,7 +1663,7 @@ async function handleHierarchySelectionByIds(itemIds) {
     }
 
     if (selection.length === 0) {
-        UIManager.showError('Could not resolve the imported top-level selection in the current project.');
+        UIManager.showError('Could not resolve the requested hierarchy selection in the current project.');
         return;
     }
 
