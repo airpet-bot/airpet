@@ -349,6 +349,24 @@ export function describeDetectorFeatureGeneratorLaunchState(projectState) {
     };
 }
 
+export function describeDetectorFeatureGeneratorPanelState(projectState) {
+    const launchState = describeDetectorFeatureGeneratorLaunchState(projectState);
+    const generators = Array.isArray(projectState?.detector_feature_generators)
+        ? projectState.detector_feature_generators.filter((entry) => entry && typeof entry === 'object')
+        : [];
+
+    return {
+        intro: generators.length > 0
+            ? 'Create detector generators from Hierarchy > + Tools. Saved generators stay editable and can be regenerated here.'
+            : launchState.canLaunch
+                ? 'Create detector generators from Hierarchy > + Tools.'
+                : launchState.title,
+        hint: launchState.canLaunch && generators.length > 0 ? '' : launchState.hint,
+        empty: generators.length > 0 ? '' : 'No detector feature generators saved yet.',
+        defaultExpandedIndex: generators.length === 1 ? 0 : -1,
+    };
+}
+
 export function buildDetectorFeatureGeneratorEditorModel(projectState, generatorEntry = null, selectedItems = []) {
     const holeTargetOptions = listDetectorFeatureGeneratorTargetOptions(projectState);
     const stackTargetOptions = listDetectorFeatureGeneratorParentOptions(

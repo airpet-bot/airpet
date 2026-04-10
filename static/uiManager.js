@@ -57,7 +57,7 @@ import {
 } from './environmentFieldUi.js';
 import { buildCadImportBatchContext, buildCadImportSelectionContext, describeCadImportRecord } from './cadImportUi.js';
 import {
-    describeDetectorFeatureGeneratorLaunchState,
+    describeDetectorFeatureGeneratorPanelState,
     describeDetectorFeatureGenerator,
 } from './detectorFeatureGeneratorsUi.js';
 
@@ -2500,27 +2500,27 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
 
     detectorFeatureGeneratorsPanelRoot.innerHTML = '';
 
-    const launchState = describeDetectorFeatureGeneratorLaunchState(projectState);
+    const panelState = describeDetectorFeatureGeneratorPanelState(projectState);
     const generators = Array.isArray(projectState?.detector_feature_generators)
         ? projectState.detector_feature_generators.filter((entry) => entry && typeof entry === 'object')
         : [];
 
     const intro = document.createElement('p');
     intro.className = 'detector-feature-generators-intro';
-    intro.textContent = 'Start new detector generators from Hierarchy > + Tools. This Properties panel is reserved for inspecting saved generator parameters, editing them, and rerunning realization.';
+    intro.textContent = panelState.intro;
     detectorFeatureGeneratorsPanelRoot.appendChild(intro);
 
-    const launchHint = document.createElement('p');
-    launchHint.className = 'detector-feature-note';
-    launchHint.textContent = launchState.hint;
-    detectorFeatureGeneratorsPanelRoot.appendChild(launchHint);
+    if (panelState.hint) {
+        const launchHint = document.createElement('p');
+        launchHint.className = 'detector-feature-note';
+        launchHint.textContent = panelState.hint;
+        detectorFeatureGeneratorsPanelRoot.appendChild(launchHint);
+    }
 
     if (generators.length === 0) {
         const empty = document.createElement('p');
         empty.className = 'detector-feature-generators-empty';
-        empty.textContent = launchState.canLaunch
-            ? 'No detector feature generators saved yet.'
-            : 'No detector feature generators saved yet, and launch is currently unavailable.';
+        empty.textContent = panelState.empty;
         detectorFeatureGeneratorsPanelRoot.appendChild(empty);
         return;
     }
@@ -2529,11 +2529,14 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
         const described = describeDetectorFeatureGenerator(rawEntry, projectState);
         const card = document.createElement('details');
         card.className = 'detector-feature-card';
-        card.open = generators.length === 1 || index === generators.length - 1;
+        card.open = panelState.defaultExpandedIndex === index;
 
         const summary = document.createElement('summary');
         summary.className = 'detector-feature-card-summary';
         summary.title = 'Inspect this detector-feature-generator contract.';
+
+        const summaryLayout = document.createElement('div');
+        summaryLayout.className = 'detector-feature-card-summary-layout';
 
         const summaryText = document.createElement('div');
         summaryText.className = 'detector-feature-card-summary-text';
@@ -2552,8 +2555,45 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
         statusBadge.className = 'detector-feature-status';
         statusBadge.textContent = described.statusBadge;
 
-        summary.appendChild(summaryText);
-        summary.appendChild(statusBadge);
+        const summaryMeta = document.createElement('div');
+        summaryMeta.className = 'detector-feature-summary-meta';
+        summaryMeta.appendChild(statusBadge);
+
+        const summaryActions = document.createElement('div');
+        summaryActions.className = 'detector-feature-summary-actions';
+
+        const editButton = document.createElement('button');
+        editButton.type = 'button';
+        editButton.className = 'history-action-btn';
+        editButton.textContent = 'Edit...';
+        editButton.title = 'Revise the saved detector-feature-generator parameters.';
+        editButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (callbacks.onEditDetectorFeatureGeneratorClicked) {
+                callbacks.onEditDetectorFeatureGeneratorClicked(rawEntry);
+            }
+        });
+        summaryActions.appendChild(editButton);
+
+        const regenerateButton = document.createElement('button');
+        regenerateButton.type = 'button';
+        regenerateButton.className = 'history-action-btn';
+        regenerateButton.textContent = 'Regenerate';
+        regenerateButton.title = 'Re-run the saved generator contract against the current target geometry.';
+        regenerateButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (callbacks.onRealizeDetectorFeatureGeneratorClicked) {
+                callbacks.onRealizeDetectorFeatureGeneratorClicked(rawEntry);
+            }
+        });
+        summaryActions.appendChild(regenerateButton);
+
+        summaryMeta.appendChild(summaryActions);
+        summaryLayout.appendChild(summaryText);
+        summaryLayout.appendChild(summaryMeta);
+        summary.appendChild(summaryLayout);
         card.appendChild(summary);
 
         const body = document.createElement('div');
@@ -2562,52 +2602,6 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
         described.detailRows.forEach((row) => {
             createReadOnlyProperty(body, `${row.label}:`, row.value);
         });
-
-        const actions = document.createElement('div');
-        actions.className = 'detector-feature-actions';
-
-        const editButton = document.createElement('button');
-        editButton.type = 'button';
-        editButton.className = 'history-action-btn';
-        editButton.textContent = 'Edit...';
-        editButton.title = 'Revise the saved detector-feature-generator parameters.';
-        editButton.addEventListener('click', (event) => {
-            event.stopPropagation();
-            if (callbacks.onEditDetectorFeatureGeneratorClicked) {
-                callbacks.onEditDetectorFeatureGeneratorClicked(rawEntry);
-            }
-        });
-        actions.appendChild(editButton);
-
-        const regenerateButton = document.createElement('button');
-        regenerateButton.type = 'button';
-        regenerateButton.className = 'history-action-btn';
-        regenerateButton.textContent = 'Regenerate';
-        regenerateButton.title = 'Re-run the saved generator contract against the current target geometry.';
-        regenerateButton.addEventListener('click', (event) => {
-            event.stopPropagation();
-            if (callbacks.onRealizeDetectorFeatureGeneratorClicked) {
-                callbacks.onRealizeDetectorFeatureGeneratorClicked(rawEntry);
-            }
-        });
-        actions.appendChild(regenerateButton);
-
-        body.appendChild(actions);
-
-        const note = document.createElement('p');
-        note.className = 'detector-feature-note';
-        note.textContent = rawEntry?.generator_type === 'layered_detector_stack'
-            ? 'This first stack slice keeps the parent LV fixed after creation and focuses revisions on module layout plus absorber/sensor/support sandwich parameters.'
-            : rawEntry?.generator_type === 'tiled_sensor_array'
-                ? 'This first tiled-array slice keeps the parent LV fixed after creation and focuses revisions on grid counts, pitch, offsets, and the generated sensor-cell geometry.'
-                : rawEntry?.generator_type === 'support_rib_array'
-                    ? 'This first support-rib slice keeps the parent LV fixed after creation and focuses revisions on linear rib count, pitch, offsets, and rib geometry/material.'
-                    : rawEntry?.generator_type === 'annular_shield_sleeve'
-                        ? 'This first shield-recipe slice keeps the parent LV fixed after creation and focuses revisions on inner/outer radii, axial length, material, and offset.'
-                    : rawEntry?.generator_type === 'channel_cut_array'
-                        ? 'This first channel-cut slice keeps the target solid fixed after creation and focuses revisions on linear channel count, pitch, offsets, and cut depth/width.'
-                : 'This first patterned-hole slice keeps the target solid fixed after creation and focuses revisions on counts, pitch, offsets, and hole size.';
-        body.appendChild(note);
 
         card.appendChild(body);
         detectorFeatureGeneratorsPanelRoot.appendChild(card);

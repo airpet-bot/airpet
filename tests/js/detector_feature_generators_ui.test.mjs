@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import {
     buildDetectorFeatureGeneratorEditorModel,
     describeDetectorFeatureGeneratorLaunchState,
+    describeDetectorFeatureGeneratorPanelState,
     describeDetectorFeatureGenerator,
     listDetectorFeatureGeneratorParentOptions,
     listDetectorFeatureGeneratorTargetOptions,
@@ -407,6 +408,29 @@ test('detector generator launch state stays deterministic for hierarchy tools', 
             hint: 'Detector-generator launch is disabled until there is at least one eligible box solid or placed parent logical volume.',
         },
     );
+});
+
+test('detector generator panel state stays concise once saved generators exist', () => {
+    const panelState = describeDetectorFeatureGeneratorPanelState({
+        solids: {
+            detector_block: { id: 'solid-box-1', name: 'detector_block', type: 'box' },
+        },
+        logical_volumes: {
+            World: { id: 'lv-world', name: 'World', solid_ref: 'world_box', content_type: 'physvol', content: [] },
+        },
+        world_volume_ref: 'World',
+        detector_feature_generators: [
+            { generator_id: 'dfg-1', name: 'fixture_a' },
+            { generator_id: 'dfg-2', name: 'fixture_b' },
+        ],
+    });
+
+    assert.deepEqual(panelState, {
+        intro: 'Create detector generators from Hierarchy > + Tools. Saved generators stay editable and can be regenerated here.',
+        hint: '',
+        empty: '',
+        defaultExpandedIndex: -1,
+    });
 });
 
 test('hierarchy tools template includes both detector generator and ring array launchers', () => {

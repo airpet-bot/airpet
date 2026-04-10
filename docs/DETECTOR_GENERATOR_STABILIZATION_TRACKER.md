@@ -55,19 +55,19 @@ A task is only `DONE` when all of the following are true:
 ## Current Status
 
 - Overall phase: post-R3 stabilization loop, active
-- Current priority: trim remaining Properties-panel detector-generator bulk now that creation lives under Hierarchy `Tools`
+- Current priority: audit layered detector stack create/regenerate visibility now that the shared Properties cleanup is in place
 - Success metric: existing detector generators feel dependable in real use, with sane defaults, clear launch points, and generated geometry that is visible and inspectable after creation/regeneration
 
 ## Current NEXT Task
 
-DGS-003: reduce Properties-panel generator bulk while keeping saved-generator inspection and regeneration accessible.
+DGS-004: audit layered detector stack create/regenerate visibility and revision behavior end to end.
 
 Focus for this task:
 
-- verify what remaining detector-generator copy or card chrome still feels heavier than needed after DGS-002
-- keep saved-generator inspection, edit, and regenerate actions easy to reach
-- avoid moving creation back into the Properties tab
-- add only the smallest sufficient regression or smoke coverage for any remaining panel cleanup
+- verify layered stack placements and module/generated LV visibility after create and regenerate
+- confirm saved layered-stack cards still reflect the realized objects clearly enough to inspect failures
+- keep the audit narrow to layered stacks rather than broad cross-generator cleanup
+- add only the smallest sufficient regression or deterministic replay for any concrete visibility gap found
 
 ## Backlog
 
@@ -83,8 +83,8 @@ Statuses:
 | --- | --- | --- | --- | --- | --- |
 | DGS-001 | P0 | Tiled Sensor Array | Fix default pitch values and ensure generated placements are visible after create/regenerate | DONE | Default tiled-array pitch now matches the default sensor size, detached parent LVs are rejected/hidden, and scene-level coverage confirms generated PVs appear in the live scene path |
 | DGS-002 | P0 | Entry Points | Move detector-generator creation into Hierarchy `Tools` and include Ring Array in the same tool surface | DONE | Hierarchy `+ Tools` now launches both detector generators and Ring Array, while Properties focuses on saved-generator inspection and regeneration |
-| DGS-003 | P1 | Properties UX | Reduce Properties-panel generator bulk while keeping saved-generator inspection and regeneration accessible | NEXT | DGS-002 already removed the primary create action; keep the remaining cleanup narrow |
-| DGS-004 | P1 | Layered Stack | Audit layered detector stack create/regenerate visibility and revision behavior end to end | PENDING | Focus on generated placements/modules actually appearing and staying inspectable |
+| DGS-003 | P1 | Properties UX | Reduce Properties-panel generator bulk while keeping saved-generator inspection and regeneration accessible | DONE | Properties cards now stay collapsed when there are multiple saved generators, keep edit/regenerate actions in the card header, and drop redundant per-card copy |
+| DGS-004 | P1 | Layered Stack | Audit layered detector stack create/regenerate visibility and revision behavior end to end | NEXT | Focus on generated placements/modules actually appearing and staying inspectable |
 | DGS-005 | P1 | Support Ribs | Audit support-rib array create/regenerate visibility and revision behavior end to end | PENDING | Check both placement creation and scene/hierarchy discoverability |
 | DGS-006 | P1 | Channel Cuts | Audit channel-cut array realization, target updates, and saved-generator revision behavior end to end | PENDING | Focus on cut-result visibility and target LV retargeting consistency |
 | DGS-007 | P1 | Shield Sleeve | Audit annular shield sleeve realization, placement visibility, and revision behavior end to end | PENDING | Confirm generated LV/PV visibility and regeneration are clear in the app |
@@ -97,6 +97,7 @@ Statuses:
 | 2026-04-09 | Backlog setup | DONE | Created a detector-generator stabilization loop seeded from real post-generator usage feedback, starting with tiled sensor array defaults and generated-placement visibility |
 | 2026-04-10 | DGS-001 tiled-array defaults and visible parents | DONE | Files: [`/Volumes/nvme/projects/airpet/static/detectorFeatureGeneratorsUi.js`](/Volumes/nvme/projects/airpet/static/detectorFeatureGeneratorsUi.js), [`/Volumes/nvme/projects/airpet/static/detectorFeatureGeneratorEditor.js`](/Volumes/nvme/projects/airpet/static/detectorFeatureGeneratorEditor.js), [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py), [`/Volumes/nvme/projects/airpet/tests/js/detector_feature_generators_ui.test.mjs`](/Volumes/nvme/projects/airpet/tests/js/detector_feature_generators_ui.test.mjs), [`/Volumes/nvme/projects/airpet/tests/test_detector_feature_generators_state.py`](/Volumes/nvme/projects/airpet/tests/test_detector_feature_generators_state.py), [`/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md`](/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md). Tests: `node --check static/detectorFeatureGeneratorsUi.js`; `node --check static/detectorFeatureGeneratorEditor.js`; `python3 -m py_compile src/project_manager.py tests/test_detector_feature_generators_state.py`; `node --test tests/js/detector_feature_generators_ui.test.mjs`; `python3 -m pytest tests/test_detector_feature_generators_state.py -q -k 'tiled_sensor_array'`. Outcome: fixed the tiled-array editor defaults so untouched pitch matches the default sensor size, reproduced the invisible-placement gap as detached parent-LV targeting, limited the parent picker to live scene LVs while preserving existing targets for edits, rejected detached tiled-array parents in backend realization, and added scene-level regression coverage that confirms generated sensor PVs appear in the Three.js scene description. Next: DGS-002 |
 | 2026-04-10 | DGS-002 hierarchy tools detector-generator entry point | DONE | Files: [`/Volumes/nvme/projects/airpet/static/detectorFeatureGeneratorsUi.js`](/Volumes/nvme/projects/airpet/static/detectorFeatureGeneratorsUi.js), [`/Volumes/nvme/projects/airpet/static/uiManager.js`](/Volumes/nvme/projects/airpet/static/uiManager.js), [`/Volumes/nvme/projects/airpet/static/main.js`](/Volumes/nvme/projects/airpet/static/main.js), [`/Volumes/nvme/projects/airpet/templates/index.html`](/Volumes/nvme/projects/airpet/templates/index.html), [`/Volumes/nvme/projects/airpet/tests/js/detector_feature_generators_ui.test.mjs`](/Volumes/nvme/projects/airpet/tests/js/detector_feature_generators_ui.test.mjs), [`/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md`](/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md). Tests: `node --check static/detectorFeatureGeneratorsUi.js`; `node --check static/uiManager.js`; `node --check static/main.js`; `node --test tests/js/detector_feature_generators_ui.test.mjs`. Outcome: validated the split launch-path gap in the current UI wiring, added detector-generator launch beside Ring Array under Hierarchy `+ Tools`, closed that dropdown when either tool launches, shifted the Properties detector-generator panel to inspector/regenerate guidance instead of a primary create action, and added focused smoke coverage for the shared tools surface plus deterministic launch-state messaging. Next: DGS-003 |
+| 2026-04-10 | DGS-003 Properties panel cleanup | DONE | Files: [`/Volumes/nvme/projects/airpet/static/detectorFeatureGeneratorsUi.js`](/Volumes/nvme/projects/airpet/static/detectorFeatureGeneratorsUi.js), [`/Volumes/nvme/projects/airpet/static/uiManager.js`](/Volumes/nvme/projects/airpet/static/uiManager.js), [`/Volumes/nvme/projects/airpet/templates/index.html`](/Volumes/nvme/projects/airpet/templates/index.html), [`/Volumes/nvme/projects/airpet/tests/js/detector_feature_generators_ui.test.mjs`](/Volumes/nvme/projects/airpet/tests/js/detector_feature_generators_ui.test.mjs), [`/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md`](/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md). Tests: `node --check static/detectorFeatureGeneratorsUi.js`; `node --check static/uiManager.js`; `node --test tests/js/detector_feature_generators_ui.test.mjs`. Outcome: validated that the post-DGS-002 Properties panel still rendered redundant launch copy, auto-opened the newest saved generator card, and appended verbose per-generator notes; trimmed that chrome by collapsing multi-generator cards by default, moving edit/regenerate actions into the card header, and suppressing the extra launch hint once saved generators exist, with focused UI-state coverage for the leaner panel behavior. Next: DGS-004 |
 
 ## Notes For Future Reordering
 
