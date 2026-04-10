@@ -2431,6 +2431,11 @@ class ProjectManager:
                 f"Annular shield-sleeve generators require parent logical volume "
                 f"'{parent_lv_name}' to use standard placements."
             )
+        if not self._logical_volume_is_instantiated_in_scene(parent_lv_name):
+            return None, (
+                f"Annular shield-sleeve generators require parent logical volume "
+                f"'{parent_lv_name}' to already be placed in the live scene so generated shields are visible."
+            )
 
         if shield.get('anchor') != 'target_center':
             return None, "Annular shield-sleeve generators currently require anchor 'target_center'."

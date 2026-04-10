@@ -1984,6 +1984,64 @@ def test_annular_shield_sleeve_realization_creates_tube_geometry_and_generated_r
         {"id": shield_pvs[0].id, "name": "fixture_shield_sleeve__shield_pv"},
     ]
 
+    scene_names = {
+        item["name"]
+        for item in pm.get_threejs_description()
+        if item.get("name", "").startswith("fixture_shield_sleeve__shield")
+    }
+    assert scene_names == {
+        "fixture_shield_sleeve__shield_pv",
+    }
+
+
+def test_annular_shield_sleeve_realization_requires_instantiated_parent_lv():
+    pm = _make_pm()
+
+    solid_dict, error_msg = pm.add_solid(
+        "detached_shield_parent_box",
+        "box",
+        {"x": "30", "y": "20", "z": "10"},
+    )
+    assert error_msg is None
+
+    parent_lv, error_msg = pm.add_logical_volume(
+        "detached_shield_parent_lv",
+        solid_dict["name"],
+        "G4_Galactic",
+    )
+    assert error_msg is None
+
+    parent_lv_state = pm.current_geometry_state.logical_volumes[parent_lv["name"]]
+    pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
+        {
+            "generator_id": "dfg_detached_shield_sleeve",
+            "name": "detached_shield_sleeve",
+            "generator_type": "annular_shield_sleeve",
+            "target": {
+                "parent_logical_volume_ref": {
+                    "id": parent_lv_state.id,
+                    "name": parent_lv_state.name,
+                },
+            },
+            "shield": {
+                "inner_radius_mm": 8.0,
+                "outer_radius_mm": 12.0,
+                "length_mm": 30.0,
+                "material_ref": "G4_Pb",
+                "origin_offset_mm": {"x": 0.0, "y": 0.0, "z": 1.0},
+            },
+        }
+    ])
+
+    result, error_msg = pm.realize_detector_feature_generator("dfg_detached_shield_sleeve")
+
+    assert result is None
+    assert error_msg == (
+        "Annular shield-sleeve generators require parent logical volume "
+        "'detached_shield_parent_lv' to already be placed in the live scene so generated shields are visible."
+    )
+    assert parent_lv_state.content == []
+
 
 def test_annular_shield_sleeve_realization_reuses_generated_objects_and_replaces_old_placements():
     pm = _make_pm()
@@ -2048,6 +2106,15 @@ def test_annular_shield_sleeve_realization_reuses_generated_objects_and_replaces
     assert placement_names == [
         "refresh_shield_sleeve__shield_pv",
     ]
+
+    scene_names = {
+        item["name"]
+        for item in pm.get_threejs_description()
+        if item.get("name", "").startswith("refresh_shield_sleeve__shield")
+    }
+    assert scene_names == {
+        "refresh_shield_sleeve__shield_pv",
+    }
 
 
 def test_channel_cut_array_realization_creates_boolean_geometry_and_updates_targets():

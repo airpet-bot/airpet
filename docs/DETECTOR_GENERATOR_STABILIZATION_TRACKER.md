@@ -55,19 +55,19 @@ A task is only `DONE` when all of the following are true:
 ## Current Status
 
 - Overall phase: post-R3 stabilization loop, active
-- Current priority: audit annular shield sleeve realization, placement visibility, and saved-generator revision behavior end to end
+- Current priority: decide whether shared generated-object selection or reveal affordances are still needed after the family-specific visibility fixes
 - Success metric: existing detector generators feel dependable in real use, with sane defaults, clear launch points, and generated geometry that is visible and inspectable after creation/regeneration
 
 ## Current NEXT Task
 
-DGS-007: audit annular shield sleeve realization, placement visibility, and revision behavior end to end.
+DGS-008: add shared generated-object selection or reveal affordances when they materially improve generator discoverability.
 
 Focus for this task:
 
-- confirm generated shield logical volumes and placements stay visible after create and regenerate
-- verify saved shield edits reuse the generated object cleanly when dimensions or offsets change
-- keep the audit narrow to shield sleeves rather than broad cross-generator cleanup
-- add only the smallest sufficient regression or deterministic replay for any concrete realization or discoverability gap found
+- verify there is still a real cross-generator discoverability gap after DGS-001 through DGS-007
+- prefer a shared reveal/select affordance only if saved-generator cards and existing naming are still not enough
+- keep the scope narrow to the smallest shared discoverability improvement that materially helps existing generators
+- avoid broad hierarchy or Properties redesign while closing the remaining gap, if one still exists
 
 ## Backlog
 
@@ -87,8 +87,8 @@ Statuses:
 | DGS-004 | P1 | Layered Stack | Audit layered detector stack create/regenerate visibility and revision behavior end to end | DONE | Layered stacks now reject detached parent LVs, and scene-level coverage confirms module placements stay visible after create and regenerate |
 | DGS-005 | P1 | Support Ribs | Audit support-rib array create/regenerate visibility and revision behavior end to end | DONE | Support-rib arrays now reject detached parent LVs, scene-level coverage confirms generated rib PVs appear after create/regenerate, and saved-generator inspector rows still expose generated LV/PV names |
 | DGS-006 | P1 | Channel Cuts | Audit channel-cut array realization, target updates, and saved-generator revision behavior end to end | DONE | Channel cuts now reject detached target LVs and have focused create/regenerate coverage for targeted-LV revisions |
-| DGS-007 | P1 | Shield Sleeve | Audit annular shield sleeve realization, placement visibility, and revision behavior end to end | NEXT | Confirm generated LV/PV visibility and regeneration are clear in the app |
-| DGS-008 | P2 | Shared UX | Add shared generated-object selection or reveal affordances when they materially improve generator discoverability | PENDING | Only if still needed after the earlier fixes |
+| DGS-007 | P1 | Shield Sleeve | Audit annular shield sleeve realization, placement visibility, and revision behavior end to end | DONE | Shield sleeves now reject detached parent LVs, have scene-level create/regenerate coverage, and keep saved generated-object names visible in the inspector |
+| DGS-008 | P2 | Shared UX | Add shared generated-object selection or reveal affordances when they materially improve generator discoverability | NEXT | Only if still needed after the earlier fixes |
 
 ## Cycle Log
 
@@ -101,6 +101,7 @@ Statuses:
 | 2026-04-10 | DGS-004 layered-stack visibility audit | DONE | Files: [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py), [`/Volumes/nvme/projects/airpet/tests/test_detector_feature_generators_state.py`](/Volumes/nvme/projects/airpet/tests/test_detector_feature_generators_state.py), [`/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md`](/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md). Tests: `python3 -m py_compile src/project_manager.py tests/test_detector_feature_generators_state.py`; `python3 -m pytest tests/test_detector_feature_generators_state.py -q -k 'layered_detector_stack'`. Outcome: reproduced a detached-parent visibility gap where layered stacks reported success but produced no live-scene module instances, kept the UI audit narrow by confirming saved layered-stack cards still list generated logical volumes and placements clearly enough for inspection, rejected detached parent LVs in backend realization, and added scene-level create/regenerate coverage plus a detached-parent regression so visible module placements stay trustworthy. Next: DGS-005 |
 | 2026-04-10 | DGS-005 support-rib visibility audit | DONE | Files: [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py), [`/Volumes/nvme/projects/airpet/tests/test_detector_feature_generators_state.py`](/Volumes/nvme/projects/airpet/tests/test_detector_feature_generators_state.py), [`/Volumes/nvme/projects/airpet/tests/js/detector_feature_generators_ui.test.mjs`](/Volumes/nvme/projects/airpet/tests/js/detector_feature_generators_ui.test.mjs), [`/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md`](/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md). Tests: `python3 -m py_compile src/project_manager.py tests/test_detector_feature_generators_state.py`; `python3 -m pytest tests/test_detector_feature_generators_state.py -q -k 'support_rib_array'`; `node --test tests/js/detector_feature_generators_ui.test.mjs --test-name-pattern='support rib array'`. Outcome: reproduced a detached-parent visibility gap where support-rib arrays reported success, recorded generated rib placements, and still produced no live-scene instances; rejected detached parent LVs in backend realization, added scene-level create/regenerate coverage for generated rib PVs, and kept the inspector audit narrow with a UI smoke check that saved rib arrays still expose generated LV/PV names clearly enough for discoverability. Next: DGS-006 |
 | 2026-04-10 | DGS-006 channel-cut visibility and revision audit | DONE | Files: [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py), [`/Volumes/nvme/projects/airpet/tests/test_detector_feature_generators_state.py`](/Volumes/nvme/projects/airpet/tests/test_detector_feature_generators_state.py), [`/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md`](/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md). Tests: `python3 -m py_compile src/project_manager.py tests/test_detector_feature_generators_state.py`; `python3 -m pytest tests/test_detector_feature_generators_state.py -q -k 'channel_cut_array'`. Outcome: reproduced a detached-target visibility gap where channel-cut generators reported success and rewired saved logical volumes even when no targeted LV was placed in the live scene; rejected detached channel-cut targets in backend realization, added a focused regression for that failure mode, and extended channel-cut coverage to confirm result/cutter solids are reused while targeted-LV subsets stay stable across saved-spec revisions. Next: DGS-007 |
+| 2026-04-10 | DGS-007 shield-sleeve visibility and revision audit | DONE | Files: [`/Volumes/nvme/projects/airpet/src/project_manager.py`](/Volumes/nvme/projects/airpet/src/project_manager.py), [`/Volumes/nvme/projects/airpet/tests/test_detector_feature_generators_state.py`](/Volumes/nvme/projects/airpet/tests/test_detector_feature_generators_state.py), [`/Volumes/nvme/projects/airpet/tests/js/detector_feature_generators_ui.test.mjs`](/Volumes/nvme/projects/airpet/tests/js/detector_feature_generators_ui.test.mjs), [`/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md`](/Volumes/nvme/projects/airpet/docs/DETECTOR_GENERATOR_STABILIZATION_TRACKER.md). Tests: `python3 -m py_compile src/project_manager.py tests/test_detector_feature_generators_state.py`; `python3 -m pytest tests/test_detector_feature_generators_state.py -q -k 'annular_shield_sleeve'`; `node --test tests/js/detector_feature_generators_ui.test.mjs --test-name-pattern='annular shield sleeve'`. Outcome: reproduced a detached-parent visibility gap where annular shield sleeves reported success, recorded a generated shield placement, and still produced no live-scene instance; rejected detached parent LVs in backend realization, extended shield create/regenerate coverage to assert the generated PV stays visible in the scene, and kept the inspector audit narrow with a UI smoke check that saved shield entries still expose generated LV/PV names clearly enough for discoverability. Next: DGS-008 |
 
 ## Notes For Future Reordering
 

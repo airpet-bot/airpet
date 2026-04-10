@@ -700,6 +700,20 @@ test('annular shield sleeve model and description stay deterministic', () => {
         described.detailRows.find((row) => row.label === 'Material').value,
         'G4_Pb',
     );
+    assert.deepEqual(
+        described.detailRows.find((row) => row.label === 'Generated Logical Volumes').value,
+        {
+            text: 'annular_shield__shield_lv',
+            title: 'annular_shield__shield_lv',
+        },
+    );
+    assert.deepEqual(
+        described.detailRows.find((row) => row.label === 'Generated Placements').value,
+        {
+            text: 'fixture_shield_sleeve__shield_pv',
+            title: 'fixture_shield_sleeve__shield_pv',
+        },
+    );
 });
 
 test('channel cut array model and description stay deterministic', () => {
