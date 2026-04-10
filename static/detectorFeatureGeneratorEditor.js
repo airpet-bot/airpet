@@ -77,6 +77,37 @@ let currentStackTargetOptions = [];
 let currentSelectedHoleTargetName = '';
 let currentSelectedStackTargetName = '';
 
+export function coerceTiledSensorArrayPitchValue(pitchValue, sensorSizeValue) {
+    const numericPitch = Number(pitchValue);
+    const numericSensorSize = Number(sensorSizeValue);
+
+    if (!Number.isFinite(numericSensorSize) || numericSensorSize <= 0) {
+        return Number.isFinite(numericPitch) && numericPitch > 0 ? numericPitch : null;
+    }
+
+    if (!Number.isFinite(numericPitch) || numericPitch <= 0 || numericPitch < numericSensorSize) {
+        return numericSensorSize;
+    }
+
+    return numericPitch;
+}
+
+function syncTiledSensorArrayPitchDefaults() {
+    if (!pitchXInput || !pitchYInput || !tileSensorSizeXInput || !tileSensorSizeYInput) {
+        return;
+    }
+
+    const nextPitchX = coerceTiledSensorArrayPitchValue(pitchXInput.value, tileSensorSizeXInput.value);
+    const nextPitchY = coerceTiledSensorArrayPitchValue(pitchYInput.value, tileSensorSizeYInput.value);
+
+    if (nextPitchX != null) {
+        pitchXInput.value = String(nextPitchX);
+    }
+    if (nextPitchY != null) {
+        pitchYInput.value = String(nextPitchY);
+    }
+}
+
 export function initDetectorFeatureGeneratorEditor(callbacks) {
     onConfirmCallback = callbacks.onConfirm;
 
@@ -146,6 +177,16 @@ export function initDetectorFeatureGeneratorEditor(callbacks) {
     confirmButton.addEventListener('click', handleConfirm);
     generatorTypeSelect.addEventListener('change', updateGeneratorTypeSections);
     targetSelect.addEventListener('change', updateTargetSummary);
+    tileSensorSizeXInput.addEventListener('input', () => {
+        if (getCurrentGeneratorType() === TILED_SENSOR_ARRAY) {
+            syncTiledSensorArrayPitchDefaults();
+        }
+    });
+    tileSensorSizeYInput.addEventListener('input', () => {
+        if (getCurrentGeneratorType() === TILED_SENSOR_ARRAY) {
+            syncTiledSensorArrayPitchDefaults();
+        }
+    });
 }
 
 export function show(generatorEntry, projectState, selectedItems = []) {
@@ -393,6 +434,10 @@ function updateGeneratorTypeSections() {
         populateTargetOptions(currentStackTargetOptions, currentSelectedStackTargetName, 'parent');
     } else {
         populateTargetOptions(currentHoleTargetOptions, currentSelectedHoleTargetName, 'solid');
+    }
+
+    if (isTiledSensorArray && !currentGeneratorEntry) {
+        syncTiledSensorArrayPitchDefaults();
     }
 
     updateTargetSummary();

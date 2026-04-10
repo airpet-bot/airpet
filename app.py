@@ -6164,10 +6164,35 @@ def load_system_prompt():
         return "You are a helpful assistant." # Fallback prompt
 
 # Function for Consistent API Responses
-def create_success_response(project_manager, message="Success", exclude_unchanged_tessellated=True, extra_payload=None):
-    """
-    Helper to create a standard success response object, including history state.
-    """
+def _get_excluded_static_tessellated_solid_names(project_manager):
+    state = getattr(project_manager, "current_geometry_state", None)
+    if state is None:
+        return []
+
+    changed_solids_set = getattr(project_manager, "changed_object_ids", {}).get("solids") or set()
+    excluded_names = []
+
+    for name, solid in getattr(state, "solids", {}).items():
+        if getattr(solid, "type", None) != "tessellated":
+            continue
+
+        raw_parameters = getattr(solid, "raw_parameters", None)
+        if not isinstance(raw_parameters, dict):
+            continue
+
+        facets = raw_parameters.get("facets", [])
+        if (
+            facets
+            and isinstance(facets[0], dict)
+            and "vertices" in facets[0]
+            and name not in changed_solids_set
+        ):
+            excluded_names.append(name)
+
+    return excluded_names
+
+
+def build_success_payload(project_manager, message="Success", exclude_unchanged_tessellated=True, extra_payload=None):
     state = project_manager.get_full_project_state_dict(exclude_unchanged_tessellated=exclude_unchanged_tessellated)
     scene = project_manager.get_threejs_description()
     project_name = project_manager.project_name
@@ -6177,9 +6202,6 @@ def create_success_response(project_manager, message="Success", exclude_unchange
         response_type = "full_with_exclusions"
     else:
         response_type = "full"
-
-    # Reset the object change tracking.
-    project_manager._clear_change_tracker()
 
     payload = {
         "success": True,
@@ -6195,8 +6217,28 @@ def create_success_response(project_manager, message="Success", exclude_unchange
         }
     }
 
+    if exclude_unchanged_tessellated:
+        payload["excluded_solid_names"] = _get_excluded_static_tessellated_solid_names(project_manager)
+
     if isinstance(extra_payload, dict):
         payload.update(extra_payload)
+
+    return payload
+
+
+def create_success_response(project_manager, message="Success", exclude_unchanged_tessellated=True, extra_payload=None):
+    """
+    Helper to create a standard success response object, including history state.
+    """
+    payload = build_success_payload(
+        project_manager,
+        message=message,
+        exclude_unchanged_tessellated=exclude_unchanged_tessellated,
+        extra_payload=extra_payload,
+    )
+
+    # Reset the object change tracking.
+    project_manager._clear_change_tracker()
 
     return jsonify(payload)
 
@@ -13997,22 +14039,18 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
                     pm.end_transaction(f"AI: {user_message[:50]}")
                     print(f"  Stream Complete", flush=True)
                     
-                    complete_payload = {
+                    complete_payload = build_success_payload(
+                        pm,
+                        message=final_text,
+                        exclude_unchanged_tessellated=True,
+                        extra_payload=local_extra_payload,
+                    )
+                    complete_payload.update({
                         'type': 'complete',
-                        'message': final_text,
-                        'extra_payload': local_extra_payload,
                         'job_id': job_id,
                         'version_id': version_id or pm.current_version_id,
-                        'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True),
-                        'scene_update': pm.get_threejs_description(),
-                        'response_type': 'full_with_exclusions',
-                        'project_name': pm.project_name,
-                        'success': True,
-                        'history_status': {
-                            'can_undo': pm.history_index > 0,
-                            'can_redo': pm.history_index < len(pm.history) - 1
-                        }
-                    }
+                    })
+                    pm._clear_change_tracker()
                     yield f"data: {json.dumps(complete_payload)}\n\n"
                     return
 
@@ -14058,7 +14096,19 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
             )
             pm.end_transaction(f"AI: {user_message[:50]}")
             print(f"  Stream Complete (turn limit)", flush=True)
-            yield f"data: {json.dumps({'type': 'complete', 'message': turn_limit_text, 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id, 'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True), 'scene_update': pm.get_threejs_description(), 'response_type': 'full_with_exclusions', 'project_name': pm.project_name, 'success': True, 'history_status': {'can_undo': pm.history_index > 0, 'can_redo': pm.history_index < len(pm.history) - 1}})}\n\n"
+            complete_payload = build_success_payload(
+                pm,
+                message=turn_limit_text,
+                exclude_unchanged_tessellated=True,
+                extra_payload=chat_extra_payload,
+            )
+            complete_payload.update({
+                'type': 'complete',
+                'job_id': job_id,
+                'version_id': version_id or pm.current_version_id,
+            })
+            pm._clear_change_tracker()
+            yield f"data: {json.dumps(complete_payload)}\n\n"
         except Exception as stream_err:
             print(f"  Stream Error (local backend): {stream_err}", flush=True)
             import traceback
@@ -14212,22 +14262,18 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
                     pm.end_transaction(f"AI: {user_message[:50]}")
                     
                     print(f"  Stream Complete", flush=True)
-                    complete_payload = {
+                    complete_payload = build_success_payload(
+                        pm,
+                        message=final_text,
+                        exclude_unchanged_tessellated=True,
+                        extra_payload=chat_extra_payload,
+                    )
+                    complete_payload.update({
                         'type': 'complete',
-                        'message': final_text,
-                        'extra_payload': chat_extra_payload,
                         'job_id': job_id,
                         'version_id': version_id or pm.current_version_id,
-                        'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True),
-                        'scene_update': pm.get_threejs_description(),
-                        'response_type': 'full_with_exclusions',
-                        'project_name': pm.project_name,
-                        'success': True,
-                        'history_status': {
-                            'can_undo': pm.history_index > 0,
-                            'can_redo': pm.history_index < len(pm.history) - 1
-                        }
-                    }
+                    })
+                    pm._clear_change_tracker()
                     yield f"data: {json.dumps(complete_payload)}\n\n"
                     return
                 
@@ -14243,7 +14289,19 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
             )
             pm.end_transaction(f"AI: {user_message[:50]}")
             print(f"  Stream Complete (turn limit)", flush=True)
-            yield f"data: {json.dumps({'type': 'complete', 'message': turn_limit_text, 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id, 'project_state': pm.get_full_project_state_dict(exclude_unchanged_tessellated=True), 'scene_update': pm.get_threejs_description(), 'response_type': 'full_with_exclusions', 'project_name': pm.project_name, 'success': True, 'history_status': {'can_undo': pm.history_index > 0, 'can_redo': pm.history_index < len(pm.history) - 1}})}\n\n"
+            complete_payload = build_success_payload(
+                pm,
+                message=turn_limit_text,
+                exclude_unchanged_tessellated=True,
+                extra_payload=chat_extra_payload,
+            )
+            complete_payload.update({
+                'type': 'complete',
+                'job_id': job_id,
+                'version_id': version_id or pm.current_version_id,
+            })
+            pm._clear_change_tracker()
+            yield f"data: {json.dumps(complete_payload)}\n\n"
         except Exception as stream_err:
             print(f"  Stream Error (Gemini): {stream_err}", flush=True)
             import traceback

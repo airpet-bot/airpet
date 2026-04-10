@@ -35,6 +35,7 @@ import {
 } from './historyDeleteFlow.js';
 import * as UIManager from './uiManager.js';
 import * as AIAssistant from './aiAssistant.js';
+import { mergeProjectStateWithExclusions } from './projectStateMerge.js';
 import {
     getNormalizedGpsDirectionVector,
     isDirectedGpsAngularType,
@@ -633,26 +634,11 @@ function syncUIWithState(responseData, selectionToRestore = []) {
     // --- MERGE LOGIC for partial updates ---
     if (responseData.response_type === 'full_with_exclusions') {
         console.log("Merging with exclusions")
-        // This is a partial state update. We need to merge it.
-        // We can't just replace the whole state.
-        const newSolids = responseData.project_state.solids || {};
-
-        // Keep all existing solids that are NOT in the incoming update.
-        // This preserves our large, static tessellated solids on the client.
-        const preservedSolids = {};
-        for (const solidName in AppState.currentProjectState.solids) {
-            if (!newSolids.hasOwnProperty(solidName)) {
-                preservedSolids[solidName] = AppState.currentProjectState.solids[solidName];
-            }
-        }
-
-        // Combine the preserved solids with the newly received ones.
-        const combinedSolids = { ...preservedSolids, ...newSolids };
-
-        // Update the project state with the combined solids list.
-        AppState.currentProjectState = responseData.project_state;
-        AppState.currentProjectState.solids = combinedSolids;
-
+        AppState.currentProjectState = mergeProjectStateWithExclusions(
+            AppState.currentProjectState,
+            responseData.project_state,
+            responseData.excluded_solid_names,
+        );
     } else {
         // This is a full state update (e.g., from loading a file). Replace everything.
         AppState.currentProjectState = responseData.project_state;
