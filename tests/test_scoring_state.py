@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -447,3 +448,62 @@ def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest
         "skipped_tallies": [],
         "forced_run_manifest_overrides": {"save_hits": True},
     }
+    run_manifest_summary = metadata["run_manifest_summary"]
+    output_files = {
+        entry["role"]: entry for entry in run_manifest_summary["output_files"]
+    }
+    expected_geometry_sha256 = hashlib.sha256(
+        (tmp_path / "geometry.gdml").read_bytes()
+    ).hexdigest()
+
+    assert run_manifest_summary["schema_version"] == 1
+    assert run_manifest_summary["job_id"] == "scoring-job"
+    assert run_manifest_summary["version_id"] == "version"
+    assert run_manifest_summary["resolved_run_manifest"] == metadata["resolved_run_manifest"]
+    assert run_manifest_summary["execution_settings"] == {
+        "physics_list": None,
+        "optical_physics": False,
+    }
+    assert run_manifest_summary["geometry"] == {
+        "path": "geometry.gdml",
+        "exists": True,
+        "sha256": expected_geometry_sha256,
+    }
+    assert run_manifest_summary["environment"]["summary"] == state.environment.to_summary_dict()
+    assert run_manifest_summary["scoring"]["summary"] == state.scoring.to_summary_dict()
+    assert run_manifest_summary["scoring"]["runtime"] == {
+        "supported_quantities": ["energy_deposit", "n_of_step"],
+        "artifact_request_count": 1,
+        "skipped_tally_count": 0,
+        "requires_hits": True,
+        "forced_run_manifest_overrides": {"save_hits": True},
+    }
+    assert run_manifest_summary["artifact_bundle"] == {
+        "path": "scoring_artifacts.json",
+        "exists": False,
+        "generated_artifact_count": 0,
+        "skipped_tally_count": 0,
+        "quantity_summaries": [],
+        "source_output": {
+            "path": "output.hdf5",
+            "exists": False,
+        },
+    }
+    assert output_files["metadata"]["exists"] is True
+    assert output_files["macro"]["path"] == "run.mac"
+    assert output_files["macro"]["exists"] is True
+    assert output_files["geometry"]["sha256"] == expected_geometry_sha256
+    assert output_files["hits"] == {"role": "hits", "path": "output.hdf5", "exists": False}
+    assert output_files["scoring_bundle"] == {
+        "role": "scoring_bundle",
+        "path": "scoring_artifacts.json",
+        "exists": False,
+    }
+    assert output_files["tracks"]["path"] == "tracks"
+    assert output_files["tracks"]["exists"] is True
+    assert output_files["tracks"]["is_directory"] is True
+    assert run_manifest_summary["comparison_keys"]["geometry_sha256"] == expected_geometry_sha256
+    assert len(run_manifest_summary["comparison_keys"]["environment_signature"]) == 64
+    assert len(run_manifest_summary["comparison_keys"]["scoring_signature"]) == 64
+    assert len(run_manifest_summary["comparison_keys"]["run_manifest_signature"]) == 64
+    assert len(run_manifest_summary["comparison_keys"]["execution_signature"]) == 64

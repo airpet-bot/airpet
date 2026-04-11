@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import h5py
@@ -9,9 +10,33 @@ from src.scoring_artifacts import write_scoring_artifact_bundle
 def test_write_scoring_artifact_bundle_builds_energy_deposit_mesh_and_updates_metadata(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
+    (run_dir / "run.mac").write_text("/run/beamOn 3\n", encoding="utf-8")
+    (run_dir / "geometry.gdml").write_text("<gdml />\n", encoding="utf-8")
+    (run_dir / "tracks").mkdir()
 
     metadata = {
         "job_id": "mesh-job",
+        "timestamp": "2026-04-11T12:15:00",
+        "sim_options": {
+            "physics_list": "FTFP_BERT",
+            "optical_physics": False,
+        },
+        "resolved_run_manifest": {
+            "events": 3,
+            "threads": 1,
+            "save_hits": True,
+        },
+        "environment": {
+            "schema_version": 1,
+            "global_uniform_magnetic_field": {
+                "enabled": False,
+            },
+        },
+        "environment_summary": {
+            "has_active_controls": False,
+            "active_control_count": 0,
+            "summary_text": "No environment overrides",
+        },
         "scoring": {
             "schema_version": 1,
             "scoring_meshes": [
@@ -38,6 +63,11 @@ def test_write_scoring_artifact_bundle_builds_energy_deposit_mesh_and_updates_me
                 }
             ],
             "run_manifest_defaults": {},
+        },
+        "scoring_summary": {
+            "enabled_mesh_count": 1,
+            "enabled_tally_count": 1,
+            "summary_text": "1 scoring mesh; 1 tally",
         },
     }
     (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
@@ -81,6 +111,14 @@ def test_write_scoring_artifact_bundle_builds_energy_deposit_mesh_and_updates_me
     }
 
     bundle = json.loads((run_dir / "scoring_artifacts.json").read_text(encoding="utf-8"))
+    run_manifest_summary = bundle["run_manifest_summary"]
+    output_files = {
+        entry["role"]: entry for entry in run_manifest_summary["output_files"]
+    }
+    expected_geometry_sha256 = hashlib.sha256(
+        (run_dir / "geometry.gdml").read_bytes()
+    ).hexdigest()
+
     assert bundle["summary"]["total_value"] == 3.5
     assert bundle["summary"]["value_unit"] == "MeV"
     assert bundle["summary"]["quantity_summaries"] == [
@@ -114,9 +152,35 @@ def test_write_scoring_artifact_bundle_builds_energy_deposit_mesh_and_updates_me
             "value": 2.0,
         },
     ]
+    assert run_manifest_summary["job_id"] == "mesh-job"
+    assert run_manifest_summary["execution_settings"] == {
+        "physics_list": "FTFP_BERT",
+        "optical_physics": False,
+    }
+    assert run_manifest_summary["geometry"] == {
+        "path": "geometry.gdml",
+        "exists": True,
+        "sha256": expected_geometry_sha256,
+    }
+    assert run_manifest_summary["artifact_bundle"] == {
+        "path": "scoring_artifacts.json",
+        "exists": True,
+        "generated_artifact_count": 1,
+        "skipped_tally_count": 0,
+        "quantity_summaries": bundle["summary"]["quantity_summaries"],
+        "source_output": {
+            "path": "output.hdf5",
+            "exists": True,
+        },
+    }
+    assert output_files["hits"]["exists"] is True
+    assert output_files["scoring_bundle"]["exists"] is True
+    assert output_files["tracks"]["exists"] is True
+    assert output_files["geometry"]["sha256"] == expected_geometry_sha256
 
     updated_metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
     assert updated_metadata["scoring_artifacts"]["artifact_bundle_path"] == "scoring_artifacts.json"
+    assert updated_metadata["run_manifest_summary"] == run_manifest_summary
 
 
 def test_write_scoring_artifact_bundle_tracks_quantity_summaries_for_mixed_supported_tallies(tmp_path):

@@ -25,7 +25,7 @@ from .gdml_parser import GDMLParser
 from .gdml_writer import GDMLWriter
 from .step_parser import parse_step_file
 from .objective_formula import evaluate_objective_formula
-from .scoring_artifacts import build_scoring_runtime_plan
+from .scoring_artifacts import build_run_manifest_summary, build_scoring_runtime_plan
 
 AUTOSAVE_VERSION_ID = "autosave"
 
@@ -9808,5 +9808,13 @@ class ProjectManager:
         # 3. Write the macro file
         with open(macro_path, 'w') as f:
             f.write("\n".join(macro_content))
+
+        metadata['run_manifest_summary'] = build_run_manifest_summary(
+            metadata,
+            run_dir,
+            version_id=os.path.basename(os.path.normpath(version_dir)) or None,
+        )
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
 
         return macro_path

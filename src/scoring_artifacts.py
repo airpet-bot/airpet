@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -9,6 +10,7 @@ import numpy as np
 
 
 SCORING_ARTIFACT_SCHEMA_VERSION = 1
+RUN_MANIFEST_SUMMARY_SCHEMA_VERSION = 1
 _SCORING_RUNTIME_VALUE_UNITS = {
     "energy_deposit": "MeV",
     "n_of_step": "steps",
@@ -29,6 +31,64 @@ def _round_vector(mapping: Dict[str, Any]) -> Dict[str, float]:
         "y": _round_scalar(mapping.get("y", 0.0)),
         "z": _round_scalar(mapping.get("z", 0.0)),
     }
+
+
+def _stable_json_sha256(payload: Any) -> str:
+    serialized = json.dumps(
+        payload if payload is not None else {},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _file_sha256(path: Path) -> Optional[str]:
+    if not path.exists() or not path.is_file():
+        return None
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _summarize_run_output(
+    run_path: Path,
+    role: str,
+    relative_path: str,
+    *,
+    include_sha256: bool = False,
+) -> Dict[str, Any]:
+    candidate_path = run_path / relative_path
+    entry = {
+        "role": role,
+        "path": relative_path,
+        "exists": candidate_path.exists(),
+    }
+    if not candidate_path.exists():
+        return entry
+
+    entry["is_directory"] = candidate_path.is_dir()
+    if candidate_path.is_file():
+        entry["size_bytes"] = int(candidate_path.stat().st_size)
+        if include_sha256:
+            digest = _file_sha256(candidate_path)
+            if digest:
+                entry["sha256"] = digest
+    return entry
+
+
+def _infer_version_id_from_run_dir(run_path: Path) -> Optional[str]:
+    if run_path.parent.name != "sim_runs":
+        return None
+
+    version_id = str(run_path.parent.parent.name or "").strip()
+    return version_id or None
 
 
 def _mesh_lookup(scoring_payload: Dict[str, Any]) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
@@ -117,6 +177,170 @@ def build_scoring_runtime_plan(scoring_payload: Optional[Dict[str, Any]]) -> Dic
 
 def scoring_runtime_requires_hits(scoring_payload: Optional[Dict[str, Any]]) -> bool:
     return bool(build_scoring_runtime_plan(scoring_payload).get("requires_hits"))
+
+
+def build_run_manifest_summary(
+    metadata: Optional[Dict[str, Any]],
+    run_dir: str,
+    *,
+    version_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    metadata_payload = metadata if isinstance(metadata, dict) else {}
+    run_path = Path(run_dir)
+
+    resolved_run_manifest = deepcopy(
+        metadata_payload.get("resolved_run_manifest")
+        if isinstance(metadata_payload.get("resolved_run_manifest"), dict)
+        else {}
+    )
+    environment_payload = (
+        metadata_payload.get("environment")
+        if isinstance(metadata_payload.get("environment"), dict)
+        else {}
+    )
+    environment_summary = deepcopy(
+        metadata_payload.get("environment_summary")
+        if isinstance(metadata_payload.get("environment_summary"), dict)
+        else {}
+    )
+    scoring_payload = (
+        metadata_payload.get("scoring")
+        if isinstance(metadata_payload.get("scoring"), dict)
+        else {}
+    )
+    scoring_runtime = (
+        metadata_payload.get("scoring_runtime")
+        if isinstance(metadata_payload.get("scoring_runtime"), dict)
+        else build_scoring_runtime_plan(scoring_payload)
+    )
+    scoring_summary = deepcopy(
+        metadata_payload.get("scoring_summary")
+        if isinstance(metadata_payload.get("scoring_summary"), dict)
+        else {
+            "enabled_mesh_count": int(scoring_runtime.get("enabled_mesh_count", 0) or 0),
+            "enabled_tally_count": int(scoring_runtime.get("enabled_tally_count", 0) or 0),
+            "artifact_request_count": int(scoring_runtime.get("artifact_request_count", 0) or 0),
+            "skipped_tally_count": int(scoring_runtime.get("skipped_tally_count", 0) or 0),
+        }
+    )
+    sim_options = (
+        metadata_payload.get("sim_options")
+        if isinstance(metadata_payload.get("sim_options"), dict)
+        else {}
+    )
+    execution_settings = {
+        "physics_list": sim_options.get("physics_list"),
+        "optical_physics": bool(sim_options.get("optical_physics", False)),
+    }
+
+    output_files = [
+        _summarize_run_output(run_path, "metadata", "metadata.json"),
+        _summarize_run_output(run_path, "macro", "run.mac"),
+        _summarize_run_output(run_path, "geometry", "geometry.gdml", include_sha256=True),
+        _summarize_run_output(run_path, "hits", "output.hdf5"),
+        _summarize_run_output(run_path, "scoring_bundle", "scoring_artifacts.json"),
+        _summarize_run_output(run_path, "tracks", "tracks"),
+    ]
+
+    geometry_output = next(
+        (entry for entry in output_files if entry.get("role") == "geometry"),
+        {"path": "geometry.gdml", "exists": False},
+    )
+    source_output = next(
+        (entry for entry in output_files if entry.get("role") == "hits"),
+        {"path": "output.hdf5", "exists": False},
+    )
+    scoring_bundle_output = next(
+        (entry for entry in output_files if entry.get("role") == "scoring_bundle"),
+        {"path": "scoring_artifacts.json", "exists": False},
+    )
+
+    scoring_artifacts = (
+        metadata_payload.get("scoring_artifacts")
+        if isinstance(metadata_payload.get("scoring_artifacts"), dict)
+        else {}
+    )
+    scoring_artifacts_summary = (
+        scoring_artifacts.get("summary")
+        if isinstance(scoring_artifacts.get("summary"), dict)
+        else {}
+    )
+
+    scoring_runtime_summary = {
+        "supported_quantities": list(scoring_runtime.get("supported_quantities", [])),
+        "artifact_request_count": int(scoring_runtime.get("artifact_request_count", 0) or 0),
+        "skipped_tally_count": int(scoring_runtime.get("skipped_tally_count", 0) or 0),
+        "requires_hits": bool(scoring_runtime.get("requires_hits")),
+    }
+    forced_run_manifest_overrides = scoring_runtime.get("forced_run_manifest_overrides")
+    if isinstance(forced_run_manifest_overrides, dict) and forced_run_manifest_overrides:
+        scoring_runtime_summary["forced_run_manifest_overrides"] = deepcopy(
+            forced_run_manifest_overrides
+        )
+
+    environment_signature = _stable_json_sha256(environment_payload)
+    scoring_signature = _stable_json_sha256(scoring_payload)
+    run_manifest_signature = _stable_json_sha256(resolved_run_manifest)
+    execution_signature = _stable_json_sha256(execution_settings)
+
+    return {
+        "schema_version": RUN_MANIFEST_SUMMARY_SCHEMA_VERSION,
+        "job_id": str(metadata_payload.get("job_id") or "").strip() or None,
+        "timestamp": metadata_payload.get("timestamp"),
+        "version_id": str(
+            version_id
+            or metadata_payload.get("version_id")
+            or _infer_version_id_from_run_dir(run_path)
+            or ""
+        ).strip()
+        or None,
+        "resolved_run_manifest": resolved_run_manifest,
+        "execution_settings": execution_settings,
+        "geometry": {
+            "path": geometry_output.get("path"),
+            "exists": bool(geometry_output.get("exists")),
+            "sha256": geometry_output.get("sha256"),
+        },
+        "environment": {
+            "summary": environment_summary,
+            "signature": environment_signature,
+        },
+        "scoring": {
+            "summary": scoring_summary,
+            "runtime": scoring_runtime_summary,
+            "signature": scoring_signature,
+        },
+        "artifact_bundle": {
+            "path": str(
+                scoring_artifacts.get("artifact_bundle_path")
+                or scoring_bundle_output.get("path")
+                or "scoring_artifacts.json"
+            ).strip()
+            or "scoring_artifacts.json",
+            "exists": bool(scoring_bundle_output.get("exists")),
+            "generated_artifact_count": int(
+                scoring_artifacts.get("generated_artifact_count", 0) or 0
+            ),
+            "skipped_tally_count": int(
+                scoring_artifacts.get("skipped_tally_count", 0) or 0
+            ),
+            "quantity_summaries": deepcopy(
+                scoring_artifacts_summary.get("quantity_summaries", [])
+            ),
+            "source_output": {
+                "path": source_output.get("path"),
+                "exists": bool(source_output.get("exists")),
+            },
+        },
+        "output_files": output_files,
+        "comparison_keys": {
+            "geometry_sha256": geometry_output.get("sha256"),
+            "environment_signature": environment_signature,
+            "scoring_signature": scoring_signature,
+            "run_manifest_signature": run_manifest_signature,
+            "execution_signature": execution_signature,
+        },
+    }
 
 
 def _load_hit_arrays(output_path: str) -> Dict[str, np.ndarray]:
@@ -436,6 +660,9 @@ def write_scoring_artifact_bundle(
         "skipped_tallies": deepcopy(runtime_plan["skipped_tallies"]),
     }
 
+    bundle = None
+    bundle_path = run_path / bundle_filename
+
     if runtime_plan["artifact_request_count"] > 0:
         if not output_path.exists():
             raise FileNotFoundError(f"Missing scoring source output '{output_path.name}'.")
@@ -445,7 +672,6 @@ def write_scoring_artifact_bundle(
             scoring_payload,
             job_id=metadata.get("job_id"),
         )
-        bundle_path = run_path / bundle_filename
         bundle_path.write_text(
             json.dumps(bundle, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -455,5 +681,12 @@ def write_scoring_artifact_bundle(
         artifact_summary["summary"] = deepcopy(bundle.get("summary", {}))
 
     metadata["scoring_artifacts"] = artifact_summary
+    metadata["run_manifest_summary"] = build_run_manifest_summary(metadata, str(run_path))
+    if bundle is not None:
+        bundle["run_manifest_summary"] = deepcopy(metadata["run_manifest_summary"])
+        bundle_path.write_text(
+            json.dumps(bundle, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return artifact_summary
