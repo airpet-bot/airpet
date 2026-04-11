@@ -62,6 +62,21 @@ import {
     describeDetectorFeatureGenerator,
     buildDetectorFeatureGeneratorSelectionContext,
 } from './detectorFeatureGeneratorsUi.js';
+import {
+    SCORING_OBJECT_ID,
+    SCORING_OBJECT_TYPE,
+    SUPPORTED_SCORING_TALLY_QUANTITIES,
+    RUNTIME_READY_SCORING_QUANTITIES,
+    buildScoringStateWithAddedMesh,
+    buildScoringStateWithRemovedMesh,
+    describeScoringMesh,
+    describeScoringPanelState,
+    formatScoringQuantityLabel,
+    isMeshTallyEnabled,
+    normalizeScoringState,
+    replaceScoringMesh,
+    setMeshTallyEnabled,
+} from './scoringUi.js';
 
 // --- Module-level variables for DOM elements ---
 let newProjectButton, saveProjectButton, exportGdmlButton,
@@ -83,7 +98,7 @@ let newProjectButton, saveProjectButton, exportGdmlButton,
 let structureTreeRoot, assembliesListRoot, lvolumesListRoot, definesListRoot, materialsListRoot,
     elementsListRoot, isotopesListRoot, solidsListRoot, opticalSurfacesListRoot, skinSurfacesListRoot,
     borderSurfacesListRoot;
-let inspectorContentDiv, environmentPanelRoot, cadImportsPanelRoot, detectorFeatureGeneratorsPanelRoot;
+let inspectorContentDiv, environmentPanelRoot, cadImportsPanelRoot, detectorFeatureGeneratorsPanelRoot, scoringPanelRoot;
 
 function setCadImportsAccordionVisibility(hasCadImports) {
     if (!cadImportsPanelRoot) return;
@@ -333,6 +348,7 @@ export function initUI(cb) {
     environmentPanelRoot = document.getElementById('environment_panel_root');
     cadImportsPanelRoot = document.getElementById('cad_imports_panel_root');
     detectorFeatureGeneratorsPanelRoot = document.getElementById('detector_feature_generators_panel_root');
+    scoringPanelRoot = document.getElementById('scoring_panel_root');
 
 
     // Bottom panel (AI and simulation)
@@ -1931,6 +1947,324 @@ function createEnvironmentPlainTextInput(parent, { labelText, id, value, onChang
     parent.appendChild(fieldWrap);
 }
 
+function createScoringIntegerInput(parent, { labelText, id, value, onChange, fieldLabel }) {
+    const fieldWrap = document.createElement('div');
+    fieldWrap.className = 'environment-vector-field';
+
+    const label = document.createElement('label');
+    label.htmlFor = id;
+    label.textContent = labelText;
+    fieldWrap.appendChild(label);
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = '1';
+    input.step = '1';
+    input.id = id;
+    input.value = String(value);
+    input.addEventListener('change', () => {
+        const nextValue = Number.parseInt(input.value, 10);
+        if (!Number.isInteger(nextValue) || nextValue <= 0) {
+            const axisLabel = labelText.replace(/\s*\([^)]+\)$/, '');
+            showError(`${fieldLabel} ${axisLabel} must be a positive integer.`);
+            input.value = String(value);
+            return;
+        }
+
+        onChange(nextValue);
+    });
+    fieldWrap.appendChild(input);
+
+    parent.appendChild(fieldWrap);
+}
+
+function renderScoringPanel(projectState) {
+    if (!scoringPanelRoot) return;
+
+    scoringPanelRoot.innerHTML = '';
+
+    if (!projectState) {
+        const empty = document.createElement('p');
+        empty.textContent = 'No project loaded.';
+        scoringPanelRoot.appendChild(empty);
+        return;
+    }
+
+    const scoringState = normalizeScoringState(projectState?.scoring);
+    const panelState = describeScoringPanelState(projectState);
+
+    const intro = document.createElement('p');
+    intro.className = 'scoring-intro';
+    intro.textContent = panelState.intro;
+    scoringPanelRoot.appendChild(intro);
+
+    if (panelState.hint) {
+        const hint = document.createElement('p');
+        hint.className = 'scoring-note';
+        hint.textContent = panelState.hint;
+        scoringPanelRoot.appendChild(hint);
+    }
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'scoring-toolbar';
+
+    const addMeshButton = document.createElement('button');
+    addMeshButton.type = 'button';
+    addMeshButton.className = 'history-action-btn';
+    addMeshButton.textContent = 'Add Scoring Mesh';
+    addMeshButton.title = 'Create a new saved world-space box scoring mesh with a default energy_deposit tally.';
+    addMeshButton.addEventListener('click', () => {
+        if (callbacks.onInspectorPropertyChanged) {
+            callbacks.onInspectorPropertyChanged(
+                SCORING_OBJECT_TYPE,
+                SCORING_OBJECT_ID,
+                'state',
+                buildScoringStateWithAddedMesh(scoringState),
+            );
+        }
+    });
+    toolbar.appendChild(addMeshButton);
+    scoringPanelRoot.appendChild(toolbar);
+
+    if (scoringState.scoring_meshes.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'scoring-empty';
+        empty.textContent = panelState.empty;
+        scoringPanelRoot.appendChild(empty);
+        return;
+    }
+
+    const persistMeshState = (nextScoringState) => {
+        if (callbacks.onInspectorPropertyChanged) {
+            callbacks.onInspectorPropertyChanged(
+                SCORING_OBJECT_TYPE,
+                SCORING_OBJECT_ID,
+                'state',
+                nextScoringState,
+            );
+        }
+    };
+
+    scoringState.scoring_meshes.forEach((mesh, index) => {
+        const described = describeScoringMesh(mesh, scoringState);
+        const card = document.createElement('details');
+        card.className = 'scoring-card';
+        card.open = panelState.defaultExpandedIndex === index;
+
+        const summary = document.createElement('summary');
+        summary.className = 'scoring-card-summary';
+        summary.title = 'Inspect and revise this saved scoring mesh.';
+
+        const summaryLayout = document.createElement('div');
+        summaryLayout.className = 'scoring-card-summary-layout';
+
+        const summaryText = document.createElement('div');
+        summaryText.className = 'scoring-card-summary-text';
+
+        const title = document.createElement('div');
+        title.className = 'scoring-title';
+        title.textContent = described.title;
+        summaryText.appendChild(title);
+
+        const summaryLine = document.createElement('div');
+        summaryLine.className = 'scoring-summary';
+        summaryLine.textContent = described.summary;
+        summaryText.appendChild(summaryLine);
+
+        const summaryMeta = document.createElement('div');
+        summaryMeta.className = 'scoring-summary-meta';
+
+        const statusBadge = document.createElement('code');
+        statusBadge.className = 'scoring-status';
+        statusBadge.textContent = described.statusBadge;
+        summaryMeta.appendChild(statusBadge);
+
+        const summaryActions = document.createElement('div');
+        summaryActions.className = 'scoring-summary-actions';
+
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'history-action-btn';
+        deleteButton.textContent = 'Delete';
+        deleteButton.title = 'Remove this scoring mesh and any tally requests that target it.';
+        deleteButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!confirmAction(`Delete scoring mesh '${mesh.name}' and its saved tally requests?`)) {
+                return;
+            }
+            persistMeshState(buildScoringStateWithRemovedMesh(scoringState, mesh.mesh_id));
+        });
+        summaryActions.appendChild(deleteButton);
+
+        summaryMeta.appendChild(summaryActions);
+        summaryLayout.appendChild(summaryText);
+        summaryLayout.appendChild(summaryMeta);
+        summary.appendChild(summaryLayout);
+        card.appendChild(summary);
+
+        const body = document.createElement('div');
+        body.className = 'scoring-card-body';
+
+        const enabledRow = document.createElement('div');
+        enabledRow.className = 'environment-toggle-row';
+
+        const enabledInput = document.createElement('input');
+        enabledInput.type = 'checkbox';
+        enabledInput.id = `scoring_mesh_enabled_${mesh.mesh_id}`;
+        enabledInput.checked = Boolean(mesh.enabled);
+        enabledInput.addEventListener('change', () => {
+            persistMeshState(replaceScoringMesh(scoringState, mesh.mesh_id, {
+                ...mesh,
+                enabled: enabledInput.checked,
+            }));
+        });
+        enabledRow.appendChild(enabledInput);
+
+        const enabledLabel = document.createElement('label');
+        enabledLabel.htmlFor = enabledInput.id;
+        enabledLabel.textContent = 'Mesh Enabled';
+        enabledRow.appendChild(enabledLabel);
+
+        body.appendChild(enabledRow);
+
+        const nameRow = document.createElement('div');
+        nameRow.className = 'environment-vector-row';
+        createEnvironmentPlainTextInput(nameRow, {
+            labelText: 'Mesh Name',
+            id: `scoring_mesh_name_${mesh.mesh_id}`,
+            value: mesh.name,
+            placeholder: 'study_mesh',
+            onChange: (nextValue) => {
+                persistMeshState(replaceScoringMesh(scoringState, mesh.mesh_id, {
+                    ...mesh,
+                    name: nextValue,
+                }));
+            },
+        });
+        body.appendChild(nameRow);
+
+        const centerRow = document.createElement('div');
+        centerRow.className = 'environment-vector-row';
+        ['x', 'y', 'z'].forEach((axis) => {
+            createEnvironmentFieldInput(centerRow, {
+                labelText: `Center ${axis.toUpperCase()} (mm)`,
+                id: `scoring_mesh_center_${mesh.mesh_id}_${axis}`,
+                value: mesh.geometry.center_mm[axis],
+                fieldLabel: 'Scoring mesh center',
+                onChange: (nextValue) => {
+                    persistMeshState(replaceScoringMesh(scoringState, mesh.mesh_id, {
+                        ...mesh,
+                        geometry: {
+                            ...mesh.geometry,
+                            center_mm: {
+                                ...mesh.geometry.center_mm,
+                                [axis]: nextValue,
+                            },
+                        },
+                    }));
+                },
+            });
+        });
+        body.appendChild(centerRow);
+
+        const sizeRow = document.createElement('div');
+        sizeRow.className = 'environment-vector-row';
+        ['x', 'y', 'z'].forEach((axis) => {
+            createEnvironmentFieldInput(sizeRow, {
+                labelText: `Size ${axis.toUpperCase()} (mm)`,
+                id: `scoring_mesh_size_${mesh.mesh_id}_${axis}`,
+                value: mesh.geometry.size_mm[axis],
+                fieldLabel: 'Scoring mesh size',
+                onChange: (nextValue) => {
+                    if (nextValue <= 0) {
+                        showError(`Scoring mesh size ${axis.toUpperCase()} must be greater than zero.`);
+                        return;
+                    }
+                    persistMeshState(replaceScoringMesh(scoringState, mesh.mesh_id, {
+                        ...mesh,
+                        geometry: {
+                            ...mesh.geometry,
+                            size_mm: {
+                                ...mesh.geometry.size_mm,
+                                [axis]: nextValue,
+                            },
+                        },
+                    }));
+                },
+            });
+        });
+        body.appendChild(sizeRow);
+
+        const binsRow = document.createElement('div');
+        binsRow.className = 'environment-vector-row';
+        ['x', 'y', 'z'].forEach((axis) => {
+            createScoringIntegerInput(binsRow, {
+                labelText: `Bins ${axis.toUpperCase()}`,
+                id: `scoring_mesh_bins_${mesh.mesh_id}_${axis}`,
+                value: mesh.bins[axis],
+                fieldLabel: 'Scoring mesh bins',
+                onChange: (nextValue) => {
+                    persistMeshState(replaceScoringMesh(scoringState, mesh.mesh_id, {
+                        ...mesh,
+                        bins: {
+                            ...mesh.bins,
+                            [axis]: nextValue,
+                        },
+                    }));
+                },
+            });
+        });
+        body.appendChild(binsRow);
+
+        const tallyLabel = document.createElement('div');
+        tallyLabel.className = 'scoring-field-label';
+        tallyLabel.textContent = 'Tallies';
+        body.appendChild(tallyLabel);
+
+        const quantityGrid = document.createElement('div');
+        quantityGrid.className = 'scoring-quantity-grid';
+
+        SUPPORTED_SCORING_TALLY_QUANTITIES.forEach((quantity) => {
+            const quantityWrap = document.createElement('label');
+            quantityWrap.className = 'scoring-quantity-option';
+            quantityWrap.title = RUNTIME_READY_SCORING_QUANTITIES.includes(quantity)
+                ? 'Saved in project state and supported by the current scoring-mesh runtime slice.'
+                : 'Saved in project state now; runtime artifact generation for this quantity is planned for a later tally task.';
+
+            const quantityInput = document.createElement('input');
+            quantityInput.type = 'checkbox';
+            quantityInput.checked = isMeshTallyEnabled(scoringState, mesh.mesh_id, quantity);
+            quantityInput.addEventListener('change', () => {
+                persistMeshState(setMeshTallyEnabled(scoringState, mesh, quantity, quantityInput.checked));
+            });
+            quantityWrap.appendChild(quantityInput);
+
+            const quantityText = document.createElement('span');
+            quantityText.textContent = formatScoringQuantityLabel(quantity);
+            quantityWrap.appendChild(quantityText);
+
+            if (RUNTIME_READY_SCORING_QUANTITIES.includes(quantity)) {
+                const runtimeBadge = document.createElement('code');
+                runtimeBadge.className = 'scoring-runtime-badge';
+                runtimeBadge.textContent = 'runtime';
+                quantityWrap.appendChild(runtimeBadge);
+            }
+
+            quantityGrid.appendChild(quantityWrap);
+        });
+        body.appendChild(quantityGrid);
+
+        const note = document.createElement('p');
+        note.className = 'scoring-note';
+        note.textContent = 'Scoring meshes are fixed to world-space box meshes in this first UI slice. Saved non-energy-deposit tallies remain inspectable here and will gain runtime support in a later tally task.';
+        body.appendChild(note);
+
+        card.appendChild(body);
+        scoringPanelRoot.appendChild(card);
+    });
+}
+
 function renderEnvironmentFieldCard(parent, {
     title,
     summary,
@@ -2725,6 +3059,7 @@ export function updateHierarchy(projectState, sceneUpdate) {
     borderSurfacesListRoot = document.getElementById('border_surfaces_list_root');
     cadImportsPanelRoot = document.getElementById('cad_imports_panel_root');
     detectorFeatureGeneratorsPanelRoot = document.getElementById('detector_feature_generators_panel_root');
+    scoringPanelRoot = document.getElementById('scoring_panel_root');
 
     // Clear all lists
     if (structureTreeRoot) structureTreeRoot.innerHTML = '';
@@ -2753,6 +3088,7 @@ export function updateHierarchy(projectState, sceneUpdate) {
     renderEnvironmentPanel(projectState);
     renderCadImportsPanel(projectState);
     renderDetectorFeatureGeneratorsPanel(projectState);
+    renderScoringPanel(projectState);
     updateHierarchyToolButtons(projectState);
 
     // --- Build the physical placement tree (Structure tab) ---
@@ -3509,6 +3845,8 @@ export function clearHierarchy() {
     if (borderSurfacesListRoot) borderSurfacesListRoot.innerHTML = '';
     renderEnvironmentPanel(null);
     renderCadImportsPanel(null);
+    renderDetectorFeatureGeneratorsPanel(null);
+    renderScoringPanel(null);
 }
 
 export function clearInspector() {

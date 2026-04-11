@@ -5548,6 +5548,27 @@ class ProjectManager:
 
         return None, f"Invalid property path '{property_path}'"
 
+    def _normalize_scoring_update_value(self, target_obj, property_path, new_value):
+        if not isinstance(target_obj, ScoringState):
+            return None, f"Invalid scoring state target for property path '{property_path}'"
+
+        candidate_state = target_obj.to_dict()
+
+        if property_path == 'state':
+            if not isinstance(new_value, dict):
+                return None, "scoring must be an object."
+            candidate_state = deepcopy(new_value)
+        elif property_path in {'schema_version', 'scoring_meshes', 'tally_requests', 'run_manifest_defaults'}:
+            candidate_state[property_path] = deepcopy(new_value)
+        else:
+            return None, f"Invalid property path '{property_path}'"
+
+        is_valid, validation_error = ScoringState.validate(candidate_state, field_name='scoring')
+        if not is_valid:
+            return None, validation_error
+
+        return ScoringState.from_dict(candidate_state), None
+
     def update_object_property(self, object_type, object_id, property_path, new_value):
         """
         Updates a property of an object.
@@ -5577,6 +5598,10 @@ class ProjectManager:
             target_obj = environment_objects.get(object_id)
             if target_obj is None:
                 return False, f"Could not find object of type '{object_type}' with ID/Name '{object_id}'"
+        elif object_type == "scoring":
+            if object_id != "scoring_state":
+                return False, f"Could not find object of type '{object_type}' with ID/Name '{object_id}'"
+            target_obj = self.current_geometry_state.scoring
         elif object_type == "physical_volume":
 
             # Iterate through LVs and Assemblies
@@ -5610,19 +5635,31 @@ class ProjectManager:
                 new_value, coercion_error = self._normalize_environment_update_value(target_obj, property_path, new_value)
                 if coercion_error:
                     return False, coercion_error
+            elif object_type == "scoring":
+                next_scoring_state, coercion_error = self._normalize_scoring_update_value(
+                    target_obj,
+                    property_path,
+                    new_value,
+                )
+                if coercion_error:
+                    return False, coercion_error
+                self.current_geometry_state.scoring = next_scoring_state
+                target_obj = next_scoring_state
+                path_parts = None
 
-            current_level_obj = target_obj
-            for part in path_parts[:-1]:
+            if path_parts is not None:
+                current_level_obj = target_obj
+                for part in path_parts[:-1]:
+                    if isinstance(current_level_obj, dict):
+                        current_level_obj = current_level_obj[part]
+                    else:
+                        current_level_obj = getattr(current_level_obj, part)
+
+                final_key = path_parts[-1]
                 if isinstance(current_level_obj, dict):
-                    current_level_obj = current_level_obj[part]
+                    current_level_obj[final_key] = new_value
                 else:
-                    current_level_obj = getattr(current_level_obj, part)
-            
-            final_key = path_parts[-1]
-            if isinstance(current_level_obj, dict):
-                current_level_obj[final_key] = new_value
-            else:
-                setattr(current_level_obj, final_key, new_value)
+                    setattr(current_level_obj, final_key, new_value)
         except (AttributeError, KeyError, TypeError, IndexError) as e:
             return False, f"Invalid property path '{property_path}': {e}"
         

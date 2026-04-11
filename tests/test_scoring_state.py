@@ -246,6 +246,119 @@ def test_scoring_state_validation_and_invalid_entries_default_cleanly():
     assert scoring["run_manifest_defaults"] == ScoringState().to_dict()["run_manifest_defaults"]
 
 
+def test_update_object_property_replaces_saved_scoring_state_and_syncs_tallies():
+    pm = ProjectManager(ExpressionEvaluator())
+    pm.create_empty_project()
+
+    scoring_payload = {
+        "scoring_meshes": [
+            {
+                "mesh_id": "mesh_main",
+                "name": "mesh_main",
+                "geometry": {
+                    "center_mm": {"x": 1, "y": 2, "z": 3},
+                    "size_mm": {"x": 40, "y": 20, "z": 10},
+                },
+                "bins": {"x": 8, "y": 4, "z": 2},
+            }
+        ],
+        "tally_requests": [
+            {
+                "tally_id": "tally_energy",
+                "name": "mesh_main_energy_deposit",
+                "mesh_ref": {"mesh_id": "mesh_main", "name": "mesh_main"},
+                "quantity": "energy_deposit",
+            },
+            {
+                "tally_id": "tally_track_length",
+                "name": "mesh_main_track_length",
+                "mesh_ref": {"mesh_id": "mesh_main", "name": "mesh_main"},
+                "quantity": "track_length",
+            },
+        ],
+        "run_manifest_defaults": {
+            "events": 2400,
+            "threads": 3,
+        },
+    }
+
+    success, error = pm.update_object_property("scoring", "scoring_state", "state", scoring_payload)
+    assert success is True
+    assert error is None
+    assert pm.current_geometry_state.scoring.to_dict() == {
+        "schema_version": 1,
+        "scoring_meshes": [
+            {
+                "mesh_id": "mesh_main",
+                "name": "mesh_main",
+                "schema_version": 1,
+                "enabled": True,
+                "mesh_type": "box",
+                "reference_frame": "world",
+                "geometry": {
+                    "center_mm": {"x": 1.0, "y": 2.0, "z": 3.0},
+                    "size_mm": {"x": 40.0, "y": 20.0, "z": 10.0},
+                },
+                "bins": {"x": 8, "y": 4, "z": 2},
+            }
+        ],
+        "tally_requests": [
+            {
+                "tally_id": "tally_energy",
+                "name": "mesh_main_energy_deposit",
+                "schema_version": 1,
+                "enabled": True,
+                "mesh_ref": {"mesh_id": "mesh_main", "name": "mesh_main"},
+                "quantity": "energy_deposit",
+            },
+            {
+                "tally_id": "tally_track_length",
+                "name": "mesh_main_track_length",
+                "schema_version": 1,
+                "enabled": True,
+                "mesh_ref": {"mesh_id": "mesh_main", "name": "mesh_main"},
+                "quantity": "track_length",
+            },
+        ],
+        "run_manifest_defaults": {
+            "events": 2400,
+            "threads": 3,
+            "seed1": 0,
+            "seed2": 0,
+            "print_progress": 0,
+            "save_hits": True,
+            "save_hit_metadata": True,
+            "save_particles": False,
+            "production_cut": "1.0 mm",
+            "hit_energy_threshold": "1 eV",
+        },
+    }
+
+
+def test_update_object_property_rejects_invalid_scoring_state_payload():
+    pm = ProjectManager(ExpressionEvaluator())
+    pm.create_empty_project()
+
+    success, error = pm.update_object_property(
+        "scoring",
+        "scoring_state",
+        "state",
+        {
+            "scoring_meshes": [
+                {
+                    "mesh_id": "mesh_main",
+                    "name": "mesh_main",
+                    "mesh_type": "cylindrical",
+                }
+            ]
+        },
+    )
+
+    assert success is False
+    assert error == "scoring.scoring_meshes[].mesh_type must be one of: box."
+    assert pm.current_geometry_state.scoring.to_dict()["scoring_meshes"] == []
+
+
 def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest_defaults(tmp_path):
     pm = ProjectManager(ExpressionEvaluator())
 

@@ -6482,6 +6482,7 @@ UPDATE_PROPERTY_ALLOWED_OBJECT_TYPES = {
     "logical_volume",
     "physical_volume",
     "environment",
+    "scoring",
 }
 
 
