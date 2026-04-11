@@ -11,7 +11,7 @@ export const SUPPORTED_SCORING_TALLY_QUANTITIES = [
     'n_of_track',
 ];
 
-export const RUNTIME_READY_SCORING_QUANTITIES = ['energy_deposit'];
+export const RUNTIME_READY_SCORING_QUANTITIES = ['energy_deposit', 'n_of_step'];
 
 const DEFAULT_RUN_MANIFEST_DEFAULTS = {
     events: 1000,
@@ -329,7 +329,7 @@ export function describeScoringPanelState(projectState) {
 
     return {
         intro: `${pluralize(enabledMeshes.length, 'enabled scoring mesh')} across ${pluralize(enabledTallies.length, 'enabled tally request')}.`,
-        hint: 'Only energy_deposit tallies currently emit runtime scoring artifacts. Other saved tallies remain editable here for upcoming runtime slices.',
+        hint: 'energy_deposit and n_of_step tallies currently emit runtime scoring artifacts. Other saved tallies remain editable here for upcoming runtime slices.',
         empty: 'No scoring meshes saved yet. Add one world-space box mesh to start a scoring study.',
         defaultExpandedIndex: scoringState.scoring_meshes.length === 1 ? 0 : -1,
     };

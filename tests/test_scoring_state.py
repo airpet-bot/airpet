@@ -440,7 +440,7 @@ def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest
     assert metadata["scoring_summary"] == state.scoring.to_summary_dict()
     assert metadata["scoring_runtime"] == {
         "schema_version": 1,
-        "supported_quantities": ["energy_deposit"],
+        "supported_quantities": ["energy_deposit", "n_of_step"],
         "artifact_request_count": 1,
         "skipped_tally_count": 0,
         "requires_hits": True,

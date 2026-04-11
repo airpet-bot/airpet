@@ -9,7 +9,11 @@ import numpy as np
 
 
 SCORING_ARTIFACT_SCHEMA_VERSION = 1
-SUPPORTED_SCORING_RUNTIME_QUANTITIES = ("energy_deposit",)
+_SCORING_RUNTIME_VALUE_UNITS = {
+    "energy_deposit": "MeV",
+    "n_of_step": "steps",
+}
+SUPPORTED_SCORING_RUNTIME_QUANTITIES = tuple(_SCORING_RUNTIME_VALUE_UNITS.keys())
 
 
 def _round_scalar(value: Any, digits: int = 12) -> float:
@@ -178,8 +182,44 @@ def _load_hit_arrays(output_path: str) -> Dict[str, np.ndarray]:
         }
 
 
+def _build_artifact_quantity_summaries(artifacts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    summaries_by_quantity: Dict[str, Dict[str, Any]] = {}
+
+    for artifact in artifacts:
+        quantity = str(artifact.get("quantity") or "").strip()
+        if not quantity:
+            continue
+
+        units = artifact.get("units") if isinstance(artifact.get("units"), dict) else {}
+        value_unit = str(units.get("value") or "").strip() or None
+        total_value = float(artifact.get("summary", {}).get("total_value", 0.0) or 0.0)
+
+        if quantity not in summaries_by_quantity:
+            summaries_by_quantity[quantity] = {
+                "quantity": quantity,
+                "unit": value_unit,
+                "generated_artifact_count": 0,
+                "total_value": 0.0,
+            }
+
+        summaries_by_quantity[quantity]["generated_artifact_count"] += 1
+        summaries_by_quantity[quantity]["total_value"] += total_value
+
+    return [
+        {
+            **summary,
+            "total_value": _round_scalar(summary["total_value"]),
+        }
+        for summary in summaries_by_quantity.values()
+    ]
+
+
 def _build_scoring_mesh_artifact(request: Dict[str, Any], hit_arrays: Dict[str, np.ndarray]) -> Dict[str, Any]:
     mesh = request["mesh"]
+    quantity = str(request.get("quantity") or "").strip()
+    if quantity not in _SCORING_RUNTIME_VALUE_UNITS:
+        raise ValueError(f"Unsupported runtime scoring quantity '{quantity}'.")
+
     mesh_geometry = mesh.get("geometry", {}) if isinstance(mesh.get("geometry"), dict) else {}
     center_mm = mesh_geometry.get("center_mm", {}) if isinstance(mesh_geometry.get("center_mm"), dict) else {}
     size_mm = mesh_geometry.get("size_mm", {}) if isinstance(mesh_geometry.get("size_mm"), dict) else {}
@@ -213,24 +253,31 @@ def _build_scoring_mesh_artifact(request: Dict[str, Any], hit_arrays: Dict[str, 
     pos_x = hit_arrays["pos_x"]
     pos_y = hit_arrays["pos_y"]
     pos_z = hit_arrays["pos_z"]
-    sample_size = min(len(edep), len(pos_x), len(pos_y), len(pos_z))
+    sample_arrays = [pos_x, pos_y, pos_z]
+    if quantity == "energy_deposit":
+        sample_arrays.append(edep)
+    sample_size = min((len(array) for array in sample_arrays), default=0)
 
     hit_count_total = int(sample_size)
     hit_count_in_mesh = 0
     if sample_size > 0:
-        edep = edep[:sample_size]
         pos_x = pos_x[:sample_size]
         pos_y = pos_y[:sample_size]
         pos_z = pos_z[:sample_size]
 
-        finite_mask = (
-            np.isfinite(edep)
-            & np.isfinite(pos_x)
+        position_finite_mask = (
+            np.isfinite(pos_x)
             & np.isfinite(pos_y)
             & np.isfinite(pos_z)
         )
+        value_finite_mask = np.ones(sample_size, dtype=bool)
+        if quantity == "energy_deposit":
+            edep = edep[:sample_size]
+            value_finite_mask = np.isfinite(edep)
+
         in_mesh_mask = (
-            finite_mask
+            position_finite_mask
+            & value_finite_mask
             & (pos_x >= min_corner["x"])
             & (pos_x <= max_corner["x"])
             & (pos_y >= min_corner["y"])
@@ -243,7 +290,10 @@ def _build_scoring_mesh_artifact(request: Dict[str, Any], hit_arrays: Dict[str, 
             x_hits = pos_x[in_mesh_mask]
             y_hits = pos_y[in_mesh_mask]
             z_hits = pos_z[in_mesh_mask]
-            edep_hits = edep[in_mesh_mask]
+            if quantity == "energy_deposit":
+                voxel_samples = np.asarray(edep[in_mesh_mask], dtype=float)
+            else:
+                voxel_samples = np.ones(int(np.count_nonzero(in_mesh_mask)), dtype=float)
 
             ix = np.floor((x_hits - min_corner["x"]) / voxel_size["x"]).astype(int)
             iy = np.floor((y_hits - min_corner["y"]) / voxel_size["y"]).astype(int)
@@ -253,7 +303,7 @@ def _build_scoring_mesh_artifact(request: Dict[str, Any], hit_arrays: Dict[str, 
             iy = np.clip(iy, 0, bins_y - 1)
             iz = np.clip(iz, 0, bins_z - 1)
 
-            np.add.at(voxel_values, (ix, iy, iz), edep_hits)
+            np.add.at(voxel_values, (ix, iy, iz), voxel_samples)
             hit_count_in_mesh = int(np.count_nonzero(in_mesh_mask))
 
     nonzero_voxels = []
@@ -277,12 +327,12 @@ def _build_scoring_mesh_artifact(request: Dict[str, Any], hit_arrays: Dict[str, 
         "artifact_id": request["artifact_id"],
         "tally_id": request["tally_id"],
         "tally_name": request["tally_name"],
-        "quantity": request["quantity"],
+        "quantity": quantity,
         "mesh_id": str(mesh.get("mesh_id") or "").strip(),
         "mesh_name": str(mesh.get("name") or "").strip(),
         "mesh_type": str(mesh.get("mesh_type") or "").strip(),
         "reference_frame": str(mesh.get("reference_frame") or "").strip(),
-        "units": {"position": "mm", "value": "MeV"},
+        "units": {"position": "mm", "value": _SCORING_RUNTIME_VALUE_UNITS[quantity]},
         "geometry": {
             "center_mm": _round_vector(center_mm),
             "size_mm": _round_vector(size_mm),
@@ -331,20 +381,27 @@ def build_scoring_artifact_bundle(
             for artifact in artifacts
         )
     )
+    quantity_summaries = _build_artifact_quantity_summaries(artifacts)
+
+    summary = {
+        "schema_version": SCORING_ARTIFACT_SCHEMA_VERSION,
+        "supported_quantities": list(runtime_plan["supported_quantities"]),
+        "hit_count_total": int(hit_count_total),
+        "enabled_mesh_count": int(runtime_plan["enabled_mesh_count"]),
+        "enabled_tally_count": int(runtime_plan["enabled_tally_count"]),
+        "generated_artifact_count": len(artifacts),
+        "skipped_tally_count": int(runtime_plan["skipped_tally_count"]),
+        "quantity_summaries": quantity_summaries,
+    }
+    if len(quantity_summaries) == 1:
+        summary["total_value"] = total_value
+        summary["value_unit"] = quantity_summaries[0].get("unit")
 
     return {
         "schema_version": SCORING_ARTIFACT_SCHEMA_VERSION,
         "job_id": str(job_id or "").strip() or None,
         "source_output": Path(output_path).name,
-        "summary": {
-            "supported_quantities": list(runtime_plan["supported_quantities"]),
-            "hit_count_total": int(hit_count_total),
-            "enabled_mesh_count": int(runtime_plan["enabled_mesh_count"]),
-            "enabled_tally_count": int(runtime_plan["enabled_tally_count"]),
-            "generated_artifact_count": len(artifacts),
-            "skipped_tally_count": int(runtime_plan["skipped_tally_count"]),
-            "total_value": total_value,
-        },
+        "summary": summary,
         "artifacts": artifacts,
         "skipped_tallies": deepcopy(runtime_plan["skipped_tallies"]),
     }

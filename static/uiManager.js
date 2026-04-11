@@ -2257,7 +2257,7 @@ function renderScoringPanel(projectState) {
 
         const note = document.createElement('p');
         note.className = 'scoring-note';
-        note.textContent = 'Scoring meshes are fixed to world-space box meshes in this first UI slice. Saved non-energy-deposit tallies remain inspectable here and will gain runtime support in a later tally task.';
+        note.textContent = 'Scoring meshes are fixed to world-space box meshes in this first UI slice. energy_deposit and n_of_step tallies now emit runtime artifacts; other saved tallies remain inspectable here until later runtime slices land.';
         body.appendChild(note);
 
         card.appendChild(body);

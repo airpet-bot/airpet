@@ -34,6 +34,10 @@ test('adding a scoring mesh creates a default energy deposit tally and determini
 
     const panelState = describeScoringPanelState({ scoring: nextState });
     assert.equal(panelState.intro, '1 enabled scoring mesh across 1 enabled tally request.');
+    assert.equal(
+        panelState.hint,
+        'energy_deposit and n_of_step tallies currently emit runtime scoring artifacts. Other saved tallies remain editable here for upcoming runtime slices.',
+    );
 });
 
 test('replacing a scoring mesh name keeps linked tally references aligned', () => {
@@ -73,10 +77,15 @@ test('tally toggles add and remove per-mesh quantity requests deterministically'
     assert.equal(isMeshTallyEnabled(withDose, mesh.mesh_id, 'dose_deposit'), true);
     assert.equal(withDose.tally_requests.length, 2);
 
-    const withoutEnergyDeposit = setMeshTallyEnabled(withDose, mesh, 'energy_deposit', false);
+    const withStepCount = setMeshTallyEnabled(withDose, mesh, 'n_of_step', true);
+    assert.equal(isMeshTallyEnabled(withStepCount, mesh.mesh_id, 'n_of_step'), true);
+    assert.equal(withStepCount.tally_requests.length, 3);
+
+    const withoutEnergyDeposit = setMeshTallyEnabled(withStepCount, mesh, 'energy_deposit', false);
     assert.equal(isMeshTallyEnabled(withoutEnergyDeposit, mesh.mesh_id, 'energy_deposit'), false);
     assert.equal(isMeshTallyEnabled(withoutEnergyDeposit, mesh.mesh_id, 'dose_deposit'), true);
-    assert.equal(withoutEnergyDeposit.tally_requests.length, 1);
+    assert.equal(isMeshTallyEnabled(withoutEnergyDeposit, mesh.mesh_id, 'n_of_step'), true);
+    assert.equal(withoutEnergyDeposit.tally_requests.length, 2);
     assert.equal(formatScoringQuantityLabel('passage_cell_flux'), 'passage cell flux');
 
     const removedMeshState = buildScoringStateWithRemovedMesh(withoutEnergyDeposit, mesh.mesh_id);
