@@ -16,10 +16,41 @@ def _list_detector_feature_generator_labels(state) -> List[str]:
                 labels.append(label)
     return labels
 
+
+def _list_scoring_mesh_labels(state) -> List[str]:
+    labels = []
+    scoring_state = getattr(state, "scoring", None)
+    for entry in getattr(scoring_state, "scoring_meshes", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("name") or entry.get("mesh_id")
+        if isinstance(label, str):
+            label = label.strip()
+            if label:
+                labels.append(label)
+    return labels
+
+
+def _list_scoring_tally_labels(state) -> List[str]:
+    labels = []
+    scoring_state = getattr(state, "scoring", None)
+    for entry in getattr(scoring_state, "tally_requests", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("name") or entry.get("quantity") or entry.get("tally_id")
+        if isinstance(label, str):
+            label = label.strip()
+            if label:
+                labels.append(label)
+    return labels
+
+
 def get_project_summary(pm) -> Dict[str, Any]:
     """Returns a high-level summary of the current project structure."""
     state = pm.current_geometry_state
     detector_feature_generator_labels = _list_detector_feature_generator_labels(state)
+    scoring_mesh_labels = _list_scoring_mesh_labels(state)
+    scoring_tally_labels = _list_scoring_tally_labels(state)
     return {
         "project_name": pm.project_name,
         "world_volume": state.world_volume_ref,
@@ -32,17 +63,21 @@ def get_project_summary(pm) -> Dict[str, Any]:
             "assemblies": len(state.assemblies),
             "sources": len(state.sources),
             "detector_feature_generators": len(getattr(state, "detector_feature_generators", []) or []),
+            "scoring_meshes": len(getattr(state.scoring, "scoring_meshes", []) or []),
+            "scoring_tally_requests": len(getattr(state.scoring, "tally_requests", []) or []),
         },
         "names": {
             "materials": list(state.materials.keys()),
             "solids": list(state.solids.keys()),
             "logical_volumes": list(state.logical_volumes.keys()),
             "detector_feature_generators": detector_feature_generator_labels,
+            "scoring_meshes": scoring_mesh_labels,
+            "scoring_tally_requests": scoring_tally_labels,
         }
     }
 
 def get_component_details(pm, component_type: str, name: str) -> Optional[Dict[str, Any]]:
-    """Returns full details for a specific component (define, material, solid, lv, assembly, environment)."""
+    """Returns full details for a specific component (define, material, solid, lv, assembly, environment, scoring)."""
     return pm.get_object_details(component_type, name)
 
 
@@ -681,15 +716,15 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "get_component_details",
-        "description": "Get the full JSON definition of a specific component to see its current parameters, including the saved environment, field state, region cuts/limits state, and detector feature generator state.",
+        "description": "Get the full JSON definition of a specific component to see its current parameters, including the saved environment, scoring state, field state, region cuts/limits state, and detector feature generator state.",
         "parameters": {
             "type": "object",
             "properties": {
                 "component_type": {
                     "type": "string", 
-                    "enum": ["define", "material", "element", "solid", "logical_volume", "assembly", "particle_source", "physical_volume", "environment", "detector_feature_generator"]
+                    "enum": ["define", "material", "element", "solid", "logical_volume", "assembly", "particle_source", "physical_volume", "environment", "scoring", "detector_feature_generator"]
                 },
-                "name": {"type": "string", "description": "The name of the component, its unique ID (for physical_volumes), or the generator_id/name for detector feature generators."}
+                "name": {"type": "string", "description": "The name of the component, its unique ID (for physical_volumes), the singleton scoring id/name (for scoring), or the generator_id/name for detector feature generators."}
             },
             "required": ["component_type", "name"]
         }
@@ -709,14 +744,16 @@ AI_GEOMETRY_TOOLS = [
             "'target_volume_names', or 'field_vector_volt_per_meter.z'. For region cuts and limits, use "
             "object_id='region_cuts_and_limits' and property paths like 'enabled', "
             "'region_name', 'target_volume_names', 'production_cut_mm', 'max_step_mm', "
-            "'max_track_length_mm', 'max_time_ns', 'min_kinetic_energy_mev', or 'min_range_mm'."
+            "'max_track_length_mm', 'max_time_ns', 'min_kinetic_energy_mev', or 'min_range_mm'. "
+            "For scoring state, use object_type='scoring', object_id='scoring_state', and property paths "
+            "like 'state', 'scoring_meshes', 'tally_requests', or 'run_manifest_defaults'."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "object_type": {
                     "type": "string",
-                    "enum": ["define", "material", "solid", "logical_volume", "physical_volume", "environment"],
+                    "enum": ["define", "material", "solid", "logical_volume", "physical_volume", "environment", "scoring"],
                     "description": "Type of object to update."
                 },
                 "object_id": {
@@ -1716,6 +1753,18 @@ AI_GEOMETRY_TOOLS = [
     {
         "name": "get_simulation_metadata",
         "description": "Fetch metadata for a simulation run (job config, paths, etc.).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "version_id": {"type": "string"},
+                "job_id": {"type": "string"}
+            },
+            "required": ["job_id"]
+        }
+    },
+    {
+        "name": "get_scoring_summary",
+        "description": "Fetch a compact scoring-result summary for one simulation run, including the saved scoring setup summary, bundle status, and per-quantity totals when scoring artifacts exist.",
         "parameters": {
             "type": "object",
             "properties": {

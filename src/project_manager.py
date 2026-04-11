@@ -5370,7 +5370,7 @@ class ProjectManager:
         """
         Get details for a specific object by its type and name/ID.
         'object_type' can be 'define', 'material', 'solid', 'logical_volume', 'physical_volume',
-        'environment', or 'detector_feature_generator'.
+        'environment', 'scoring', or 'detector_feature_generator'.
         For 'physical_volume', object_name_or_id would be its unique ID.
         """
         if not self.current_geometry_state: return None
@@ -5400,6 +5400,8 @@ class ProjectManager:
             obj = state.border_surfaces.get(object_name_or_id)
         elif object_type == "environment":
             obj = state.environment
+        elif object_type == "scoring":
+            obj = state.scoring
         elif object_type == "detector_feature_generator":
             obj = self.get_detector_feature_generator_details(object_name_or_id)
         elif object_type == "physical_volume":

@@ -53,7 +53,11 @@ from src.surrogate_experiment import run_surrogate_experiment, run_surrogate_exp
 from src.surrogate_synthetic import generate_synthetic_surrogate_benchmark
 from src.objective_engine import extract_objective_values_from_hdf5
 from src.objective_formula import get_allowed_formula_functions
-from src.scoring_artifacts import write_scoring_artifact_bundle
+from src.scoring_artifacts import (
+    build_run_manifest_summary,
+    build_scoring_run_summary,
+    write_scoring_artifact_bundle,
+)
 from src.ai_backend_adapters import (
     ADAPTER_CONTRACT_VERSION,
     LlamaCppAdapterConfig,
@@ -3868,6 +3872,32 @@ def get_simulation_metadata(version_id, job_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def _load_scoring_artifact_bundle(run_dir, metadata):
+    run_path = Path(run_dir)
+    metadata_payload = metadata if isinstance(metadata, dict) else {}
+    scoring_artifacts = (
+        metadata_payload.get("scoring_artifacts")
+        if isinstance(metadata_payload.get("scoring_artifacts"), dict)
+        else {}
+    )
+
+    candidate_names = []
+    bundle_name = scoring_artifacts.get("artifact_bundle_path")
+    if isinstance(bundle_name, str) and bundle_name.strip():
+        candidate_names.append(bundle_name.strip())
+    if "scoring_artifacts.json" not in candidate_names:
+        candidate_names.append("scoring_artifacts.json")
+
+    for candidate_name in candidate_names:
+        candidate_path = run_path / candidate_name
+        if not candidate_path.exists():
+            continue
+        with candidate_path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+
+    return None
+
+
 def _load_simulation_run_metadata(pm, version_id, job_id):
     version_dir = pm._get_version_dir(version_id)
     run_dir = os.path.join(version_dir, "sim_runs", job_id)
@@ -3881,6 +3911,35 @@ def _load_simulation_run_metadata(pm, version_id, job_id):
             return json.load(f)
     except Exception:
         return None
+
+
+@app.route('/api/simulation/scoring_summary/<version_id>/<job_id>', methods=['GET'])
+def get_simulation_scoring_summary(version_id, job_id):
+    pm = get_project_manager_for_session()
+    version_dir = pm._get_version_dir(version_id)
+    run_dir = os.path.join(version_dir, "sim_runs", job_id)
+
+    metadata = _load_simulation_run_metadata(pm, version_id, job_id)
+    if metadata is None:
+        return jsonify({"success": False, "error": "Simulation metadata not found."}), 404
+
+    try:
+        scoring_bundle = _load_scoring_artifact_bundle(run_dir, metadata)
+        run_manifest_summary = (
+            metadata.get("run_manifest_summary")
+            if isinstance(metadata.get("run_manifest_summary"), dict)
+            else build_run_manifest_summary(metadata, run_dir, version_id=version_id)
+        )
+        scoring_summary = build_scoring_run_summary(
+            metadata,
+            scoring_bundle=scoring_bundle,
+            run_manifest_summary=run_manifest_summary,
+            version_id=version_id,
+            job_id=job_id,
+        )
+        return jsonify({"success": True, "scoring_summary": scoring_summary})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 def _environment_summary_from_metadata(metadata):
@@ -9021,6 +9080,9 @@ AI_TOOL_ARG_ALIASES = {
     "get_simulation_metadata": {
         "version": "version_id"
     },
+    "get_scoring_summary": {
+        "version": "version_id"
+    },
     "get_simulation_analysis": {
         "version": "version_id"
     },
@@ -9769,7 +9831,13 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             if current_api_key is not None:
                 session['gemini_api_key'] = current_api_key
 
-            route_result = route_fn(*route_args)
+            route_pm_getter = globals().get('get_project_manager_for_session')
+            try:
+                globals()['get_project_manager_for_session'] = lambda: pm
+                route_result = route_fn(*route_args)
+            finally:
+                if route_pm_getter is not None:
+                    globals()['get_project_manager_for_session'] = route_pm_getter
 
         status_code = 200
         response_obj = route_result
@@ -11191,6 +11259,19 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             if status_code >= 400 or body.get('success') is False:
                 return {"success": False, "error": body.get('error', f"Could not fetch simulation metadata (status {status_code}).")}
             return {"success": True, "metadata": body.get('metadata', {})}
+
+        elif tool_name == "get_scoring_summary":
+            version_id = args.get('version_id') or pm.current_version_id
+            if not version_id:
+                return {"success": False, "error": "No active version. Provide 'version_id'."}
+
+            status_code, body = call_route_json(
+                get_simulation_scoring_summary,
+                [version_id, args['job_id']],
+            )
+            if status_code >= 400 or body.get('success') is False:
+                return {"success": False, "error": body.get('error', f"Could not fetch scoring summary (status {status_code}).")}
+            return {"success": True, "scoring_summary": body.get('scoring_summary', {})}
 
         elif tool_name == "get_simulation_analysis":
             version_id = args.get('version_id') or pm.current_version_id

@@ -10,6 +10,7 @@ from flask import jsonify, request, session
 from src.project_manager import ProjectManager
 from src.expression_evaluator import ExpressionEvaluator
 from src.geometry_types import DivisionVolume, EnvironmentState, ReplicaVolume
+from src.scoring_artifacts import build_run_manifest_summary
 from app import dispatch_ai_tool, app as flask_app, _persist_final_stream_reply
 
 @pytest.fixture
@@ -798,6 +799,74 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
         "min_kinetic_energy_mev": 0.002,
         "min_range_mm": 0.05,
     }
+
+
+def test_ai_tool_update_property_and_get_component_details_cover_scoring_state(pm):
+    details = dispatch_ai_tool(pm, "get_component_details", {
+        "component_type": "scoring",
+        "name": "scoring_state",
+    })
+
+    assert details["success"], details
+    assert details["result"] == pm.current_geometry_state.scoring.to_dict()
+
+    scoring_state = {
+        "schema_version": 1,
+        "scoring_meshes": [
+            {
+                "mesh_id": "mesh_ai_main",
+                "name": "mesh_ai_main",
+                "enabled": True,
+                "mesh_type": "box",
+                "reference_frame": "world",
+                "geometry": {
+                    "center_mm": {"x": 1.0, "y": -2.0, "z": 3.5},
+                    "size_mm": {"x": 20.0, "y": 10.0, "z": 5.0},
+                },
+                "bins": {"x": 4, "y": 2, "z": 1},
+            }
+        ],
+        "tally_requests": [
+            {
+                "tally_id": "tally_ai_edep",
+                "name": "tally_ai_edep",
+                "enabled": True,
+                "mesh_ref": {"mesh_id": "mesh_ai_main", "name": "mesh_ai_main"},
+                "quantity": "energy_deposit",
+            }
+        ],
+        "run_manifest_defaults": {
+            "events": 400,
+            "threads": 2,
+            "save_hits": False,
+        },
+    }
+
+    res = dispatch_ai_tool(pm, "update_property", {
+        "object_type": "scoring",
+        "object_id": "scoring_state",
+        "property_path": "state",
+        "new_value": scoring_state,
+    })
+    assert res["success"], res
+
+    updated_details = dispatch_ai_tool(pm, "get_component_details", {
+        "component_type": "scoring",
+        "name": "scoring",
+    })
+    assert updated_details["success"], updated_details
+    assert updated_details["result"] == pm.current_geometry_state.scoring.to_dict()
+    assert updated_details["result"]["scoring_meshes"][0]["name"] == "mesh_ai_main"
+    assert updated_details["result"]["tally_requests"][0]["quantity"] == "energy_deposit"
+    assert updated_details["result"]["run_manifest_defaults"]["events"] == 400
+    assert updated_details["result"]["run_manifest_defaults"]["threads"] == 2
+
+    summary = dispatch_ai_tool(pm, "get_project_summary", {})
+    assert summary["success"], summary
+    assert summary["result"]["counts"]["scoring_meshes"] == 1
+    assert summary["result"]["counts"]["scoring_tally_requests"] == 1
+    assert summary["result"]["names"]["scoring_meshes"] == ["mesh_ai_main"]
+    assert summary["result"]["names"]["scoring_tally_requests"] == ["tally_ai_edep"]
 
 
 def test_ai_tool_manage_detector_feature_generator_and_get_component_details(pm):
@@ -7042,6 +7111,162 @@ def test_ai_tool_route_bridge_get_analysis_without_request_context(pm):
     assert analysis_res['analysis']['total_hits'] == 7
     assert analysis_res['analysis']['job_id'] == 'job-ctxless'
     assert analysis_res['analysis']['sensitive_detector'] == 'SD_A'
+
+
+def _seed_scoring_summary_route_ai_fixture(pm, tmp_path):
+    pm.projects_dir = str(tmp_path)
+    pm.project_name = "scoring_summary_route_ai_project"
+
+    version_id = "version-scoring-summary"
+    job_id = "job-scoring-summary"
+    run_dir = Path(pm._get_version_dir(version_id)) / "sim_runs" / job_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "run.mac").write_text("/run/beamOn 12\n", encoding="utf-8")
+    (run_dir / "geometry.gdml").write_text("<gdml />\n", encoding="utf-8")
+    (run_dir / "output.hdf5").write_text("stub", encoding="utf-8")
+
+    metadata = {
+        "job_id": job_id,
+        "timestamp": "2026-04-11T16:20:00",
+        "resolved_run_manifest": {
+            "events": 12,
+            "threads": 2,
+            "save_hits": True,
+        },
+        "sim_options": {
+            "physics_list": "FTFP_BERT",
+            "optical_physics": False,
+        },
+        "scoring_summary": {
+            "has_configured_scoring": True,
+            "enabled_scoring_mesh_count": 1,
+            "enabled_tally_request_count": 2,
+            "summary_text": (
+                "1 of 1 scoring mesh(es) enabled; 2 of 2 tally request(s) enabled; "
+                "Run manifest defaults unchanged"
+            ),
+        },
+        "scoring_runtime": {
+            "supported_quantities": ["energy_deposit", "n_of_step"],
+            "artifact_request_count": 2,
+            "skipped_tally_count": 0,
+            "requires_hits": True,
+        },
+        "scoring_artifacts": {
+            "artifact_bundle_path": "scoring_artifacts.json",
+            "generated_artifact_count": 2,
+            "skipped_tally_count": 0,
+            "summary": {
+                "quantity_summaries": [
+                    {
+                        "quantity": "energy_deposit",
+                        "unit": "MeV",
+                        "generated_artifact_count": 1,
+                        "total_value": 4.0,
+                    },
+                    {
+                        "quantity": "n_of_step",
+                        "unit": "steps",
+                        "generated_artifact_count": 1,
+                        "total_value": 2.0,
+                    },
+                ],
+            },
+        },
+    }
+
+    scoring_bundle = {
+        "schema_version": 1,
+        "job_id": job_id,
+        "source_output": "output.hdf5",
+        "summary": {
+            "schema_version": 1,
+            "supported_quantities": ["energy_deposit", "n_of_step"],
+            "hit_count_total": 2,
+            "enabled_mesh_count": 1,
+            "enabled_tally_count": 2,
+            "generated_artifact_count": 2,
+            "skipped_tally_count": 0,
+            "quantity_summaries": [
+                {
+                    "quantity": "energy_deposit",
+                    "unit": "MeV",
+                    "generated_artifact_count": 1,
+                    "total_value": 4.0,
+                },
+                {
+                    "quantity": "n_of_step",
+                    "unit": "steps",
+                    "generated_artifact_count": 1,
+                    "total_value": 2.0,
+                },
+            ],
+        },
+        "artifacts": [],
+        "skipped_tallies": [],
+    }
+    (run_dir / "scoring_artifacts.json").write_text(
+        json.dumps(scoring_bundle),
+        encoding="utf-8",
+    )
+
+    metadata["run_manifest_summary"] = build_run_manifest_summary(
+        metadata,
+        str(run_dir),
+        version_id=version_id,
+    )
+    scoring_bundle["run_manifest_summary"] = metadata["run_manifest_summary"]
+    (run_dir / "scoring_artifacts.json").write_text(
+        json.dumps(scoring_bundle),
+        encoding="utf-8",
+    )
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    return version_id, job_id
+
+
+def test_scoring_summary_route_and_ai_wrapper_share_success_payloads(pm, tmp_path):
+    version_id, job_id = _seed_scoring_summary_route_ai_fixture(pm, tmp_path)
+
+    with flask_app.test_client() as client, patch('app.get_project_manager_for_session', return_value=pm):
+        response = client.get(f"/api/simulation/scoring_summary/{version_id}/{job_id}")
+        assert response.status_code == 200
+        route_data = response.get_json()
+
+    ai_data = dispatch_ai_tool(pm, "get_scoring_summary", {
+        "version_id": version_id,
+        "job_id": job_id,
+    })
+
+    assert route_data == ai_data
+    summary = ai_data["scoring_summary"]
+    assert summary["status"] == "artifacts_ready"
+    assert summary["summary_text"] == "energy deposit 4 MeV · n of step 2 steps"
+    assert summary["setup_summary_text"].startswith("1 of 1 scoring mesh(es) enabled")
+    assert summary["enabled_mesh_count"] == 1
+    assert summary["enabled_tally_count"] == 2
+    assert summary["artifact_request_count"] == 2
+    assert summary["generated_artifact_count"] == 2
+    assert summary["bundle_exists"] is True
+    assert summary["source_output_exists"] is True
+    assert summary["quantity_summaries"] == [
+        {
+            "quantity": "energy_deposit",
+            "label": "energy deposit",
+            "unit": "MeV",
+            "generated_artifact_count": 1,
+            "total_value": 4.0,
+            "total_value_text": "4 MeV",
+        },
+        {
+            "quantity": "n_of_step",
+            "label": "n of step",
+            "unit": "steps",
+            "generated_artifact_count": 1,
+            "total_value": 2.0,
+            "total_value_text": "2 steps",
+        },
+    ]
+    assert summary["comparison_keys"]["geometry_sha256"]
 
 
 def test_simulation_metadata_and_analysis_routes_include_environment_summary(pm, tmp_path):

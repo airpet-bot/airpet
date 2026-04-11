@@ -11,6 +11,7 @@ import numpy as np
 
 SCORING_ARTIFACT_SCHEMA_VERSION = 1
 RUN_MANIFEST_SUMMARY_SCHEMA_VERSION = 1
+SCORING_RUN_SUMMARY_SCHEMA_VERSION = 1
 _SCORING_RUNTIME_VALUE_UNITS = {
     "energy_deposit": "MeV",
     "n_of_step": "steps",
@@ -30,6 +31,94 @@ def _round_vector(mapping: Dict[str, Any]) -> Dict[str, float]:
         "x": _round_scalar(mapping.get("x", 0.0)),
         "y": _round_scalar(mapping.get("y", 0.0)),
         "z": _round_scalar(mapping.get("z", 0.0)),
+    }
+
+
+def _coerce_non_negative_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return default
+    return normalized if normalized >= 0 else default
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return bool(value)
+
+
+def _normalize_string(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _pluralize(count: int, singular: str, plural: Optional[str] = None) -> str:
+    normalized_count = _coerce_non_negative_int(count, 0)
+    normalized_plural = plural or f"{singular}s"
+    noun = singular if normalized_count == 1 else normalized_plural
+    return f"{normalized_count} {noun}"
+
+
+def _format_summary_number(value: Any, digits: int = 6) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = 0.0
+    if not np.isfinite(numeric):
+        numeric = 0.0
+    rounded = round(numeric, digits)
+    if abs(rounded) < 1e-12:
+        rounded = 0.0
+    text = f"{rounded:.{digits}f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _format_scoring_quantity_label(quantity: Any) -> str:
+    normalized = _normalize_string(quantity)
+    if not normalized:
+        normalized = "energy_deposit"
+    return normalized.replace("_", " ")
+
+
+def _format_scoring_result_value(value: Any, unit: Any = "") -> str:
+    unit_text = _normalize_string(unit)
+    value_text = _format_summary_number(value)
+    return f"{value_text} {unit_text}".strip()
+
+
+def _normalize_artifact_quantity_summary(entry: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(entry, dict):
+        return None
+
+    quantity = _normalize_string(entry.get("quantity"))
+    if not quantity:
+        return None
+
+    total_value = entry.get("total_value", 0.0)
+    try:
+        total_value = float(total_value)
+    except (TypeError, ValueError):
+        total_value = 0.0
+    if not np.isfinite(total_value):
+        total_value = 0.0
+
+    unit = _normalize_string(entry.get("unit"))
+    generated_artifact_count = _coerce_non_negative_int(
+        entry.get("generated_artifact_count"),
+        0,
+    )
+
+    return {
+        "quantity": quantity,
+        "label": _format_scoring_quantity_label(quantity),
+        "unit": unit,
+        "generated_artifact_count": generated_artifact_count,
+        "total_value": round(total_value, 6),
+        "total_value_text": _format_scoring_result_value(total_value, unit),
     }
 
 
@@ -339,6 +428,234 @@ def build_run_manifest_summary(
             "scoring_signature": scoring_signature,
             "run_manifest_signature": run_manifest_signature,
             "execution_signature": execution_signature,
+        },
+    }
+
+
+def build_scoring_run_summary(
+    metadata: Optional[Dict[str, Any]],
+    *,
+    scoring_bundle: Optional[Dict[str, Any]] = None,
+    run_manifest_summary: Optional[Dict[str, Any]] = None,
+    version_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    metadata_payload = metadata if isinstance(metadata, dict) else {}
+    manifest_summary = (
+        run_manifest_summary if isinstance(run_manifest_summary, dict) else {}
+    )
+    bundle_payload = scoring_bundle if isinstance(scoring_bundle, dict) else {}
+
+    manifest_scoring = (
+        manifest_summary.get("scoring")
+        if isinstance(manifest_summary.get("scoring"), dict)
+        else {}
+    )
+    scoring_summary = (
+        metadata_payload.get("scoring_summary")
+        if isinstance(metadata_payload.get("scoring_summary"), dict)
+        else manifest_scoring.get("summary")
+        if isinstance(manifest_scoring.get("summary"), dict)
+        else {}
+    )
+    scoring_runtime = (
+        metadata_payload.get("scoring_runtime")
+        if isinstance(metadata_payload.get("scoring_runtime"), dict)
+        else manifest_scoring.get("runtime")
+        if isinstance(manifest_scoring.get("runtime"), dict)
+        else {}
+    )
+    scoring_artifacts = (
+        metadata_payload.get("scoring_artifacts")
+        if isinstance(metadata_payload.get("scoring_artifacts"), dict)
+        else {}
+    )
+    artifact_bundle = (
+        manifest_summary.get("artifact_bundle")
+        if isinstance(manifest_summary.get("artifact_bundle"), dict)
+        else {}
+    )
+    bundle_summary = (
+        bundle_payload.get("summary")
+        if isinstance(bundle_payload.get("summary"), dict)
+        else scoring_artifacts.get("summary")
+        if isinstance(scoring_artifacts.get("summary"), dict)
+        else {}
+    )
+    resolved_run_manifest = (
+        manifest_summary.get("resolved_run_manifest")
+        if isinstance(manifest_summary.get("resolved_run_manifest"), dict)
+        else {}
+    )
+    execution_settings = (
+        manifest_summary.get("execution_settings")
+        if isinstance(manifest_summary.get("execution_settings"), dict)
+        else {}
+    )
+
+    raw_quantity_summaries = bundle_summary.get("quantity_summaries")
+    if not isinstance(raw_quantity_summaries, list):
+        raw_quantity_summaries = artifact_bundle.get("quantity_summaries")
+
+    quantity_summaries = sorted(
+        [
+            normalized
+            for normalized in (
+                _normalize_artifact_quantity_summary(entry)
+                for entry in (raw_quantity_summaries or [])
+            )
+            if normalized is not None
+        ],
+        key=lambda entry: entry["quantity"],
+    )
+
+    enabled_mesh_count = _coerce_non_negative_int(
+        scoring_summary.get(
+            "enabled_scoring_mesh_count",
+            scoring_summary.get("enabled_mesh_count"),
+        ),
+        0,
+    )
+    enabled_tally_count = _coerce_non_negative_int(
+        scoring_summary.get(
+            "enabled_tally_request_count",
+            scoring_summary.get("enabled_tally_count"),
+        ),
+        0,
+    )
+    artifact_request_count = _coerce_non_negative_int(
+        scoring_runtime.get("artifact_request_count"),
+        0,
+    )
+    generated_artifact_count = _coerce_non_negative_int(
+        scoring_artifacts.get(
+            "generated_artifact_count",
+            bundle_summary.get(
+                "generated_artifact_count",
+                artifact_bundle.get("generated_artifact_count"),
+            ),
+        ),
+        0,
+    )
+    skipped_tally_count = _coerce_non_negative_int(
+        scoring_artifacts.get(
+            "skipped_tally_count",
+            scoring_runtime.get("skipped_tally_count"),
+        ),
+        0,
+    )
+    has_configured_scoring = _coerce_bool(
+        scoring_summary.get(
+            "has_configured_scoring",
+            enabled_mesh_count > 0 or enabled_tally_count > 0,
+        )
+    )
+    has_scoring_outputs = bool(quantity_summaries) or generated_artifact_count > 0
+
+    setup_summary_text = _normalize_string(scoring_summary.get("summary_text"))
+    if not setup_summary_text:
+        setup_summary_text = (
+            f"{_pluralize(enabled_mesh_count, 'enabled scoring mesh')} across "
+            f"{_pluralize(enabled_tally_count, 'enabled tally request')}."
+        )
+
+    bundle_path = _normalize_string(
+        scoring_artifacts.get("artifact_bundle_path")
+        or artifact_bundle.get("path")
+        or "scoring_artifacts.json"
+    )
+    bundle_exists = _coerce_bool(
+        artifact_bundle.get("exists")
+        if artifact_bundle.get("exists") is not None
+        else bool(bundle_payload)
+    )
+    source_output = (
+        artifact_bundle.get("source_output")
+        if isinstance(artifact_bundle.get("source_output"), dict)
+        else {}
+    )
+    source_output_exists = _coerce_bool(source_output.get("exists"))
+
+    if quantity_summaries:
+        summary_text = " · ".join(
+            f"{entry['label']} {entry['total_value_text']}"
+            for entry in quantity_summaries
+        )
+        status = "artifacts_ready"
+    elif generated_artifact_count > 0:
+        summary_text = f"{_pluralize(generated_artifact_count, 'scoring artifact')} recorded for this run."
+        status = "artifacts_ready"
+    elif artifact_request_count > 0:
+        summary_text = (
+            f"Requested {_pluralize(artifact_request_count, 'scoring artifact')}, "
+            "but no scoring bundle was recorded."
+        )
+        status = "bundle_missing"
+    elif has_configured_scoring:
+        summary_text = "Scoring is configured for this run, but no runtime scoring artifacts were recorded."
+        status = "configured_no_outputs"
+    else:
+        summary_text = "No scoring artifacts recorded for this run."
+        status = "no_scoring"
+
+    detail_lines = [
+        (
+            f"{_pluralize(enabled_mesh_count, 'enabled mesh')} · "
+            f"{_pluralize(enabled_tally_count, 'enabled tally request')}"
+        ),
+        f"Bundle: {bundle_path}" if bundle_exists else "Bundle: not recorded",
+    ]
+    if skipped_tally_count > 0:
+        detail_lines.append(
+            f"Skipped {_pluralize(skipped_tally_count, 'unsupported tally request')}."
+        )
+
+    return {
+        "schema_version": SCORING_RUN_SUMMARY_SCHEMA_VERSION,
+        "version_id": _normalize_string(
+            version_id
+            or metadata_payload.get("version_id")
+            or manifest_summary.get("version_id")
+        )
+        or None,
+        "job_id": _normalize_string(
+            job_id
+            or metadata_payload.get("job_id")
+            or manifest_summary.get("job_id")
+            or bundle_payload.get("job_id")
+        )
+        or None,
+        "timestamp": metadata_payload.get("timestamp") or manifest_summary.get("timestamp"),
+        "status": status,
+        "summary_text": summary_text,
+        "setup_summary_text": setup_summary_text,
+        "has_configured_scoring": has_configured_scoring,
+        "has_scoring_outputs": has_scoring_outputs,
+        "total_events": _coerce_non_negative_int(
+            metadata_payload.get("total_events", resolved_run_manifest.get("events")),
+            0,
+        ),
+        "threads": _coerce_non_negative_int(resolved_run_manifest.get("threads"), 0),
+        "physics_list": execution_settings.get("physics_list"),
+        "optical_physics": _coerce_bool(execution_settings.get("optical_physics")),
+        "enabled_mesh_count": enabled_mesh_count,
+        "enabled_tally_count": enabled_tally_count,
+        "artifact_request_count": artifact_request_count,
+        "generated_artifact_count": generated_artifact_count,
+        "skipped_tally_count": skipped_tally_count,
+        "bundle_path": bundle_path,
+        "bundle_exists": bundle_exists,
+        "source_output_exists": source_output_exists,
+        "quantity_summaries": quantity_summaries,
+        "detail_lines": detail_lines,
+        "comparison_keys": deepcopy(
+            manifest_summary.get("comparison_keys")
+            if isinstance(manifest_summary.get("comparison_keys"), dict)
+            else {}
+        ),
+        "scoring_setup": {
+            "summary": deepcopy(scoring_summary),
+            "runtime": deepcopy(scoring_runtime),
         },
     }
 

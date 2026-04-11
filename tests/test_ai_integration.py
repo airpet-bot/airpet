@@ -91,11 +91,13 @@ def test_environment_ai_schema_exposes_read_and_write_tools():
     details_tool = tool_dict["get_component_details"]
     details_enum = details_tool["parameters"]["properties"]["component_type"]["enum"]
     assert "environment" in details_enum
+    assert "scoring" in details_enum
 
     update_tool = tool_dict["update_property"]
     update_properties = update_tool["parameters"]["properties"]
 
     assert "environment" in update_properties["object_type"]["enum"]
+    assert "scoring" in update_properties["object_type"]["enum"]
     assert "object_id" in update_properties
     assert "property_path" in update_properties
     assert "new_value" in update_properties
@@ -107,6 +109,13 @@ def test_environment_ai_schema_exposes_read_and_write_tools():
     assert "local_uniform_electric_field" in update_tool["description"]
     assert "region cuts and limits" in update_tool["description"]
     assert "region_cuts_and_limits" in update_tool["description"]
+    assert "scoring_state" in update_tool["description"]
+
+    scoring_tool = tool_dict["get_scoring_summary"]
+    scoring_properties = scoring_tool["parameters"]["properties"]
+    assert scoring_properties["version_id"]["type"] == "string"
+    assert scoring_properties["job_id"]["type"] == "string"
+    assert "per-quantity totals" in scoring_tool["description"]
 
 
 def test_detector_feature_generator_ai_schema_exposes_manage_and_inspect_tools():
