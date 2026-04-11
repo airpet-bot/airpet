@@ -19,7 +19,7 @@ from .geometry_types import GeometryState, Solid, Define, Material, Element, Iso
                             LogicalVolume, PhysicalVolumePlacement, Assembly, ReplicaVolume, \
                             DivisionVolume, ParamVolume, OpticalSurface, SkinSurface, \
                             BorderSurface, ParticleSource, GlobalUniformMagneticField, \
-                            GlobalUniformElectricField, LocalUniformMagneticField, \
+                            GlobalUniformElectricField, LocalUniformMagneticField, ScoringState, \
                             LocalUniformElectricField, normalize_detector_feature_generator_entry
 from .gdml_parser import GDMLParser
 from .gdml_writer import GDMLWriter
@@ -3604,6 +3604,14 @@ class ProjectManager:
             state_dict['solids'] = filtered_solids
         
         return state_dict
+
+    def resolve_saved_run_manifest(self, sim_params=None, state=None):
+        target_state = state if state is not None else self.current_geometry_state
+        if target_state and hasattr(target_state, "scoring"):
+            scoring_state = target_state.scoring
+        else:
+            scoring_state = ScoringState()
+        return scoring_state.resolve_run_manifest(sim_params)
 
     def _validate_parameter_entry(self, name, entry, is_update=False):
         if not self.current_geometry_state:
@@ -9389,11 +9397,12 @@ class ProjectManager:
             str: The path to the generated macro file.
         """
         # --- Save metadata ---
+        raw_sim_params = dict(sim_params or {})
         metadata = {
             'job_id': job_id,
             'timestamp': datetime.now().isoformat(),
-            'total_events': sim_params.get('events', 1),
-            'sim_options': sim_params,
+            'total_events': raw_sim_params.get('events', 1),
+            'sim_options': raw_sim_params,
         }
         metadata_path = os.path.join(run_dir, "metadata.json")
         macro_path = os.path.join(run_dir, "run.mac")
@@ -9406,9 +9415,14 @@ class ProjectManager:
             
             # The GDML writer needs a GeometryState object
             temp_state = GeometryState.from_dict(state_dict)
+            resolved_run_manifest = self.resolve_saved_run_manifest(raw_sim_params, state=temp_state)
             gdml_string = GDMLWriter(temp_state).get_gdml_string()
+            metadata['total_events'] = resolved_run_manifest.get('events', 1)
+            metadata['resolved_run_manifest'] = resolved_run_manifest
             metadata['environment'] = temp_state.environment.to_dict()
             metadata['environment_summary'] = temp_state.environment.to_summary_dict()
+            metadata['scoring'] = temp_state.scoring.to_dict()
+            metadata['scoring_summary'] = temp_state.scoring.to_summary_dict()
             with open(metadata_path, 'w') as f:
                 json.dump(metadata, f, indent=2)
             
@@ -9429,8 +9443,8 @@ class ProjectManager:
         
         # --- Set random seed ---
         macro_content.append("\n# --- Random Seed ---")
-        seed1 = sim_params.get('seed1', 0)
-        seed2 = sim_params.get('seed2', 0)
+        seed1 = resolved_run_manifest.get('seed1', 0)
+        seed2 = resolved_run_manifest.get('seed2', 0)
         macro_content.append("\n# --- Random Seed ---")
         if seed1 > 0 and seed2 > 0:
             macro_content.append(f"/random/setSeeds {seed1} {seed2}")
@@ -9550,21 +9564,21 @@ class ProjectManager:
 
         # --- Add production cuts ---
         macro_content.append("# --- Physics Cuts for Performance ---")
-        production_cut = str(sim_params.get('production_cut') or '1.0 mm').strip()
+        production_cut = str(resolved_run_manifest.get('production_cut') or '1.0 mm').strip()
         macro_content.append(f"/run/setCut {production_cut}")
         macro_content.append("")
 
         # --- Add commands to control n-tuple saving ---
         macro_content.append("# --- N-tuple Saving Control ---")
-        save_particles = sim_params.get('save_particles', False)
-        save_hits = sim_params.get('save_hits', True)
-        save_hit_metadata = sim_params.get('save_hit_metadata', True)
+        save_particles = resolved_run_manifest.get('save_particles', False)
+        save_hits = resolved_run_manifest.get('save_hits', True)
+        save_hit_metadata = resolved_run_manifest.get('save_hit_metadata', True)
         macro_content.append(f"/g4pet/run/saveParticles {str(save_particles).lower()}")
         macro_content.append(f"/g4pet/run/saveHits {str(save_hits).lower()}")
         macro_content.append(f"/g4pet/run/saveHitMetadata {str(save_hit_metadata).lower()}")
         
         # Keep the default low enough that low-energy studies still produce hits.
-        hit_threshold = str(sim_params.get('hit_energy_threshold') or '1 eV').strip()
+        hit_threshold = str(resolved_run_manifest.get('hit_energy_threshold') or '1 eV').strip()
         macro_content.append(f"/g4pet/run/hitEnergyThreshold {hit_threshold}")
         macro_content.append("")
 
@@ -9716,7 +9730,7 @@ class ProjectManager:
         os.makedirs(tracks_dir, exist_ok=True)
         macro_content.append(f"/g4pet/event/printTracksToDir tracks/")
         
-        save_range_str = sim_params.get('save_tracks_range', '0-0')
+        save_range_str = raw_sim_params.get('save_tracks_range', '0-0')
         try:
             if '-' in save_range_str:
                 start_event, end_event = map(int, save_range_str.split('-'))
@@ -9730,12 +9744,12 @@ class ProjectManager:
         macro_content.append(f"/analysis/setFileName output.hdf5")
 
         # --- Add the print progress command ---
-        print_progress = sim_params.get('print_progress', 0)
+        print_progress = resolved_run_manifest.get('print_progress', 0)
         if print_progress > 0:
             macro_content.append(f"/run/printProgress {print_progress}")
 
         # --- Run Beam On ---
-        num_events = sim_params.get('events', 1)
+        num_events = resolved_run_manifest.get('events', 1)
         macro_content.append("\n# --- Start Simulation ---")
         macro_content.append(f"/run/beamOn {num_events}")
 

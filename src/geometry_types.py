@@ -60,6 +60,19 @@ _SUPPORTED_DETECTOR_FEATURE_DRILL_FROM = {"positive_z_face"}
 _SUPPORTED_DETECTOR_FEATURE_REALIZATION_MODES = {"boolean_subtraction", "layered_stack", "placement_array"}
 _SUPPORTED_DETECTOR_FEATURE_REALIZATION_STATUSES = {"spec_only", "generated"}
 
+SCORING_STATE_SCHEMA_VERSION = 1
+_SUPPORTED_SCORING_MESH_TYPES = {"box"}
+_SUPPORTED_SCORING_REFERENCE_FRAMES = {"world"}
+_SUPPORTED_SCORING_TALLY_QUANTITIES = {
+    "cell_flux",
+    "dose_deposit",
+    "energy_deposit",
+    "n_of_step",
+    "n_of_track",
+    "passage_cell_flux",
+    "track_length",
+}
+
 def convert_to_internal_units(value, unit_str, category="length"):
     if value is None: return None
     try:
@@ -151,6 +164,49 @@ def _normalize_positive_int(value, field_name):
     return normalized
 
 
+def _normalize_non_negative_int(value, default, field_name):
+    if value is None:
+        return default
+
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a non-negative integer.")
+
+    if isinstance(value, int):
+        normalized = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(f"{field_name} must be a non-negative integer.")
+        normalized = int(value)
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if not re.fullmatch(r"[+-]?\d+", stripped):
+            raise ValueError(f"{field_name} must be a non-negative integer.")
+        normalized = int(stripped)
+    else:
+        raise ValueError(f"{field_name} must be a non-negative integer.")
+
+    if normalized < 0:
+        raise ValueError(f"{field_name} must be greater than or equal to 0.")
+    return normalized
+
+
+def _normalize_boolean(value, default, field_name):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field_name} must be a boolean.")
+
+
+def _normalize_non_empty_string_with_default(value, default, field_name):
+    if value is None:
+        return default
+    normalized = _normalize_non_empty_string(value)
+    if normalized is None:
+        raise ValueError(f"{field_name} must be a non-empty string.")
+    return normalized
+
+
 def _normalize_detector_feature_object_ref(raw_ref, field_name, required=False):
     if raw_ref is None:
         if required:
@@ -204,6 +260,392 @@ def _normalize_detector_feature_material_ref(value, field_name):
     if not normalized:
         raise ValueError(f"{field_name} must be a non-empty material name.")
     return normalized
+
+
+def _default_scoring_run_manifest_defaults():
+    return {
+        "events": 1000,
+        "threads": 1,
+        "seed1": 0,
+        "seed2": 0,
+        "print_progress": 0,
+        "save_hits": True,
+        "save_hit_metadata": True,
+        "save_particles": False,
+        "production_cut": "1.0 mm",
+        "hit_energy_threshold": "1 eV",
+    }
+
+
+def _normalize_scoring_mesh_ref(raw_ref, field_name, required=False):
+    if raw_ref is None:
+        if required:
+            raise ValueError(f"{field_name} is required.")
+        return None
+
+    if isinstance(raw_ref, str):
+        ref_name = _normalize_non_empty_string(raw_ref)
+        if not ref_name:
+            raise ValueError(f"{field_name} must be a non-empty scoring mesh reference.")
+        return {"name": ref_name}
+
+    if not isinstance(raw_ref, dict):
+        raise ValueError(f"{field_name} must be a scoring mesh reference object.")
+
+    mesh_id = _normalize_non_empty_string(raw_ref.get("mesh_id", raw_ref.get("id")))
+    mesh_name = _normalize_non_empty_string(raw_ref.get("name"))
+    if not mesh_id and not mesh_name:
+        if required:
+            raise ValueError(f"{field_name} must include mesh_id, id, or name.")
+        return None
+
+    normalized = {}
+    if mesh_id:
+        normalized["mesh_id"] = mesh_id
+    if mesh_name:
+        normalized["name"] = mesh_name
+    return normalized
+
+
+def _normalize_scoring_mesh_entry(raw_entry):
+    if not isinstance(raw_entry, dict):
+        raise ValueError("scoring.scoring_meshes[] entry must be an object.")
+
+    mesh_id = _normalize_non_empty_string(raw_entry.get("mesh_id"))
+    if not mesh_id:
+        mesh_id = f"scoring_mesh_{uuid.uuid4().hex}"
+
+    mesh_type = _normalize_non_empty_string(raw_entry.get("mesh_type")) or "box"
+    if mesh_type not in _SUPPORTED_SCORING_MESH_TYPES:
+        raise ValueError(
+            "scoring.scoring_meshes[].mesh_type must be one of: "
+            + ", ".join(sorted(_SUPPORTED_SCORING_MESH_TYPES))
+            + "."
+        )
+
+    reference_frame = _normalize_non_empty_string(raw_entry.get("reference_frame")) or "world"
+    if reference_frame not in _SUPPORTED_SCORING_REFERENCE_FRAMES:
+        raise ValueError(
+            "scoring.scoring_meshes[].reference_frame must be one of: "
+            + ", ".join(sorted(_SUPPORTED_SCORING_REFERENCE_FRAMES))
+            + "."
+        )
+
+    schema_version = _normalize_positive_int(
+        raw_entry.get("schema_version", SCORING_STATE_SCHEMA_VERSION),
+        "scoring.scoring_meshes[].schema_version",
+    )
+    enabled = _normalize_boolean(
+        raw_entry.get("enabled"),
+        True,
+        "scoring.scoring_meshes[].enabled",
+    )
+
+    geometry = raw_entry.get("geometry", {})
+    if geometry is None:
+        geometry = {}
+    if not isinstance(geometry, dict):
+        raise ValueError("scoring.scoring_meshes[].geometry must be an object.")
+
+    center_mm = geometry.get("center_mm", raw_entry.get("center_mm", {}))
+    if center_mm is None:
+        center_mm = {}
+    if not isinstance(center_mm, dict):
+        raise ValueError("scoring.scoring_meshes[].geometry.center_mm must be an object.")
+
+    size_mm = geometry.get("size_mm", raw_entry.get("size_mm", {}))
+    if size_mm is None:
+        size_mm = {}
+    if not isinstance(size_mm, dict):
+        raise ValueError("scoring.scoring_meshes[].geometry.size_mm must be an object.")
+
+    bins = raw_entry.get("bins", {})
+    if bins is None:
+        bins = {}
+    if not isinstance(bins, dict):
+        raise ValueError("scoring.scoring_meshes[].bins must be an object.")
+
+    default_name = f"{mesh_type}_mesh_{mesh_id.split('_')[-1][:8]}"
+    return {
+        "mesh_id": mesh_id,
+        "name": _normalize_non_empty_string(raw_entry.get("name")) or default_name,
+        "schema_version": schema_version,
+        "enabled": enabled,
+        "mesh_type": mesh_type,
+        "reference_frame": reference_frame,
+        "geometry": {
+            "center_mm": {
+                "x": _normalize_float(
+                    center_mm.get("x"),
+                    0.0,
+                    "scoring.scoring_meshes[].geometry.center_mm.x",
+                ),
+                "y": _normalize_float(
+                    center_mm.get("y"),
+                    0.0,
+                    "scoring.scoring_meshes[].geometry.center_mm.y",
+                ),
+                "z": _normalize_float(
+                    center_mm.get("z"),
+                    0.0,
+                    "scoring.scoring_meshes[].geometry.center_mm.z",
+                ),
+            },
+            "size_mm": {
+                "x": _normalize_positive_float(
+                    size_mm.get("x", 10.0),
+                    "scoring.scoring_meshes[].geometry.size_mm.x",
+                ),
+                "y": _normalize_positive_float(
+                    size_mm.get("y", 10.0),
+                    "scoring.scoring_meshes[].geometry.size_mm.y",
+                ),
+                "z": _normalize_positive_float(
+                    size_mm.get("z", 10.0),
+                    "scoring.scoring_meshes[].geometry.size_mm.z",
+                ),
+            },
+        },
+        "bins": {
+            "x": _normalize_positive_int(
+                bins.get("x", 10),
+                "scoring.scoring_meshes[].bins.x",
+            ),
+            "y": _normalize_positive_int(
+                bins.get("y", 10),
+                "scoring.scoring_meshes[].bins.y",
+            ),
+            "z": _normalize_positive_int(
+                bins.get("z", 10),
+                "scoring.scoring_meshes[].bins.z",
+            ),
+        },
+    }
+
+
+def _normalize_scoring_meshes(raw_meshes):
+    if raw_meshes is None:
+        return []
+    if not isinstance(raw_meshes, list):
+        raise ValueError("scoring.scoring_meshes must be an array.")
+
+    normalized_meshes = []
+    seen_mesh_ids = set()
+    for index, raw_entry in enumerate(raw_meshes):
+        try:
+            normalized_entry = _normalize_scoring_mesh_entry(raw_entry)
+        except ValueError as exc:
+            print(f"Warning: Skipping scoring mesh at index {index}: {exc}")
+            continue
+
+        mesh_id = normalized_entry["mesh_id"]
+        if mesh_id in seen_mesh_ids:
+            print(
+                "Warning: Skipping scoring mesh at index "
+                f"{index}: duplicate mesh_id '{mesh_id}'."
+            )
+            continue
+
+        seen_mesh_ids.add(mesh_id)
+        normalized_meshes.append(normalized_entry)
+
+    return normalized_meshes
+
+
+def _build_scoring_mesh_lookup(scoring_meshes):
+    mesh_ids = {}
+    mesh_names = {}
+    ambiguous_names = set()
+
+    for mesh in scoring_meshes or []:
+        mesh_id = mesh.get("mesh_id")
+        if mesh_id:
+            mesh_ids[mesh_id] = mesh
+
+        mesh_name = mesh.get("name")
+        if not mesh_name:
+            continue
+
+        if mesh_name in mesh_names:
+            ambiguous_names.add(mesh_name)
+        else:
+            mesh_names[mesh_name] = mesh
+
+    for mesh_name in ambiguous_names:
+        mesh_names.pop(mesh_name, None)
+
+    return mesh_ids, mesh_names, ambiguous_names
+
+
+def _normalize_scoring_tally_request_entry(raw_entry, mesh_lookup=None):
+    if not isinstance(raw_entry, dict):
+        raise ValueError("scoring.tally_requests[] entry must be an object.")
+
+    tally_id = _normalize_non_empty_string(raw_entry.get("tally_id"))
+    if not tally_id:
+        tally_id = f"scoring_tally_{uuid.uuid4().hex}"
+
+    schema_version = _normalize_positive_int(
+        raw_entry.get("schema_version", SCORING_STATE_SCHEMA_VERSION),
+        "scoring.tally_requests[].schema_version",
+    )
+    enabled = _normalize_boolean(
+        raw_entry.get("enabled"),
+        True,
+        "scoring.tally_requests[].enabled",
+    )
+
+    quantity = _normalize_non_empty_string(raw_entry.get("quantity")) or "energy_deposit"
+    if quantity not in _SUPPORTED_SCORING_TALLY_QUANTITIES:
+        raise ValueError(
+            "scoring.tally_requests[].quantity must be one of: "
+            + ", ".join(sorted(_SUPPORTED_SCORING_TALLY_QUANTITIES))
+            + "."
+        )
+
+    mesh_ref = raw_entry.get("mesh_ref")
+    if mesh_ref is None:
+        if raw_entry.get("mesh_id") is not None:
+            mesh_ref = {"mesh_id": raw_entry.get("mesh_id")}
+        elif raw_entry.get("mesh_name") is not None:
+            mesh_ref = {"name": raw_entry.get("mesh_name")}
+
+    normalized_mesh_ref = _normalize_scoring_mesh_ref(
+        mesh_ref,
+        "scoring.tally_requests[].mesh_ref",
+        required=True,
+    )
+
+    if mesh_lookup is not None:
+        mesh_ids, mesh_names, ambiguous_names = mesh_lookup
+        matched_mesh = None
+        mesh_id = normalized_mesh_ref.get("mesh_id")
+        mesh_name = normalized_mesh_ref.get("name")
+
+        if mesh_id:
+            matched_mesh = mesh_ids.get(mesh_id)
+            if matched_mesh is None:
+                raise ValueError(
+                    f"scoring.tally_requests[].mesh_ref.mesh_id '{mesh_id}' does not match a saved scoring mesh."
+                )
+
+        if mesh_name:
+            if mesh_name in ambiguous_names:
+                raise ValueError(
+                    f"scoring.tally_requests[].mesh_ref.name '{mesh_name}' matches multiple saved scoring meshes."
+                )
+            named_mesh = mesh_names.get(mesh_name)
+            if named_mesh is None:
+                raise ValueError(
+                    f"scoring.tally_requests[].mesh_ref.name '{mesh_name}' does not match a saved scoring mesh."
+                )
+            if matched_mesh is not None and named_mesh.get("mesh_id") != matched_mesh.get("mesh_id"):
+                raise ValueError(
+                    "scoring.tally_requests[].mesh_ref must resolve to one saved scoring mesh."
+                )
+            matched_mesh = named_mesh
+
+        if matched_mesh is not None:
+            normalized_mesh_ref["mesh_id"] = matched_mesh.get("mesh_id")
+            normalized_mesh_ref["name"] = matched_mesh.get("name")
+
+    default_name = f"{quantity}_{tally_id.split('_')[-1][:8]}"
+    return {
+        "tally_id": tally_id,
+        "name": _normalize_non_empty_string(raw_entry.get("name")) or default_name,
+        "schema_version": schema_version,
+        "enabled": enabled,
+        "mesh_ref": normalized_mesh_ref,
+        "quantity": quantity,
+    }
+
+
+def _normalize_scoring_tally_requests(raw_requests, mesh_lookup=None):
+    if raw_requests is None:
+        return []
+    if not isinstance(raw_requests, list):
+        raise ValueError("scoring.tally_requests must be an array.")
+
+    normalized_requests = []
+    seen_tally_ids = set()
+    for index, raw_entry in enumerate(raw_requests):
+        try:
+            normalized_entry = _normalize_scoring_tally_request_entry(raw_entry, mesh_lookup=mesh_lookup)
+        except ValueError as exc:
+            print(f"Warning: Skipping scoring tally request at index {index}: {exc}")
+            continue
+
+        tally_id = normalized_entry["tally_id"]
+        if tally_id in seen_tally_ids:
+            print(
+                "Warning: Skipping scoring tally request at index "
+                f"{index}: duplicate tally_id '{tally_id}'."
+            )
+            continue
+
+        seen_tally_ids.add(tally_id)
+        normalized_requests.append(normalized_entry)
+
+    return normalized_requests
+
+
+def _normalize_scoring_run_manifest_defaults(raw_defaults):
+    defaults = _default_scoring_run_manifest_defaults()
+    if raw_defaults is None:
+        raw_defaults = {}
+    if not isinstance(raw_defaults, dict):
+        raise ValueError("scoring.run_manifest_defaults must be an object.")
+
+    return {
+        "events": _normalize_positive_int(
+            raw_defaults.get("events", defaults["events"]),
+            "scoring.run_manifest_defaults.events",
+        ),
+        "threads": _normalize_positive_int(
+            raw_defaults.get("threads", defaults["threads"]),
+            "scoring.run_manifest_defaults.threads",
+        ),
+        "seed1": _normalize_non_negative_int(
+            raw_defaults.get("seed1", defaults["seed1"]),
+            defaults["seed1"],
+            "scoring.run_manifest_defaults.seed1",
+        ),
+        "seed2": _normalize_non_negative_int(
+            raw_defaults.get("seed2", defaults["seed2"]),
+            defaults["seed2"],
+            "scoring.run_manifest_defaults.seed2",
+        ),
+        "print_progress": _normalize_non_negative_int(
+            raw_defaults.get("print_progress", defaults["print_progress"]),
+            defaults["print_progress"],
+            "scoring.run_manifest_defaults.print_progress",
+        ),
+        "save_hits": _normalize_boolean(
+            raw_defaults.get("save_hits"),
+            defaults["save_hits"],
+            "scoring.run_manifest_defaults.save_hits",
+        ),
+        "save_hit_metadata": _normalize_boolean(
+            raw_defaults.get("save_hit_metadata"),
+            defaults["save_hit_metadata"],
+            "scoring.run_manifest_defaults.save_hit_metadata",
+        ),
+        "save_particles": _normalize_boolean(
+            raw_defaults.get("save_particles"),
+            defaults["save_particles"],
+            "scoring.run_manifest_defaults.save_particles",
+        ),
+        "production_cut": _normalize_non_empty_string_with_default(
+            raw_defaults.get("production_cut"),
+            defaults["production_cut"],
+            "scoring.run_manifest_defaults.production_cut",
+        ),
+        "hit_energy_threshold": _normalize_non_empty_string_with_default(
+            raw_defaults.get("hit_energy_threshold"),
+            defaults["hit_energy_threshold"],
+            "scoring.run_manifest_defaults.hit_energy_threshold",
+        ),
+    }
 
 
 def _normalize_detector_feature_generator_entry(raw_entry):
@@ -2462,6 +2904,186 @@ class EnvironmentState:
 
         return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits)
 
+
+class ScoringState:
+    """Saved-project scoring and run-control contract shared by UI, AI, and runtime plumbing."""
+
+    def __init__(
+        self,
+        schema_version=SCORING_STATE_SCHEMA_VERSION,
+        scoring_meshes=None,
+        tally_requests=None,
+        run_manifest_defaults=None,
+    ):
+        self.schema_version = schema_version
+        self.scoring_meshes = [deepcopy(entry) for entry in (scoring_meshes or [])]
+        self.tally_requests = [deepcopy(entry) for entry in (tally_requests or [])]
+        self.run_manifest_defaults = deepcopy(
+            run_manifest_defaults if run_manifest_defaults is not None else _default_scoring_run_manifest_defaults()
+        )
+
+    @classmethod
+    def validate(cls, data, field_name="scoring"):
+        if data is None:
+            return True, None
+        if not isinstance(data, dict):
+            return False, f"{field_name} must be an object."
+
+        try:
+            _normalize_positive_int(
+                data.get("schema_version", SCORING_STATE_SCHEMA_VERSION),
+                f"{field_name}.schema_version",
+            )
+            scoring_meshes_raw = data.get("scoring_meshes", [])
+            if scoring_meshes_raw is None:
+                scoring_meshes_raw = []
+            if not isinstance(scoring_meshes_raw, list):
+                raise ValueError(f"{field_name}.scoring_meshes must be an array.")
+
+            scoring_meshes = []
+            seen_mesh_ids = set()
+            for index, raw_entry in enumerate(scoring_meshes_raw):
+                normalized_entry = _normalize_scoring_mesh_entry(raw_entry)
+                mesh_id = normalized_entry["mesh_id"]
+                if mesh_id in seen_mesh_ids:
+                    raise ValueError(
+                        f"{field_name}.scoring_meshes[{index}].mesh_id duplicates '{mesh_id}'."
+                    )
+                seen_mesh_ids.add(mesh_id)
+                scoring_meshes.append(normalized_entry)
+
+            mesh_lookup = _build_scoring_mesh_lookup(scoring_meshes)
+            tally_requests_raw = data.get("tally_requests", [])
+            if tally_requests_raw is None:
+                tally_requests_raw = []
+            if not isinstance(tally_requests_raw, list):
+                raise ValueError(f"{field_name}.tally_requests must be an array.")
+
+            seen_tally_ids = set()
+            for index, raw_entry in enumerate(tally_requests_raw):
+                normalized_entry = _normalize_scoring_tally_request_entry(
+                    raw_entry,
+                    mesh_lookup=mesh_lookup,
+                )
+                tally_id = normalized_entry["tally_id"]
+                if tally_id in seen_tally_ids:
+                    raise ValueError(
+                        f"{field_name}.tally_requests[{index}].tally_id duplicates '{tally_id}'."
+                    )
+                seen_tally_ids.add(tally_id)
+
+            _normalize_scoring_run_manifest_defaults(data.get("run_manifest_defaults"))
+        except ValueError as exc:
+            return False, str(exc)
+
+        return True, None
+
+    def to_dict(self):
+        return {
+            "schema_version": self.schema_version,
+            "scoring_meshes": [deepcopy(entry) for entry in self.scoring_meshes],
+            "tally_requests": [deepcopy(entry) for entry in self.tally_requests],
+            "run_manifest_defaults": deepcopy(self.run_manifest_defaults),
+        }
+
+    def resolve_run_manifest(self, overrides=None):
+        candidate = deepcopy(self.run_manifest_defaults)
+        if isinstance(overrides, dict):
+            for key in candidate.keys():
+                if key in overrides:
+                    candidate[key] = overrides.get(key)
+        return _normalize_scoring_run_manifest_defaults(candidate)
+
+    def to_summary_dict(self):
+        enabled_meshes = [entry for entry in self.scoring_meshes if entry.get("enabled", True)]
+        enabled_tallies = [entry for entry in self.tally_requests if entry.get("enabled", True)]
+        default_run_manifest = _default_scoring_run_manifest_defaults()
+        has_run_manifest_overrides = self.run_manifest_defaults != default_run_manifest
+
+        summary_parts = []
+        if self.scoring_meshes:
+            summary_parts.append(
+                f"{len(enabled_meshes)} of {len(self.scoring_meshes)} scoring mesh(es) enabled"
+            )
+        else:
+            summary_parts.append("No scoring meshes configured")
+
+        if self.tally_requests:
+            summary_parts.append(
+                f"{len(enabled_tallies)} of {len(self.tally_requests)} tally request(s) enabled"
+            )
+        else:
+            summary_parts.append("No tally requests configured")
+
+        if has_run_manifest_overrides:
+            summary_parts.append(
+                "Run manifest defaults: "
+                f"{self.run_manifest_defaults.get('events', 0)} event(s), "
+                f"{self.run_manifest_defaults.get('threads', 0)} thread(s)"
+            )
+        else:
+            summary_parts.append("Run manifest defaults unchanged")
+
+        return {
+            "has_configured_scoring": bool(enabled_meshes or enabled_tallies),
+            "scoring_mesh_count": len(self.scoring_meshes),
+            "enabled_scoring_mesh_count": len(enabled_meshes),
+            "tally_request_count": len(self.tally_requests),
+            "enabled_tally_request_count": len(enabled_tallies),
+            "has_run_manifest_overrides": has_run_manifest_overrides,
+            "run_manifest_defaults": deepcopy(self.run_manifest_defaults),
+            "summary_text": "; ".join(summary_parts),
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        if data is None:
+            return cls()
+
+        if not isinstance(data, dict):
+            print("Warning: Scoring payload is not an object. Using defaults.")
+            return cls()
+
+        try:
+            schema_version = _normalize_positive_int(
+                data.get("schema_version", SCORING_STATE_SCHEMA_VERSION),
+                "scoring.schema_version",
+            )
+        except ValueError as exc:
+            print(f"Warning: Invalid scoring schema_version: {exc}. Using defaults.")
+            schema_version = SCORING_STATE_SCHEMA_VERSION
+
+        try:
+            scoring_meshes = _normalize_scoring_meshes(data.get("scoring_meshes", []))
+        except ValueError as exc:
+            print(f"Warning: Invalid scoring meshes payload: {exc}. Using defaults.")
+            scoring_meshes = []
+
+        mesh_lookup = _build_scoring_mesh_lookup(scoring_meshes)
+        try:
+            tally_requests = _normalize_scoring_tally_requests(
+                data.get("tally_requests", []),
+                mesh_lookup=mesh_lookup,
+            )
+        except ValueError as exc:
+            print(f"Warning: Invalid scoring tally payload: {exc}. Using defaults.")
+            tally_requests = []
+
+        try:
+            run_manifest_defaults = _normalize_scoring_run_manifest_defaults(
+                data.get("run_manifest_defaults")
+            )
+        except ValueError as exc:
+            print(f"Warning: Invalid scoring run manifest defaults: {exc}. Using defaults.")
+            run_manifest_defaults = _default_scoring_run_manifest_defaults()
+
+        return cls(
+            schema_version=schema_version,
+            scoring_meshes=scoring_meshes,
+            tally_requests=tally_requests,
+            run_manifest_defaults=run_manifest_defaults,
+        )
+
 class GeometryState:
     """Holds the entire geometry definition."""
     def __init__(self, world_volume_ref=None):
@@ -2474,6 +3096,7 @@ class GeometryState:
         self.assemblies = {} # name: Assembly object
         self.world_volume_ref = world_volume_ref # Name of the world LogicalVolume
         self.environment = EnvironmentState()
+        self.scoring = ScoringState()
 
         # Dictionaries for surface properties
         self.optical_surfaces = {}
@@ -2580,6 +3203,7 @@ class GeometryState:
             "assemblies": {k: v.to_dict() for k, v in self.assemblies.items()},
             "world_volume_ref": self.world_volume_ref,
             "environment": self.environment.to_dict(),
+            "scoring": self.scoring.to_dict(),
             "optical_surfaces": {k: v.to_dict() for k, v in self.optical_surfaces.items()},
             "skin_surfaces": {k: v.to_dict() for k, v in self.skin_surfaces.items()},
             "border_surfaces": {k: v.to_dict() for k, v in self.border_surfaces.items()},
@@ -2618,6 +3242,7 @@ class GeometryState:
         load_objects('border_surfaces', BorderSurface, instance.border_surfaces)
         load_objects('sources', ParticleSource, instance.sources)
         instance.environment = EnvironmentState.from_dict(data.get('environment'))
+        instance.scoring = ScoringState.from_dict(data.get('scoring'))
         legacy_environment = {}
         for legacy_key in (
             'global_uniform_magnetic_field',
