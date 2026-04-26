@@ -2187,6 +2187,39 @@
             background-color: #e0e0e0;
         }
 
+        #boolean-preview-controls {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            display: flex;
+            gap: 4px;
+            z-index: 10;
+        }
+
+        .bool-mode-btn {
+            width: 28px;
+            height: 28px;
+            border: 1px solid #999;
+            border-radius: 4px;
+            background: #fff;
+            color: #555;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .bool-mode-btn:hover {
+            background: #e8e8e8;
+        }
+
+        .bool-mode-btn.active {
+            background: #4CAF50;
+            color: white;
+            border-color: #388E3C;
+        }
+
         .ingredient-list {
             border-top: 1px solid #ccc;
             margin-top: 5px;
@@ -2270,6 +2303,17 @@
             border: 1px solid #ddd;
             border-radius: 4px;
             margin-bottom: 10px;
+            cursor: pointer;
+        }
+
+        .boolean-recipe-row:hover {
+            background-color: #f5f5f5;
+        }
+
+        .boolean-recipe-row.operand-selected {
+            border-color: #4CAF50;
+            background-color: #e8f5e9;
+            box-shadow: 0 0 0 1px #4CAF50;
         }
 
         .boolean-top-part {
@@ -2651,23 +2695,21 @@
 
         /* Re-center button */
         #recenter-solid-preview-btn {
-            position: absolute;
-            top: 5px;
-            right: 5px;
-            z-index: 10;
-            /* Ensure it's above the canvas */
-            border: 1px solid #999;
-            background-color: rgba(240, 240, 240, 0.8);
-            border-radius: 50%;
             width: 28px;
             height: 28px;
-            font-size: 18px;
+            border: 1px solid #999;
+            border-radius: 4px;
+            background: #fff;
+            color: #555;
+            font-size: 14px;
             cursor: pointer;
-            line-height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         #recenter-solid-preview-btn:hover {
-            background-color: rgba(220, 220, 220, 1.0);
+            background: #e8e8e8;
         }
 
         /* Header for selecting defines in inspector panel */
@@ -4617,7 +4659,11 @@
                     <div id="solid_preview_container">
                         <!-- The new Three.js canvas will go here -->
                     </div>
-                    <button id="recenter-solid-preview-btn" title="Recenter View">↺</button>
+                    <div id="boolean-preview-controls">
+                        <button id="recenter-solid-preview-btn" class="bool-mode-btn" title="Recenter View">↺</button>
+                        <button id="bool-mode-translate-btn" class="bool-mode-btn active" title="Translate (T)">↕</button>
+                        <button id="bool-mode-rotate-btn" class="bool-mode-btn" title="Rotate (R)">↻</button>
+                    </div>
                 </div>
 
                 <!-- Right Panel: Parameters -->

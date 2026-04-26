@@ -20,6 +20,8 @@ let createLVCheckbox, placePVCheckbox, lvOptionsDiv, lvMaterialSelect, pvParentL
 
 // State variable for the boolean recipe
 let booleanRecipe = []; // An array of {op, solid, transform}
+let selectedOperandIndex = null; // Which operand is selected for gizmo control
+let operandMeshes = []; // Array of THREE.Mesh for each operand in the preview
 
 // State variables for genericPolycone, genericPolyhedra
 let rzPointsState = []; // Holds [{r: 'expr', z: 'expr'}]
@@ -79,9 +81,10 @@ export function initSolidEditor(cb) {
         controls.enabled = !event.value; // Disable orbit while transforming
     });
     transformControls.addEventListener('objectChange', () => {
-        // When the gizmo moves the object, update the UI and the preview
-        if (transformControls.object) {
-            //updateTransformUIFromGizmo();
+        // When the gizmo moves the object, update the recipe data and UI inputs
+        if (transformControls.object && selectedOperandIndex !== null && selectedOperandIndex > 0) {
+            syncOperandMeshToRecipe(selectedOperandIndex);
+            updateBooleanTransformInputs(selectedOperandIndex);
             updatePreview();
         }
     });
@@ -99,6 +102,30 @@ export function initSolidEditor(cb) {
     document.getElementById('recenter-solid-preview-btn').addEventListener('click', updatePreview);
     typeSelect.addEventListener('change', renderParamsUI);
     confirmButton.addEventListener('click', handleConfirm);
+
+    // Boolean editor mode toggle buttons
+    const translateBtn = document.getElementById('bool-mode-translate-btn');
+    const rotateBtn = document.getElementById('bool-mode-rotate-btn');
+    translateBtn.addEventListener('click', () => setBooleanTransformMode('translate'));
+    rotateBtn.addEventListener('click', () => setBooleanTransformMode('rotate'));
+
+    // Raycasting on preview canvas click for operand selection
+    renderer.domElement.addEventListener('click', onBooleanPreviewClick);
+
+    // Keyboard shortcuts for transform mode (T=translate, R=rotate) when modal is open
+    const booleanKeyHandler = (e) => {
+        if (!modalElement || modalElement.style.display === 'none') return;
+        // Don't intercept if user is typing in an input
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+        if (e.key === 't' || e.key === 'T') {
+            e.preventDefault();
+            setBooleanTransformMode('translate');
+        } else if (e.key === 'r' || e.key === 'R') {
+            e.preventDefault();
+            setBooleanTransformMode('rotate');
+        }
+    };
+    document.addEventListener('keydown', booleanKeyHandler);
 
     createLVCheckbox.addEventListener('change', () => {
         const isChecked = createLVCheckbox.checked;
@@ -149,6 +176,9 @@ function onWindowResize() {
 export function show(solidData = null, projectState = null) {
     currentProjectState = projectState; // Cache the state
     booleanRecipe = []; // Reset recipe
+    selectedOperandIndex = null;
+    operandMeshes = [];
+    setBooleanTransformMode('translate');
 
     // Populate the material dropdown for the quick-add feature
     if (projectState && projectState.materials) {
@@ -244,6 +274,12 @@ function populateSelect(selectElement, optionsArray) {
 
 export function hide() {
     modalElement.style.display = 'none';
+    // Clean up boolean editor state
+    if (transformControls.object) {
+        transformControls.detach();
+    }
+    selectedOperandIndex = null;
+    highlightOperandRow(-1);
 }
 
 // --- Internal Logic ---
@@ -935,6 +971,16 @@ function rebuildBooleanUI() {
         const isBase = index === 0;
         const row = document.createElement('div');
         row.className = 'boolean-recipe-row';
+        row.dataset.operandIndex = index;
+        row.addEventListener('click', (e) => {
+            // Don't trigger selection if clicking a button/input/select
+            if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+            if (index === 0) {
+                selectOperand(null);
+            } else {
+                selectOperand(index);
+            }
+        });
 
         // Container for the top part (operation and drag slot)
         const topPart = document.createElement('div');
@@ -1313,6 +1359,9 @@ async function updatePreview() {
         //const recipe = solidDataForPreview.raw_parameters.recipe;
 
         if (booleanRecipe.length === 0 || !booleanRecipe[0].solid) return;
+
+        // Render operand meshes BEFORE CSG operations (which modify cached geometry)
+        await renderOperandMeshes(previewGeometryCache, csgEvaluator);
         
         // Helper function to resolve defines before evaluation
         const getExpressionsForTransform = (transformPart) => {
@@ -1551,8 +1600,18 @@ async function updatePreview() {
     
     if (geometry) {
         geometry.computeBoundingSphere(); // Important for camera centering
-        const material = new THREE.MeshLambertMaterial({ color: 0x9999ff, wireframe: false, side: THREE.DoubleSide });
+        // Semi-transparent for boolean so operand meshes underneath are visible/clickable
+        const opacity = isBoolean ? 0.35 : 1.0;
+        const material = new THREE.MeshLambertMaterial({
+            color: 0x9999ff,
+            wireframe: false,
+            side: THREE.DoubleSide,
+            transparent: isBoolean,
+            opacity,
+            depthWrite: !isBoolean
+        });
         currentSolidMesh = new THREE.Mesh(geometry, material);
+        currentSolidMesh.renderOrder = isBoolean ? 1 : 0;
         scene.add(currentSolidMesh);
     } else {
         currentSolidMesh = null; // Ensure the handle is cleared if no geometry was created
@@ -1631,6 +1690,214 @@ function handleConfirm() {
     
     onConfirmCallback(data);
     hide();
+}
+
+/* ---- Boolean editor: mode management & operand selection ---- */
+
+const operandColors = [0x4FC3F7, 0xFFB74D, 0x81C784, 0xE57373, 0xBA68C8, 0x4DD0E1, 0xFFD54F, 0xA1887F];
+
+async function renderOperandMeshes(previewGeometryCache, csgEvaluator) {
+    // Dispose old operand meshes
+    operandMeshes.forEach((obj, i) => {
+        if (obj) {
+            if (obj.geometry) obj.geometry.dispose();
+            if (obj.material) obj.material.dispose();
+            scene.remove(obj);
+        }
+    });
+    operandMeshes = [];
+
+    // Use a fresh geometry cache so CSG operations on the main cache don't corrupt our meshes
+    const operandGeometryCache = new Map();
+    const operandEvaluator = new Evaluator();
+
+    const getExpressionsForTransform = (transformPart) => {
+        if (typeof transformPart === 'string') {
+            const define = currentProjectState.defines[transformPart];
+            return define ? define.raw_expression : {x:'0', y:'0', z:'0'};
+        }
+        return transformPart || {x:'0', y:'0', z:'0'};
+    };
+
+    for (let i = 0; i < booleanRecipe.length; i++) {
+        const item = booleanRecipe[i];
+        if (!item.solid) {
+            operandMeshes.push(null);
+            continue;
+        }
+        try {
+            const geom = _getOrBuildGeometry(
+                item.solid.name,
+                currentProjectState.solids,
+                currentProjectState,
+                operandGeometryCache,
+                operandEvaluator
+            );
+            if (!geom) {
+                operandMeshes.push(null);
+                continue;
+            }
+
+            // Compute transform for this operand
+            let pos = new THREE.Vector3(0, 0, 0);
+            let quat = new THREE.Quaternion();
+
+            if (i > 0 && item.transform) {
+                const pos_expr = getExpressionsForTransform(item.transform.position);
+                const rot_expr = getExpressionsForTransform(item.transform.rotation);
+                const [px, py, pz] = await Promise.all([
+                    APIService.evaluateExpression(pos_expr.x),
+                    APIService.evaluateExpression(pos_expr.y),
+                    APIService.evaluateExpression(pos_expr.z)
+                ]);
+                const [rx, ry, rz] = await Promise.all([
+                    APIService.evaluateExpression(rot_expr.x),
+                    APIService.evaluateExpression(rot_expr.y),
+                    APIService.evaluateExpression(rot_expr.z)
+                ]);
+                pos.set(px.result || 0, py.result || 0, pz.result || 0);
+                quat.setFromEuler(new THREE.Euler(rx.result || 0, ry.result || 0, rz.result || 0, 'ZYX'));
+            }
+
+            const color = operandColors[i % operandColors.length];
+            const isSel = (i === selectedOperandIndex);
+            const mat = new THREE.MeshLambertMaterial({
+                color,
+                transparent: true,
+                opacity: isSel ? 0.85 : 0.45,
+                depthWrite: false,
+                side: THREE.DoubleSide
+            });
+            const mesh = new THREE.Mesh(geom.clone(), mat);
+            mesh.position.copy(pos);
+            mesh.quaternion.copy(quat);
+            mesh.userData.operandIndex = i;
+            scene.add(mesh);
+            operandMeshes.push(mesh);
+        } catch (e) {
+            console.error(`Error rendering operand ${i}:`, e);
+            operandMeshes.push(null);
+        }
+    }
+}
+
+let booleanTransformMode = 'translate'; // 'translate' or 'rotate'
+
+function setBooleanTransformMode(mode) {
+    booleanTransformMode = mode;
+    const translateBtn = document.getElementById('bool-mode-translate-btn');
+    const rotateBtn = document.getElementById('bool-mode-rotate-btn');
+    if (translateBtn) translateBtn.classList.toggle('active', mode === 'translate');
+    if (rotateBtn) rotateBtn.classList.toggle('active', mode === 'rotate');
+    if (transformControls) {
+        transformControls.setMode(mode);
+    }
+}
+
+function selectOperand(index) {
+    if (index === null || !operandMeshes[index]) {
+        if (transformControls.object) {
+            transformControls.detach();
+        }
+        selectedOperandIndex = null;
+        operandMeshes.forEach((m, i) => {
+            if (m && m.material) {
+                m.material.opacity = 0.45;
+            }
+        });
+        highlightOperandRow(-1);
+        return;
+    }
+    selectedOperandIndex = index;
+    operandMeshes.forEach((m, i) => {
+        if (m && m.material) {
+            m.material.opacity = (i === index) ? 0.85 : 0.45;
+        }
+    });
+    transformControls.attach(operandMeshes[index]);
+    transformControls.setMode(booleanTransformMode);
+    highlightOperandRow(index);
+}
+
+function highlightOperandRow(index) {
+    document.querySelectorAll('.boolean-recipe-row').forEach((row, i) => {
+        row.classList.toggle('operand-selected', i === index);
+    });
+}
+
+function onBooleanPreviewClick(event) {
+    // Only handle clicks when not dragging the gizmo
+    if (transformControls.dragging) return;
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+
+    // Collect all operand meshes for intersection
+    const meshes = operandMeshes.filter(m => m && m.visible);
+    if (meshes.length === 0) return;
+
+    const intersects = raycaster.intersectObjects(meshes, false);
+    if (intersects.length > 0) {
+        const hitMesh = intersects[0].object;
+        const idx = operandMeshes.indexOf(hitMesh);
+        if (idx >= 0) {
+            selectOperand(idx);
+            return;
+        }
+    }
+    // Clicked on empty space -> deselect
+    selectOperand(null);
+}
+
+/* ---- End boolean editor helpers ---- */
+
+function syncOperandMeshToRecipe(index) {
+    const mesh = operandMeshes[index];
+    if (!mesh || !booleanRecipe[index]) return;
+    const recipe = booleanRecipe[index];
+    // Ensure transform exists
+    if (!recipe.transform) {
+        recipe.transform = { position: {x:'0',y:'0',z:'0'}, rotation: {x:'0',y:'0',z:'0'} };
+    }
+    // Sync position
+    if (typeof recipe.transform.position === 'object') {
+        recipe.transform.position.x = mesh.position.x.toFixed(4);
+        recipe.transform.position.y = mesh.position.y.toFixed(4);
+        recipe.transform.position.z = mesh.position.z.toFixed(4);
+    }
+    // Sync rotation (quaternion -> euler)
+    if (typeof recipe.transform.rotation === 'object') {
+        const euler = new THREE.Euler().setFromQuaternion(mesh.quaternion, 'ZYX');
+        recipe.transform.rotation.x = euler.x.toFixed(4);
+        recipe.transform.rotation.y = euler.y.toFixed(4);
+        recipe.transform.rotation.z = euler.z.toFixed(4);
+    }
+}
+
+function updateBooleanTransformInputs(index) {
+    const recipe = booleanRecipe[index];
+    if (!recipe || !recipe.transform) return;
+    const pos = recipe.transform.position;
+    const rot = recipe.transform.rotation;
+    if (typeof pos !== 'object' || typeof rot !== 'object') return;
+
+    // Update position inputs (IDs: bool_trans_<index>_position_<axis>)
+    ['x','y','z'].forEach(axis => {
+        const id = `bool_trans_${index}_position_${axis}`;
+        const el = document.getElementById(id);
+        if (el) el.value = (parseFloat(pos[axis]) || 0).toFixed(3);
+    });
+    // Update rotation inputs (IDs: bool_trans_<index>_rotation_<axis>)
+    ['x','y','z'].forEach(axis => {
+        const id = `bool_trans_${index}_rotation_${axis}`;
+        const el = document.getElementById(id);
+        if (el) el.value = (parseFloat(rot[axis]) || 0).toFixed(3);
+    });
 }
 
 function updateTransformUIFromGizmo() {
