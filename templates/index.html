@@ -154,13 +154,19 @@
 
         /* Change icon colors on a selected item for better visibility */
         .tab_pane li.selected_item .visibility-btn,
-        .tab_pane li.selected_item .delete-item-btn {
+        .tab_pane li.selected_item .delete-item-btn,
+        .tab_pane li.selected_item .edit-item-btn {
             color: white;
         }
 
         .tab_pane li.selected_item .delete-item-btn:hover {
             color: #fecaca;
             /* A light red for hover on delete */
+        }
+
+        .tab_pane li.selected_item .edit-item-btn:hover {
+            color: #bfdbfe;
+            /* A light blue for hover on edit */
         }
 
         /* Matrix grid */
@@ -2750,12 +2756,18 @@
             color: #9ca3af;
         }
 
+        .edit-item-btn {
+            font-size: 14px;
+            color: #9ca3af;
+        }
+
         .visibility-btn {
             font-size: 14px;
             color: #9ca3af;
         }
 
         .delete-item-btn:hover,
+        .edit-item-btn:hover,
         .visibility-btn:hover {
             background-color: rgba(0, 0, 0, 0.1);
         }

@@ -3751,9 +3751,11 @@ function createTreeItem(displayName, itemType, itemIdForBackend, fullItemData, a
     // --- Add a container for the name and buttons ---
 
     // Conditionally create the buttons based on the flags
+    const editableInLists = ['solid', 'define', 'material', 'element', 'isotope', 'logical_volume', 'assembly', 'optical_surface', 'skin_surface', 'border_surface'];
     const controlsHTML = `
         <div class="item-controls">
             ${(itemType === 'physical_volume' && !hideVisibilityButton) ? '<button class="visibility-btn" title="Toggle Visibility">👁️</button>' : ''}
+            ${editableInLists.includes(itemType) ? '<button class="edit-item-btn" title="Edit Item">✏️</button>' : ''}
             ${!hideDeleteButton ? '<button class="delete-item-btn" title="Delete Item">×</button>' : ''}
         </div>
     `;
@@ -3892,6 +3894,25 @@ function createTreeItem(displayName, itemType, itemIdForBackend, fullItemData, a
                 // We need to tell main.js *what* to delete
                 callbacks.onDeleteSpecificItemClicked(itemType, itemIdForBackend, displayName);
             }
+        });
+    }
+
+    // Listener for the edit button
+    const editBtn = item.querySelector('.edit-item-btn');
+    if (editBtn) {
+        editBtn.addEventListener('click', (event) => {
+            event.stopPropagation(); // Prevent the item from being selected
+            // Call the same handler as double-click
+            if (itemType === 'solid') callbacks.onEditSolidClicked(item.appData);
+            else if (itemType === 'define') callbacks.onEditDefineClicked(item.appData);
+            else if (itemType === 'material') callbacks.onEditMaterialClicked(item.appData);
+            else if (itemType === 'element') callbacks.onEditElementClicked(item.appData);
+            else if (itemType === 'isotope') callbacks.onEditIsotopeClicked(item.appData);
+            else if (itemType === 'logical_volume') callbacks.onEditLVClicked(item.appData);
+            else if (itemType === 'assembly') callbacks.onEditAssemblyClicked(item.appData);
+            else if (itemType === 'optical_surface') callbacks.onEditOpticalSurfaceClicked(item.appData);
+            else if (itemType === 'skin_surface') callbacks.onEditSkinSurfaceClicked(item.appData);
+            else if (itemType === 'border_surface') callbacks.onEditBorderSurfaceClicked(item.appData);
         });
     }
 

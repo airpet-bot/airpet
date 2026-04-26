@@ -9313,7 +9313,122 @@ class ProjectManager:
                         )
                         return self._preflight_finalize(report)
 
+        # 7) Scoring mesh overlap with sensitive volumes.
+        self._preflight_check_scoring_mesh_overlap(state, report)
+
         return self._preflight_finalize(report)
+
+    def _compute_mesh_aabb(self, mesh):
+        """Compute AABB for a scoring mesh in world coordinates."""
+        geom = mesh.get('geometry', {}) if isinstance(mesh.get('geometry'), dict) else {}
+        mesh_type = str(mesh.get('mesh_type', '')).lower()
+
+        if mesh_type == 'box':
+            center = geom.get('center_mm', {})
+            size = geom.get('size_mm', {})
+            if not isinstance(center, dict) or not isinstance(size, dict):
+                return None
+            try:
+                cx, cy, cz = float(center.get('x', 0)), float(center.get('y', 0)), float(center.get('z', 0))
+                sx, sy, sz = float(size.get('x', 0)), float(size.get('y', 0)), float(size.get('z', 0))
+            except (ValueError, TypeError):
+                return None
+            if not all(np.isfinite(v) and v > 0 for v in (sx, sy, sz)):
+                return None
+            return {
+                'min': np.array([cx - sx / 2, cy - sy / 2, cz - sz / 2]),
+                'max': np.array([cx + sx / 2, cy + sy / 2, cz + sz / 2]),
+            }
+        elif mesh_type in ('cylinder', 'rcal'):
+            center = geom.get('center_mm', {})
+            if not isinstance(center, dict):
+                return None
+            try:
+                cx, cy, cz = float(center.get('x', 0)), float(center.get('y', 0)), float(center.get('z', 0))
+                rmax = float(geom.get('rmax_mm', geom.get('rmax', 0)))
+                zhalf = float(geom.get('zhalf_mm', geom.get('zhalf', geom.get('z', 0))))
+            except (ValueError, TypeError):
+                return None
+            if not (np.isfinite(rmax) and rmax > 0 and np.isfinite(zhalf) and zhalf > 0):
+                return None
+            return {
+                'min': np.array([cx - rmax, cy - rmax, cz - zhalf]),
+                'max': np.array([cx + rmax, cy + rmax, cz + zhalf]),
+            }
+        return None
+
+    def _collect_sensitive_placement_aabbs(self, state):
+        """Collect AABBs for all placements of sensitive logical volumes."""
+        sensitive_lv_names = {
+            lv.name for lv in state.logical_volumes.values() if lv.is_sensitive
+        }
+        if not sensitive_lv_names:
+            return []
+
+        aabbs = []
+
+        def collect_from_placements(placements):
+            for pv in placements:
+                placed_ref = str(getattr(pv, 'volume_ref', '') or '').strip()
+                if placed_ref in sensitive_lv_names:
+                    box = self._compute_pv_aabb(pv)
+                    if box is not None:
+                        aabbs.append(box)
+                elif placed_ref in state.assemblies:
+                    asm = state.assemblies.get(placed_ref)
+                    if asm and asm.placements:
+                        collect_from_placements(asm.placements)
+
+        for lv in state.logical_volumes.values():
+            if lv.content_type == 'physvol' and lv.content:
+                collect_from_placements(lv.content)
+
+        for asm in state.assemblies.values():
+            if asm.placements:
+                collect_from_placements(asm.placements)
+
+        return aabbs
+
+    def _preflight_check_scoring_mesh_overlap(self, state, report):
+        """Check that each scoring mesh overlaps at least one sensitive volume."""
+        scoring = state.scoring
+        if not scoring or not scoring.scoring_meshes:
+            return
+
+        sensitive_aabbs = self._collect_sensitive_placement_aabbs(state)
+        if not sensitive_aabbs:
+            return
+
+        for mesh in scoring.scoring_meshes:
+            if not mesh.get('enabled', True):
+                continue
+
+            mesh_aabb = self._compute_mesh_aabb(mesh)
+            if mesh_aabb is None:
+                continue
+
+            mesh_id = mesh.get('mesh_id', '')
+            mesh_name = mesh.get('name', mesh_id)
+
+            overlaps = False
+            for sens_box in sensitive_aabbs:
+                ivol = self._aabb_intersection_volume(mesh_aabb, sens_box)
+                if ivol > 0.0:
+                    overlaps = True
+                    break
+
+            if not overlaps:
+                self._preflight_add_issue(
+                    report,
+                    'warning',
+                    'scoring_mesh_no_sensitive_overlap',
+                    (
+                        f"Scoring mesh '{mesh_name}' does not overlap any sensitive volume placement. "
+                        f"Simulation will produce zero hits for this mesh."
+                    ),
+                    object_refs=[mesh_id],
+                    hint='Adjust the mesh position/size to cover a sensitive detector, or mark the target volume as sensitive.',
+                )
 
 
     def _collect_preflight_scope_refs(self, scope_type, scope_name):
