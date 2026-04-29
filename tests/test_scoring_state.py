@@ -5,7 +5,7 @@ import sys
 import types
 
 from src.expression_evaluator import ExpressionEvaluator
-from src.geometry_types import GeometryState, ScoringState
+from src.geometry_types import GeometryState, ScoringState, ParticleSource
 
 
 class _DummyOccObject:
@@ -507,3 +507,133 @@ def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest
     assert len(run_manifest_summary["comparison_keys"]["scoring_signature"]) == 64
     assert len(run_manifest_summary["comparison_keys"]["run_manifest_signature"]) == 64
     assert len(run_manifest_summary["comparison_keys"]["execution_signature"]) == 64
+
+
+def test_generate_macro_emits_mapped_scoring_quantities_and_fallback(tmp_path):
+    """Verify that tally request quantities map to correct /score/quantity/ commands."""
+    pm = ProjectManager(ExpressionEvaluator())
+
+    scoring_payload = {
+        "scoring_meshes": [
+            {
+                "mesh_id": "mesh_a",
+                "name": "mesh_a",
+                "geometry": {"size_mm": {"x": 20, "y": 20, "z": 20}},
+                "bins": {"x": 10, "y": 10, "z": 10},
+            },
+            {
+                "mesh_id": "mesh_b",
+                "name": "mesh_b",
+                "geometry": {"size_mm": {"x": 10, "y": 10, "z": 10}},
+                "bins": {"x": 5, "y": 5, "z": 5},
+            },
+            {
+                "mesh_id": "mesh_c",
+                "name": "mesh_c",
+                "geometry": {"size_mm": {"x": 30, "y": 30, "z": 30}},
+                "bins": {"x": 3, "y": 3, "z": 3},
+            },
+        ],
+        "tally_requests": [
+            {
+                "tally_id": "t1",
+                "name": "edep_a",
+                "mesh_ref": {"mesh_id": "mesh_a"},
+                "quantity": "energy_deposit",
+            },
+            {
+                "tally_id": "t2",
+                "name": "dose_a",
+                "mesh_ref": {"mesh_id": "mesh_a"},
+                "quantity": "dose_deposit",
+            },
+                {
+                    "tally_id": "t3",
+                    "name": "flux_b",
+                    "mesh_ref": {"name": "mesh_b"},
+                    "quantity": "cell_flux",
+                },
+            {
+                "tally_id": "t4",
+                "name": "track_b",
+                "mesh_ref": {"mesh_id": "mesh_b"},
+                "quantity": "track_length",
+            },
+            {
+                "tally_id": "t5",
+                "name": "disabled_tally",
+                "enabled": False,
+                "mesh_ref": {"mesh_id": "mesh_a"},
+                "quantity": "n_of_step",
+            },
+            # mesh_c intentionally has no tallies to test fallback
+        ],
+    }
+
+    state = GeometryState()
+    state.scoring = ScoringState.from_dict(scoring_payload)
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(json.dumps(state.to_dict()), encoding="utf-8")
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "qty-job", {}, str(tmp_path), str(tmp_path), str(version_dir)
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    # mesh_a: two enabled tallies (energy_deposit, dose_deposit)
+    assert "/score/quantity/energyDeposit edep_a" in macro_text
+    assert "/score/quantity/doseDeposit dose_a" in macro_text
+    assert "/score/quantity/nOfStep" not in macro_text  # disabled tally skipped
+
+    # mesh_b: two enabled tallies referenced by mesh_id and mesh_name
+    assert "/score/quantity/cellFlux flux_b" in macro_text
+    assert "/score/quantity/trackLength track_b" in macro_text
+
+    # mesh_c: no tallies -> fallback to default energyDeposit
+    assert "/score/quantity/energyDeposit mesh_c_eDep" in macro_text
+
+
+def test_generate_macro_uses_version_state_not_current_state(tmp_path):
+    """Verify that generate_macro_file respects the saved version state for
+    sensitive detectors and active sources, not the current in-memory state."""
+    pm = ProjectManager(ExpressionEvaluator())
+    pm.create_empty_project()
+
+    # Current state: no sensitive detectors, no active sources
+    assert not any(lv.is_sensitive for lv in pm.current_geometry_state.logical_volumes.values())
+    assert len(pm.current_geometry_state.active_source_ids) == 0
+
+    # Build a version state with a sensitive detector and an active source
+    version_state = GeometryState.from_dict(pm.current_geometry_state.to_dict())
+    version_state.logical_volumes["box_LV"].is_sensitive = True
+    src = ParticleSource(
+        name="gamma_source",
+        gps_commands={"particle": "gamma", "energy": "100"},
+    )
+    src.id = "src_1"
+    src._evaluated_position = {"x": 0, "y": 0, "z": 0}
+    src._evaluated_rotation = {"x": 0, "y": 0, "z": 0}
+    version_state.sources = {"src_1": src}
+    version_state.active_source_ids = ["src_1"]
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(
+        json.dumps(version_state.to_dict()), encoding="utf-8"
+    )
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "version-state-job", {}, str(tmp_path), str(tmp_path), str(version_dir)
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    # Sensitive detector and source must come from the version state
+    assert "/g4pet/detector/addSD box_LV box_LV_SD" in macro_text
+    assert "/gps/particle gamma" in macro_text
+    assert "/gps/energy 100 keV" in macro_text

@@ -9831,7 +9831,7 @@ class ProjectManager:
 
         # --- Configure Sensitive Detectors ---
         macro_content.append("# --- Sensitive Detectors ---")
-        sensitive_lvs = [lv for lv in self.current_geometry_state.logical_volumes.values() if lv.is_sensitive]
+        sensitive_lvs = [lv for lv in temp_state.logical_volumes.values() if lv.is_sensitive]
 
         if not sensitive_lvs:
             macro_content.append("# No sensitive detectors defined.")
@@ -9852,6 +9852,34 @@ class ProjectManager:
             m for m in (temp_state.scoring.scoring_meshes or [])
             if m.get("enabled", True)
         ]
+        enabled_tallies = [
+            t for t in (temp_state.scoring.tally_requests or [])
+            if t.get("enabled", True)
+        ]
+        _G4_QUANTITY_MAP = {
+            "cell_flux": "cellFlux",
+            "dose_deposit": "doseDeposit",
+            "energy_deposit": "energyDeposit",
+            "n_of_step": "nOfStep",
+            "n_of_track": "nOfTrack",
+            "passage_cell_flux": "passageCellFlux",
+            "track_length": "trackLength",
+        }
+        tally_by_mesh = {}
+        for tally in enabled_tallies:
+            mesh_ref = tally.get("mesh_ref", {})
+            mesh_id = mesh_ref.get("mesh_id")
+            mesh_name_ref = mesh_ref.get("name")
+            for m in enabled_scoring_meshes:
+                matched = False
+                if mesh_id and m.get("mesh_id") == mesh_id:
+                    matched = True
+                elif mesh_name_ref and m.get("name") == mesh_name_ref:
+                    matched = True
+                if matched:
+                    tally_by_mesh.setdefault(m.get("mesh_id"), []).append(tally)
+                    break
+
         if not enabled_scoring_meshes:
             macro_content.append("# No scoring meshes defined.")
         else:
@@ -9878,7 +9906,19 @@ class ProjectManager:
                     f"/score/mesh/translate/xyz {cx:.12g} {cy:.12g} {cz:.12g} mm"
                 )
                 macro_content.append(f"/score/mesh/nBin {nx} {ny} {nz}")
-                macro_content.append(f"/score/quantity/energyDeposit {mesh_name}_eDep")
+
+                mesh_tallies = tally_by_mesh.get(mesh.get("mesh_id"), [])
+                if mesh_tallies:
+                    for tally in mesh_tallies:
+                        qty = tally.get("quantity", "energy_deposit")
+                        g4_cmd = _G4_QUANTITY_MAP.get(qty, "energyDeposit")
+                        tally_name = tally.get("name", f"{mesh_name}_{qty}")
+                        macro_content.append(f"/score/quantity/{g4_cmd} {tally_name}")
+                else:
+                    macro_content.append(
+                        f"/score/quantity/energyDeposit {mesh_name}_eDep"
+                    )
+
                 macro_content.append("/score/close")
                 macro_content.append("")
 
@@ -9911,12 +9951,12 @@ class ProjectManager:
         macro_content.append("")
 
         # --- Configure Source (using GPS) ---
-        active_ids = self.current_geometry_state.active_source_ids
+        active_ids = temp_state.active_source_ids
         active_sources = []
-        
+
         # Collect source objects
         for s_id in active_ids:
-            for source in self.current_geometry_state.sources.values():
+            for source in temp_state.sources.values():
                 if source.id == s_id:
                     active_sources.append(source)
                     break
