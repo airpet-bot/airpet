@@ -13,6 +13,39 @@ from src.project_manager import ProjectManager
 def _attrs_to_xml(attrs):
     return " ".join(f'{key}="{value}"' for key, value in attrs.items())
 
+def test_sensitive_detector_auxinfo_round_trip():
+    state = GeometryState()
+
+    lv_world = LogicalVolume("World", "solid_world", "G4_Galactic")
+    lv_box = LogicalVolume("Box_LV", "solid_box", "G4_Si", is_sensitive=True)
+
+    state.add_logical_volume(lv_world)
+    state.add_logical_volume(lv_box)
+    state.world_volume_ref = "World"
+
+    # Place Box inside World
+    pv = PhysicalVolumePlacement("box_PV", "Box_LV")
+    lv_world.add_child(pv)
+
+    writer = GDMLWriter(state)
+    gdml_str = writer.get_gdml_string()
+
+    # Verify the auxiliary tag is emitted for the sensitive LV
+    assert '<auxiliary auxtype="SensDet" auxvalue="Box_LV"/>' in gdml_str
+    # Verify the non-sensitive LV has no auxiliary tag
+    world_vol_start = gdml_str.find('<volume name="World">')
+    world_vol_end = gdml_str.find('</volume>', world_vol_start) + len('</volume>')
+    world_vol_chunk = gdml_str[world_vol_start:world_vol_end]
+    assert '<auxiliary' not in world_vol_chunk
+
+    # Parse the GDML back and verify is_sensitive survives the round-trip
+    parser = GDMLParser()
+    roundtrip_state = parser.parse_gdml_string(gdml_str)
+
+    assert roundtrip_state.logical_volumes["Box_LV"].is_sensitive is True
+    assert roundtrip_state.logical_volumes["World"].is_sensitive is False
+
+
 def test_topological_sort():
     state = GeometryState()
     
@@ -851,3 +884,47 @@ def test_parameterised_polycone_and_polyhedra_dimensions_round_trip(
     assert roundtrip_param_set.dimensions_type == dimensions_tag
     assert roundtrip_param_set.dimensions == expected_dimensions
     assert roundtrip_param_set._evaluated_dimensions == expected_evaluated_dimensions
+
+
+def test_gdml_sensitive_detector_round_trip():
+    """Sensitive-detector assignments must survive GDML export and re-import."""
+    state = GeometryState()
+
+    # Simple solids
+    from src.geometry_types import Solid
+    state.add_solid(Solid("world_solid", "box", {"x": "100", "y": "100", "z": "100"}))
+    state.add_solid(Solid("det_solid", "box", {"x": "10", "y": "10", "z": "10"}))
+
+    # Materials (NIST names only)
+    state.add_material(Material("G4_Galactic", mat_type="nist"))
+    state.add_material(Material("G4_Si", mat_type="nist"))
+
+    # Logical volumes: one sensitive, one not
+    lv_world = LogicalVolume("world_lv", "world_solid", "G4_Galactic", is_sensitive=False)
+    lv_det = LogicalVolume("det_lv", "det_solid", "G4_Si", is_sensitive=True)
+    state.add_logical_volume(lv_world)
+    state.add_logical_volume(lv_det)
+    state.world_volume_ref = "world_lv"
+
+    # Place det inside world
+    pv = PhysicalVolumePlacement("det_pv", "det_lv")
+    lv_world.add_child(pv)
+
+    # Export to GDML
+    writer = GDMLWriter(state)
+    gdml_str = writer.get_gdml_string()
+
+    # Verify the auxiliary tag appears exactly once for the sensitive LV
+    assert gdml_str.count('<auxiliary auxtype="SensDet" auxvalue=""/>') == 1
+    # Verify it is inside the det_lv volume block (simple substring check)
+    det_volume_start = gdml_str.find('<volume name="det_lv">')
+    det_volume_end = gdml_str.find('</volume>', det_volume_start)
+    det_volume_block = gdml_str[det_volume_start:det_volume_end + len('</volume>')]
+    assert '<auxiliary auxtype="SensDet" auxvalue=""/>' in det_volume_block
+
+    # Parse back
+    parser = GDMLParser()
+    imported_state = parser.parse_gdml_string(gdml_str)
+
+    assert imported_state.logical_volumes["world_lv"].is_sensitive is False
+    assert imported_state.logical_volumes["det_lv"].is_sensitive is True

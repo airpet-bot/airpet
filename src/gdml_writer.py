@@ -667,7 +667,13 @@ class GDMLWriter:
                 lv_el = ET.SubElement(structure_el, "volume", {"name": struct_obj.name})
                 ET.SubElement(lv_el, "materialref", {"ref": struct_obj.material_ref})
                 ET.SubElement(lv_el, "solidref", {"ref": struct_obj.solid_ref})
-                
+
+                if struct_obj.is_sensitive:
+                    ET.SubElement(lv_el, "auxiliary", {
+                        "auxtype": "SensDet",
+                        "auxvalue": struct_obj.name
+                    })
+
                 if struct_obj.content_type == 'physvol':
                     for pv_obj in struct_obj.content:
                         self._write_physvol_element(lv_el, pv_obj)
@@ -677,6 +683,9 @@ class GDMLWriter:
                     self._write_replicavol(lv_el, struct_obj.content)
                 elif struct_obj.content_type == 'parameterised':
                     self._write_paramvol(lv_el, struct_obj.content)
+
+                if struct_obj.is_sensitive:
+                    ET.SubElement(lv_el, "auxiliary", {"auxtype": "SensDet", "auxvalue": ""})
 
         # Finally, write all surface links
         for name, surf in self.geometry_state.skin_surfaces.items():

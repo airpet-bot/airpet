@@ -868,6 +868,11 @@ class GDMLParser:
         # Avoid re-defining if it already exists (can happen with loops)
         if not self.geometry_state.get_logical_volume(lv_name):
             lv = LogicalVolume(lv_name, solid_ref, material_obj.name)
+            # Check for sensitive-detector auxiliary tags
+            for aux_el in vol_el.findall('auxiliary'):
+                if aux_el.get('auxtype') == 'SensDet':
+                    lv.is_sensitive = True
+                    break
             self.geometry_state.add_logical_volume(lv)
 
     def _parse_single_assembly(self, asm_el):
