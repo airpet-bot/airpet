@@ -9846,6 +9846,44 @@ class ProjectManager:
         macro_content.append("/run/initialize")
         macro_content.append("")
 
+        # --- Scoring Meshes ---
+        macro_content.append("# --- Scoring Meshes ---")
+        enabled_scoring_meshes = [
+            m for m in (temp_state.scoring.scoring_meshes or [])
+            if m.get("enabled", True)
+        ]
+        if not enabled_scoring_meshes:
+            macro_content.append("# No scoring meshes defined.")
+        else:
+            for mesh in enabled_scoring_meshes:
+                mesh_name = mesh.get("name", mesh.get("mesh_id", "mesh"))
+                geo = mesh.get("geometry", {})
+                center = geo.get("center_mm", {})
+                size = geo.get("size_mm", {})
+                bins = mesh.get("bins", {})
+                hx = float(size.get("x", 10.0)) / 2.0
+                hy = float(size.get("y", 10.0)) / 2.0
+                hz = float(size.get("z", 10.0)) / 2.0
+                cx = float(center.get("x", 0.0))
+                cy = float(center.get("y", 0.0))
+                cz = float(center.get("z", 0.0))
+                nx = int(bins.get("x", 10))
+                ny = int(bins.get("y", 10))
+                nz = int(bins.get("z", 10))
+                macro_content.append(f"/score/create/boxMesh {mesh_name}")
+                macro_content.append(
+                    f"/score/mesh/boxSize {hx:.12g} {hy:.12g} {hz:.12g} mm"
+                )
+                macro_content.append(
+                    f"/score/mesh/translate/xyz {cx:.12g} {cy:.12g} {cz:.12g} mm"
+                )
+                macro_content.append(f"/score/mesh/nBin {nx} {ny} {nz}")
+                macro_content.append(f"/score/quantity/energyDeposit {mesh_name}_eDep")
+                macro_content.append("/score/close")
+                macro_content.append("")
+
+        macro_content.append("")
+
         # --- Add production cuts ---
         macro_content.append("# --- Physics Cuts for Performance ---")
         production_cut = str(resolved_run_manifest.get('production_cut') or '1.0 mm').strip()

@@ -32,9 +32,7 @@
 
 ## Current NEXT Task
 
-`G4CAP-003`: Emit `/score/create/boxMesh` and `/score/quantity/energyDeposit`
-macro commands for enabled scoring meshes, and instantiate `G4ScoringManager`
-in the C++ main.
+Backlog exhausted. No remaining NEXT or PENDING tasks.
 
 ## Backlog
 
@@ -52,7 +50,7 @@ in the C++ main.
 | G4DISC-001 | P0 | Discovery | Run a bounded Geant4 capability-discovery audit and seed the next evidence-backed `G4CAP-*` backlog tasks | DONE | Inspected `ref/geant4-v11.3.2/examples/extended/persistency/gdml/G04`, `ref/geant4-v11.3.2/source/physics_lists/lists/src/`, and `ref/geant4-v11.3.2/examples/extended/runAndEvent/RE03`. Seeded three evidence-backed tasks. |
 | G4CAP-001 | P1 | GDML | Emit and parse GDML `<auxiliary auxtype="SensDet">` tags so sensitive-detector assignments survive GDML round-trips | DONE | `src/gdml_writer.py` now emits `<auxiliary auxtype="SensDet" auxvalue=""/>` for sensitive LVs; `src/gdml_parser.py` parses it and sets `lv.is_sensitive = True`. Added `test_gdml_sensitive_detector_round_trip` in `tests/test_gdml.py`. |
 | G4CAP-002 | P2 | Physics Lists | Expand the physics-list dropdown to include high-value missing lists (QBBC, QGSP_BERT_HP, QGSP_BIC, FTFP_BERT_ATL, QGSP_FTFP_BERT) | DONE | Added 5 new `<option>` values to `#simPhysicsList` in `templates/index.html`. Added `tests/test_physics_list_options.py` verifying each new list is accepted by `get_geant4_env` and forwarded to `G4PHYSICSLIST`; also guards existing lists and the omission case. |
-| G4CAP-003 | P2 | Scoring | Emit `/score/create/boxMesh` and `/score/quantity/energyDeposit` macro commands for enabled scoring meshes, and instantiate `G4ScoringManager` in the C++ main | NEXT | Evidence: RE03 example demonstrates command-based scoring meshes; AIRPET defines meshes in UI/data model but `generate_macro_file` never emits `/score/` commands and `geant4/src` lacks `G4ScoringManager`. Validation: backend test verifying macro content; C++ compile check. |
+| G4CAP-003 | P2 | Scoring | Emit `/score/create/boxMesh` and `/score/quantity/energyDeposit` macro commands for enabled scoring meshes, and instantiate `G4ScoringManager` in the C++ main | DONE | `src/project_manager.py` `generate_macro_file` now emits `/score/create/boxMesh`, `/score/mesh/boxSize`, `/score/mesh/translate/xyz`, `/score/mesh/nBin`, `/score/quantity/energyDeposit`, and `/score/close` for each enabled scoring mesh. `geant4/main.cc` now instantiates `G4ScoringManager`. Added `tests/test_scoring_macro_emission.py` with 2 tests verifying enabled mesh emission and disabled mesh omission. C++ compiles and links successfully. |
 
 ## Work Log
 
@@ -74,3 +72,4 @@ in the C++ main.
 | 2026-04-29 | G4DISC-001 capability discovery | DONE | Inspected Geant4 `examples/extended/persistency/gdml/G04` (auxiliary SD info), `source/physics_lists/lists/src/` (~20 physics lists vs AIRPET's 5), and `examples/extended/runAndEvent/RE03` (command-based scoring meshes). Compared against AIRPET `src/gdml_writer.py`, `src/gdml_parser.py`, `templates/index.html`, `src/project_manager.py`, and `geant4/src/`. Found three concrete gaps and seeded `G4CAP-001` (GDML SD auxinfo), `G4CAP-002` (physics list expansion), and `G4CAP-003` (scoring mesh macro emission). Marked `G4CAP-001` as NEXT. |
 | 2026-04-29 | G4CAP-001 GDML SD auxinfo round-trip | DONE | Updated `src/gdml_writer.py` to emit `<auxiliary auxtype="SensDet" auxvalue="{lv_name}"/>` inside `<volume>` for sensitive logical volumes. Updated `src/gdml_parser.py` to parse `<auxiliary auxtype="SensDet">` and set `lv.is_sensitive = True`. Added `test_gdml_sensitive_detector_round_trip` in `tests/test_gdml.py` verifying write, non-sensitive absence, and parse round-trip. Fixed duplicate auxiliary tag emission bug. All 31 tests in `tests/test_gdml.py` pass. Marked `G4CAP-002` as NEXT. |
 | 2026-04-29 | G4CAP-002 physics list expansion | DONE | Added QBBC, QGSP_BERT_HP, QGSP_BIC, FTFP_BERT_ATL, and QGSP_FTFP_BERT to `#simPhysicsList` in `templates/index.html`. Added `tests/test_physics_list_options.py` with 3 tests covering acceptance of all 5 new lists, preservation of existing lists, and omission behavior. All tests pass. Marked `G4CAP-003` as NEXT. |
+| 2026-04-29 | G4CAP-003 scoring mesh macro emission | DONE | Updated `src/project_manager.py` `generate_macro_file` to emit `/score/create/boxMesh`, `/score/mesh/boxSize`, `/score/mesh/translate/xyz`, `/score/mesh/nBin`, `/score/quantity/energyDeposit`, and `/score/close` for each enabled scoring mesh. Updated `geant4/main.cc` to instantiate `G4ScoringManager`. Added `tests/test_scoring_macro_emission.py` with 2 tests verifying enabled mesh emission and disabled mesh omission. C++ compiles and links successfully. Backlog exhausted. |
