@@ -9926,10 +9926,6 @@ class ProjectManager:
                     macro_content.append(
                         f"/score/quantity/energyDeposit {mesh_name}_eDep"
                     )
-                else:
-                    macro_content.append(
-                        f"/score/quantity/energyDeposit {mesh_name}_eDep"
-                    )
 
                 macro_content.append("/score/close")
                 macro_content.append("")
