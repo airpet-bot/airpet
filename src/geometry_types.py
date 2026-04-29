@@ -67,9 +67,15 @@ _SUPPORTED_SCORING_TALLY_QUANTITIES = {
     "cell_flux",
     "dose_deposit",
     "energy_deposit",
+    "flat_surface_current",
+    "flat_surface_flux",
+    "n_of_collision",
+    "n_of_secondary",
     "n_of_step",
     "n_of_track",
     "passage_cell_flux",
+    "passage_track_length",
+    "population",
     "track_length",
 }
 

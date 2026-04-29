@@ -9860,9 +9860,15 @@ class ProjectManager:
             "cell_flux": "cellFlux",
             "dose_deposit": "doseDeposit",
             "energy_deposit": "energyDeposit",
+            "flat_surface_current": "flatSurfaceCurrent",
+            "flat_surface_flux": "flatSurfaceFlux",
+            "n_of_collision": "nOfCollision",
+            "n_of_secondary": "nOfSecondary",
             "n_of_step": "nOfStep",
             "n_of_track": "nOfTrack",
             "passage_cell_flux": "passageCellFlux",
+            "passage_track_length": "passageTrackLength",
+            "population": "population",
             "track_length": "trackLength",
         }
         tally_by_mesh = {}

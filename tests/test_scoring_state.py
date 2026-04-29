@@ -441,7 +441,21 @@ def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest
     assert metadata["scoring_summary"] == state.scoring.to_summary_dict()
     assert metadata["scoring_runtime"] == {
         "schema_version": 1,
-        "supported_quantities": ["energy_deposit", "n_of_step"],
+        "supported_quantities": [
+            "cell_flux",
+            "dose_deposit",
+            "energy_deposit",
+            "flat_surface_current",
+            "flat_surface_flux",
+            "n_of_collision",
+            "n_of_secondary",
+            "n_of_step",
+            "n_of_track",
+            "passage_cell_flux",
+            "passage_track_length",
+            "population",
+            "track_length",
+        ],
         "artifact_request_count": 1,
         "skipped_tally_count": 0,
         "requires_hits": True,
@@ -472,7 +486,21 @@ def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest
     assert run_manifest_summary["environment"]["summary"] == state.environment.to_summary_dict()
     assert run_manifest_summary["scoring"]["summary"] == state.scoring.to_summary_dict()
     assert run_manifest_summary["scoring"]["runtime"] == {
-        "supported_quantities": ["energy_deposit", "n_of_step"],
+        "supported_quantities": [
+            "cell_flux",
+            "dose_deposit",
+            "energy_deposit",
+            "flat_surface_current",
+            "flat_surface_flux",
+            "n_of_collision",
+            "n_of_secondary",
+            "n_of_step",
+            "n_of_track",
+            "passage_cell_flux",
+            "passage_track_length",
+            "population",
+            "track_length",
+        ],
         "artifact_request_count": 1,
         "skipped_tally_count": 0,
         "requires_hits": True,

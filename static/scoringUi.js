@@ -9,6 +9,12 @@ export const SUPPORTED_SCORING_TALLY_QUANTITIES = [
     'track_length',
     'n_of_step',
     'n_of_track',
+    'n_of_secondary',
+    'passage_track_length',
+    'flat_surface_current',
+    'flat_surface_flux',
+    'n_of_collision',
+    'population',
 ];
 
 export const RUNTIME_READY_SCORING_QUANTITIES = ['energy_deposit', 'n_of_step'];

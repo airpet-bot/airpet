@@ -295,3 +295,78 @@ def test_generate_macro_skips_scoring_section_when_no_meshes(tmp_path):
     assert "# --- Scoring Meshes ---" in macro_text
     assert "# No scoring meshes defined." in macro_text
     assert "/score/create/boxMesh" not in macro_text
+
+
+def test_generate_macro_maps_new_quantities_to_g4_commands(tmp_path):
+    """Verify that newly added tally quantities map to correct /score/quantity/ commands."""
+    pm = ProjectManager(ExpressionEvaluator())
+
+    scoring_payload = {
+        "scoring_meshes": [
+            {
+                "mesh_id": "mesh_new_qty",
+                "name": "new_qty_mesh",
+                "geometry": {"size_mm": {"x": 20, "y": 20, "z": 20}},
+                "bins": {"x": 10, "y": 10, "z": 10},
+            }
+        ],
+        "tally_requests": [
+            {
+                "tally_id": "t_nOfSecondary",
+                "name": "nOfSecondary_tally",
+                "mesh_ref": {"mesh_id": "mesh_new_qty"},
+                "quantity": "n_of_secondary",
+            },
+            {
+                "tally_id": "t_passageTrackLength",
+                "name": "passageTrackLength_tally",
+                "mesh_ref": {"mesh_id": "mesh_new_qty"},
+                "quantity": "passage_track_length",
+            },
+            {
+                "tally_id": "t_flatSurfaceCurrent",
+                "name": "flatSurfaceCurrent_tally",
+                "mesh_ref": {"mesh_id": "mesh_new_qty"},
+                "quantity": "flat_surface_current",
+            },
+            {
+                "tally_id": "t_flatSurfaceFlux",
+                "name": "flatSurfaceFlux_tally",
+                "mesh_ref": {"mesh_id": "mesh_new_qty"},
+                "quantity": "flat_surface_flux",
+            },
+            {
+                "tally_id": "t_nOfCollision",
+                "name": "nOfCollision_tally",
+                "mesh_ref": {"mesh_id": "mesh_new_qty"},
+                "quantity": "n_of_collision",
+            },
+            {
+                "tally_id": "t_population",
+                "name": "population_tally",
+                "mesh_ref": {"mesh_id": "mesh_new_qty"},
+                "quantity": "population",
+            },
+        ],
+    }
+
+    state = GeometryState()
+    state.scoring = ScoringState.from_dict(scoring_payload)
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(json.dumps(state.to_dict()), encoding="utf-8")
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "new-qty-job", {}, str(tmp_path), str(tmp_path), str(version_dir)
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    assert "/score/quantity/nOfSecondary nOfSecondary_tally" in macro_text
+    assert "/score/quantity/passageTrackLength passageTrackLength_tally" in macro_text
+    assert "/score/quantity/flatSurfaceCurrent flatSurfaceCurrent_tally" in macro_text
+    assert "/score/quantity/flatSurfaceFlux flatSurfaceFlux_tally" in macro_text
+    assert "/score/quantity/nOfCollision nOfCollision_tally" in macro_text
+    assert "/score/quantity/population population_tally" in macro_text
