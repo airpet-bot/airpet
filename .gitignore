@@ -22,3 +22,23 @@ AI_GDML_REFINEMENTS_TRACKER.md
 TASKS.md
 .local-packages/
 
+# macOS system files
+.DS_Store
+
+# Playwright MCP logs and scratch artifacts
+.playwright-mcp/
+/test_*.yml
+/snapshot-*.md
+
+# Scratch GDML and local Geant4 notes
+geant4/example_geometry.gdml
+geant4/notes.txt
+
+# Verification output
+verification_run/
+
+# Machine-local reference and scratch folders
+ref/
+geom/
+crysp/
+
