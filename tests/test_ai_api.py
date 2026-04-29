@@ -7658,3 +7658,30 @@ def test_ai_tool_get_simulation_status_rejects_invalid_nonnegative_integer_args(
     finally:
         with SIMULATION_LOCK:
             SIMULATION_STATUS.pop(job_id, None)
+
+
+@pytest.mark.parametrize("physics_list", [
+    "QBBC",
+    "QGSP_BERT_HP",
+    "QGSP_BIC",
+    "FTFP_BERT_ATL",
+    "QGSP_FTFP_BERT",
+])
+def test_generate_macro_accepts_new_physics_lists(pm, physics_list, tmp_path):
+    """Verify that generate_macro_file accepts each newly added physics list."""
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text("{}", encoding="utf-8")
+
+    macro_path = pm.generate_macro_file(
+        f"job-{physics_list}",
+        {"events": 1, "physics_list": physics_list},
+        str(tmp_path),
+        str(tmp_path),
+        str(version_dir),
+    )
+    assert Path(macro_path).exists()
+
+    metadata_path = tmp_path / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["sim_options"]["physics_list"] == physics_list
