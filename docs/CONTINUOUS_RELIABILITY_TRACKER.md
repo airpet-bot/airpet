@@ -28,8 +28,12 @@
 
 ## Current NEXT Task
 
-`ACR-010`: Turn `docs/AI_MULTIMODAL_ARTIFACT_INTAKE.md` into a small spike plan with
-acceptance criteria and fixture needs.
+Backlog exhausted. All tasks from ACR-002 through ACR-010 are DONE. The loop should
+stop until the human operator seeds new tasks or promotes existing backlog items.
+
+If new work is needed, the spike plan in `docs/AI_MULTIMODAL_SPIKE_PLAN.md` contains
+ready-to-promote acceptance criteria and fixture needs for artifact-store route
+coverage and a Playwright end-to-end multimodal workflow.
 
 ## Backlog
 
@@ -43,7 +47,7 @@ acceptance criteria and fixture needs.
 | ACR-007 | P1 | Simulation UX | Improve simulation failure/warning surfacing and add regression coverage for nonfatal artifact warnings | DONE | Backend now distinguishes warnings from errors in stderr; frontend prefixes `[WARNING]` instead of `[ERROR]` for warning lines; status stays `Completed` when Geant4 succeeds with only nonfatal artifact warnings |
 | ACR-008 | P2 | Git Hygiene | Add or update local ignore guidance for Playwright logs, scratch GDML, verification output, and machine-local reference folders | DONE | `.gitignore` updated; added `tests/test_gitignore_hygiene.py` to prevent accidental removal of ignore patterns |
 | ACR-009 | P2 | AI Parity | Add one route-vs-AI parity workflow for a high-value operation covered by Playwright | DONE | Added `tests/test_route_ai_parity_detector_generators.py` covering tiled_sensor_array and channel_cut_array; both paths produce equivalent geometry state after normalizing volatile IDs |
-| ACR-010 | P2 | Multimodal Prep | Turn `docs/AI_MULTIMODAL_ARTIFACT_INTAKE.md` into a small spike plan with acceptance criteria and fixture needs | NEXT | Prep only; do not build multimodal intake in this loop unless promoted later |
+| ACR-010 | P2 | Multimodal Prep | Turn `docs/AI_MULTIMODAL_ARTIFACT_INTAKE.md` into a small spike plan with acceptance criteria and fixture needs | DONE | Created `docs/AI_MULTIMODAL_SPIKE_PLAN.md` with acceptance criteria for artifact store routes, extraction→planning→execution end-to-end, preflight cross-checks, parity reports, and Playwright coverage; enumerated fixture needs (upload files, extraction payloads, replay fixtures, UI sketch fixtures); identified test gaps (no artifact store route tests, no Playwright end-to-end). No code changes.
 
 ## Work Log
 
@@ -60,3 +64,4 @@ acceptance criteria and fixture needs.
 | 2026-04-29 | ACR-008 git ignore guidance | DONE | Updated `.gitignore` to ignore `.DS_Store`, `.playwright-mcp/`, root-level `test_*.yml` and `snapshot-*.md`, scratch GDML (`geant4/example_geometry.gdml`, `geant4/notes.txt`), `verification_run/`, and machine-local folders (`ref/`, `geom/`, `crysp/`). Verified `git status` no longer lists these artifacts. Next: ACR-009. |
 | 2026-04-29 | ACR-008 git ignore guidance (test follow-up) | DONE | Added `tests/test_gitignore_hygiene.py` with 8 assertions covering Playwright artifacts, scratch GDML, verification output, machine-local folders, and `.DS_Store`. All tests pass. Fixed tracker `Current NEXT Task` header to ACR-009. Next: ACR-009. |
 | 2026-04-29 | ACR-009 route-vs-AI parity | DONE | Added `tests/test_route_ai_parity_detector_generators.py` with two parity tests: `test_route_vs_ai_parity_tiled_sensor_array` and `test_route_vs_ai_parity_channel_cut_array`. Each test verifies that the direct Flask route (`/api/detector_feature_generators/upsert`) and the AI tool dispatch (`manage_detector_feature_generator`) produce equivalent geometry state. Comparison normalizes volatile object-ref `id` fields to focus on functional parity. All tests pass. Next: ACR-010. |
+| 2026-04-29 | ACR-010 multimodal spike plan | DONE | Created `docs/AI_MULTIMODAL_SPIKE_PLAN.md` distilling `docs/AI_MULTIMODAL_ARTIFACT_INTAKE.md` into actionable acceptance criteria (artifact store routes, extraction→planning→execution, preflight cross-checks, parity reports, Playwright smoke) and enumerated fixture needs (upload files, extraction payloads, replay fixtures, UI sketch fixtures). Identified current test gaps: no artifact store route tests and no Playwright end-to-end coverage. No code changes. Backlog exhausted.
