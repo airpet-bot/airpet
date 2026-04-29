@@ -28,8 +28,8 @@
 
 ## Current NEXT Task
 
-`ACR-008`: Add or update local ignore guidance for Playwright logs, scratch GDML,
-verification output, and machine-local reference folders.
+`ACR-009`: Add one route-vs-AI parity workflow for a high-value operation covered
+by Playwright.
 
 ## Backlog
 
@@ -41,7 +41,7 @@ verification output, and machine-local reference folders.
 | ACR-005 | P1 | Detector Generators | Add a Playwright create/undo/reload workflow for tiled sensor arrays and one boolean-cut generator | DONE | Verify hierarchy, renderer, Solids panel, and stale-object cleanup |
 | ACR-006 | P1 | CAD | Add a compact CAD import/reimport browser workflow using small STEP fixtures | DONE | Verify the CAD imports panel appears only when relevant and does not break narrow sidebars |
 | ACR-007 | P1 | Simulation UX | Improve simulation failure/warning surfacing and add regression coverage for nonfatal artifact warnings | DONE | Backend now distinguishes warnings from errors in stderr; frontend prefixes `[WARNING]` instead of `[ERROR]` for warning lines; status stays `Completed` when Geant4 succeeds with only nonfatal artifact warnings |
-| ACR-008 | P2 | Git Hygiene | Add or update local ignore guidance for Playwright logs, scratch GDML, verification output, and machine-local reference folders | DONE | `.gitignore` updated with `.DS_Store`, `.playwright-mcp/`, `/test_*.yml`, `/snapshot-*.md`, `geant4/example_geometry.gdml`, `geant4/notes.txt`, `verification_run/`, `ref/`, `geom/`, `crysp/` |
+| ACR-008 | P2 | Git Hygiene | Add or update local ignore guidance for Playwright logs, scratch GDML, verification output, and machine-local reference folders | DONE | `.gitignore` updated; added `tests/test_gitignore_hygiene.py` to prevent accidental removal of ignore patterns |
 | ACR-009 | P2 | AI Parity | Add one route-vs-AI parity workflow for a high-value operation covered by Playwright | NEXT | Prefer scoring or generator workflows |
 | ACR-010 | P2 | Multimodal Prep | Turn `docs/AI_MULTIMODAL_ARTIFACT_INTAKE.md` into a small spike plan with acceptance criteria and fixture needs | PENDING | Prep only; do not build multimodal intake in this loop unless promoted later |
 
@@ -58,3 +58,4 @@ verification output, and machine-local reference folders.
 | 2026-04-29 | ACR-006 CAD import/reimport | DONE | Added `tests/test_cad_import_reimport.py` which creates a new geometry, verifies the CAD Imports accordion is hidden initially, imports `tests/fixtures/step/corpus/test_box.step`, verifies the panel appears with the import record and Reimport button, reimports `test_box_revised.step` via the panel reimport flow, verifies the record updates to the revised filename, and confirms other sidebar accordions remain functional with zero uncaught JS errors. Test passes in ~14s. Next: ACR-007. |
 | 2026-04-29 | ACR-007 simulation warning surfacing | DONE | Updated `_build_simulation_log_payload` in `app.py` to treat stderr lines starting with `Warning:` as warnings (not errors), adding `has_warnings` to the log summary. Updated `pollSimStatus` in `static/main.js` to prefix `[WARNING]` instead of `[ERROR]` for warning lines. Added `test_simulation_status_api_distinguishes_warnings_from_errors` and `test_simulation_status_api_mixed_warnings_and_errors` to `tests/test_simulation_status_api.py`. All tests pass. Next: ACR-008. |
 | 2026-04-29 | ACR-008 git ignore guidance | DONE | Updated `.gitignore` to ignore `.DS_Store`, `.playwright-mcp/`, root-level `test_*.yml` and `snapshot-*.md`, scratch GDML (`geant4/example_geometry.gdml`, `geant4/notes.txt`), `verification_run/`, and machine-local folders (`ref/`, `geom/`, `crysp/`). Verified `git status` no longer lists these artifacts. Next: ACR-009. |
+| 2026-04-29 | ACR-008 git ignore guidance (test follow-up) | DONE | Added `tests/test_gitignore_hygiene.py` with 8 assertions covering Playwright artifacts, scratch GDML, verification output, machine-local folders, and `.DS_Store`. All tests pass. Fixed tracker `Current NEXT Task` header to ACR-009. Next: ACR-009. |
