@@ -30,7 +30,8 @@ def test_sensitive_detector_auxinfo_round_trip():
     writer = GDMLWriter(state)
     gdml_str = writer.get_gdml_string()
 
-    # Verify the auxiliary tag is emitted for the sensitive LV
+    # Verify exactly one auxiliary tag is emitted for the sensitive LV
+    assert gdml_str.count('<auxiliary auxtype="SensDet"') == 1
     assert '<auxiliary auxtype="SensDet" auxvalue="Box_LV"/>' in gdml_str
     # Verify the non-sensitive LV has no auxiliary tag
     world_vol_start = gdml_str.find('<volume name="World">')
@@ -915,12 +916,13 @@ def test_gdml_sensitive_detector_round_trip():
     gdml_str = writer.get_gdml_string()
 
     # Verify the auxiliary tag appears exactly once for the sensitive LV
-    assert gdml_str.count('<auxiliary auxtype="SensDet" auxvalue=""/>') == 1
+    assert gdml_str.count('<auxiliary auxtype="SensDet"') == 1
+    assert '<auxiliary auxtype="SensDet" auxvalue="det_lv"/>' in gdml_str
     # Verify it is inside the det_lv volume block (simple substring check)
     det_volume_start = gdml_str.find('<volume name="det_lv">')
     det_volume_end = gdml_str.find('</volume>', det_volume_start)
     det_volume_block = gdml_str[det_volume_start:det_volume_end + len('</volume>')]
-    assert '<auxiliary auxtype="SensDet" auxvalue=""/>' in det_volume_block
+    assert '<auxiliary auxtype="SensDet" auxvalue="det_lv"/>' in det_volume_block
 
     # Parse back
     parser = GDMLParser()

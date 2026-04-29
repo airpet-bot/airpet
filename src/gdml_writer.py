@@ -684,9 +684,6 @@ class GDMLWriter:
                 elif struct_obj.content_type == 'parameterised':
                     self._write_paramvol(lv_el, struct_obj.content)
 
-                if struct_obj.is_sensitive:
-                    ET.SubElement(lv_el, "auxiliary", {"auxtype": "SensDet", "auxvalue": ""})
-
         # Finally, write all surface links
         for name, surf in self.geometry_state.skin_surfaces.items():
             self._write_skin_surface(structure_el, surf)
