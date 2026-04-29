@@ -66,9 +66,19 @@ let offsetXInput;
 let offsetYInput;
 let offsetZRow;
 let offsetZInput;
+let anchorInput;
 let holeFields;
+let holeShapeInput;
+let holeCylFields;
+let holeSquareFields;
+let holeRectFields;
 let holeDiameterInput;
+let holeSquareSizeInput;
+let holeRectWidthInput;
+let holeRectHeightInput;
 let holeDepthInput;
+let holeAxisInput;
+let drillFromInput;
 
 let onConfirmCallback = null;
 let currentGeneratorEntry = null;
@@ -169,14 +179,25 @@ export function initDetectorFeatureGeneratorEditor(callbacks) {
     offsetYInput = document.getElementById('detectorFeatureGeneratorOffsetY');
     offsetZRow = document.getElementById('detectorFeatureGeneratorOffsetZRow');
     offsetZInput = document.getElementById('detectorFeatureGeneratorOffsetZ');
+    anchorInput = document.getElementById('detectorFeatureGeneratorAnchor');
     holeFields = document.getElementById('detectorFeatureGeneratorHoleFields');
+    holeShapeInput = document.getElementById('detectorFeatureGeneratorHoleShape');
+    holeCylFields = document.getElementById('detectorFeatureGeneratorHoleCylFields');
+    holeSquareFields = document.getElementById('detectorFeatureGeneratorHoleSquareFields');
+    holeRectFields = document.getElementById('detectorFeatureGeneratorHoleRectFields');
     holeDiameterInput = document.getElementById('detectorFeatureGeneratorHoleDiameter');
+    holeSquareSizeInput = document.getElementById('detectorFeatureGeneratorHoleSquareSize');
+    holeRectWidthInput = document.getElementById('detectorFeatureGeneratorHoleRectWidth');
+    holeRectHeightInput = document.getElementById('detectorFeatureGeneratorHoleRectHeight');
     holeDepthInput = document.getElementById('detectorFeatureGeneratorHoleDepth');
+    holeAxisInput = document.getElementById('detectorFeatureGeneratorHoleAxis');
+    drillFromInput = document.getElementById('detectorFeatureGeneratorDrillFrom');
 
     cancelButton.addEventListener('click', hide);
     confirmButton.addEventListener('click', handleConfirm);
     generatorTypeSelect.addEventListener('change', updateGeneratorTypeSections);
     targetSelect.addEventListener('change', updateTargetSummary);
+    holeShapeInput.addEventListener('change', updateHoleShapeFields);
     tileSensorSizeXInput.addEventListener('input', () => {
         if (getCurrentGeneratorType() === TILED_SENSOR_ARRAY) {
             syncTiledSensorArrayPitchDefaults();
@@ -245,8 +266,18 @@ export function show(generatorEntry, projectState, selectedItems = []) {
     offsetXInput.value = String(model.offsetX);
     offsetYInput.value = String(model.offsetY);
     offsetZInput.value = String(model.offsetZ);
+    if (anchorInput) {
+        anchorInput.value = model.anchor || 'target_center';
+    }
+    holeShapeInput.value = model.holeShape || 'cylindrical';
     holeDiameterInput.value = String(model.holeDiameter);
+    holeSquareSizeInput.value = String(model.holeWidth || model.holeDiameter);
+    holeRectWidthInput.value = String(model.holeWidth || model.holeDiameter);
+    holeRectHeightInput.value = String(model.holeHeight || model.holeDiameter);
     holeDepthInput.value = String(model.holeDepth);
+    holeAxisInput.value = model.holeAxis || 'z';
+    drillFromInput.value = model.drillFrom || 'positive_z_face';
+    updateHoleShapeFields();
 
     targetSelect.disabled = model.targetLocked;
     generatorTypeSelect.disabled = model.typeLocked;
@@ -384,6 +415,13 @@ function updateTargetSummary() {
     currentSelectedHoleTargetName = optionData.name;
 }
 
+function updateHoleShapeFields() {
+    const shape = String(holeShapeInput?.value || 'cylindrical').trim();
+    if (holeCylFields) holeCylFields.hidden = shape !== 'cylindrical';
+    if (holeSquareFields) holeSquareFields.hidden = shape !== 'square';
+    if (holeRectFields) holeRectFields.hidden = shape !== 'rectangular';
+}
+
 function updateGeneratorTypeSections() {
     const generatorType = getCurrentGeneratorType();
     const isLayeredStack = generatorType === LAYERED_DETECTOR_STACK;
@@ -482,12 +520,12 @@ function buildPatternPayload(generatorType) {
     };
 
     if (generatorType === CIRCULAR_DRILLED_HOLE_ARRAY) {
-        return {
+    return {
             count: readPositiveInteger(circularCountInput, 'Circular count'),
             radius_mm: readPositiveNumber(circularRadiusInput, 'Circle radius'),
             orientation_deg: readFiniteNumber(circularOrientationInput, 'Orientation'),
             origin_offset_mm: originOffset,
-            anchor: 'target_center',
+            anchor: anchorInput ? String(anchorInput.value || 'target_center').trim() : 'target_center',
         };
     }
 
@@ -499,7 +537,7 @@ function buildPatternPayload(generatorType) {
             y: readPositiveNumber(pitchYInput, 'Pitch Y'),
         },
         origin_offset_mm: originOffset,
-        anchor: 'target_center',
+        anchor: anchorInput ? String(anchorInput.value || 'target_center').trim() : 'target_center',
     };
 }
 
@@ -517,7 +555,7 @@ function buildLayeredStackPayload() {
                 y: readFiniteNumber(offsetYInput, 'Offset Y'),
                 z: readFiniteNumber(offsetZInput, 'Offset Z'),
             },
-            anchor: 'target_center',
+            anchor: anchorInput ? String(anchorInput.value || 'target_center').trim() : 'target_center',
         },
         layers: {
             absorber: {
@@ -553,7 +591,7 @@ function buildTiledSensorArrayPayload() {
                 y: readFiniteNumber(offsetYInput, 'Offset Y'),
                 z: readFiniteNumber(offsetZInput, 'Offset Z'),
             },
-            anchor: 'target_center',
+            anchor: anchorInput ? String(anchorInput.value || 'target_center').trim() : 'target_center',
         },
         sensor: {
             size_mm: {
@@ -576,13 +614,13 @@ function buildLinearArrayPayload(includeZOffset = false) {
         originOffset.z = readFiniteNumber(offsetZInput, 'Offset Z');
     }
 
-    return {
+        return {
         array: {
             count: readPositiveInteger(linearCountInput, 'Feature count'),
             linear_pitch_mm: readPositiveNumber(linearPitchInput, 'Feature pitch'),
             axis: readRequiredText(linearAxisInput, 'Repeat axis').toLowerCase(),
             origin_offset_mm: originOffset,
-            anchor: 'target_center',
+            anchor: anchorInput ? String(anchorInput.value || 'target_center').trim() : 'target_center',
         },
     };
 }
@@ -597,6 +635,27 @@ function buildSupportRibPayload() {
             is_sensitive: Boolean(ribSensitiveInput.checked),
         },
     };
+}
+
+function buildHolePayload() {
+    const shape = String(holeShapeInput?.value || 'cylindrical').trim();
+    const axis = String(holeAxisInput?.value || 'z').trim().toLowerCase();
+    const drillFrom = String(drillFromInput?.value || 'positive_z_face').trim();
+    const payload = {
+        shape,
+        depth_mm: readPositiveNumber(holeDepthInput, 'Hole depth'),
+        axis,
+        drill_from: drillFrom,
+    };
+    if (shape === 'cylindrical') {
+        payload.diameter_mm = readPositiveNumber(holeDiameterInput, 'Hole diameter');
+    } else if (shape === 'square') {
+        payload.width_mm = readPositiveNumber(holeSquareSizeInput, 'Hole size');
+    } else if (shape === 'rectangular') {
+        payload.width_mm = readPositiveNumber(holeRectWidthInput, 'Hole width');
+        payload.height_mm = readPositiveNumber(holeRectHeightInput, 'Hole height');
+    }
+    return payload;
 }
 
 function buildChannelCutPayload() {
@@ -621,7 +680,7 @@ function buildShieldPayload() {
                 y: readFiniteNumber(offsetYInput, 'Offset Y'),
                 z: readFiniteNumber(offsetZInput, 'Offset Z'),
             },
-            anchor: 'target_center',
+            anchor: anchorInput ? String(anchorInput.value || 'target_center').trim() : 'target_center',
         },
     };
 }
@@ -685,13 +744,7 @@ function handleConfirm() {
                 ? buildChannelCutPayload()
                 : {
                     pattern: buildPatternPayload(generatorType),
-                    hole: {
-                        shape: 'cylindrical',
-                        diameter_mm: readPositiveNumber(holeDiameterInput, 'Hole diameter'),
-                        depth_mm: readPositiveNumber(holeDepthInput, 'Hole depth'),
-                        axis: 'z',
-                        drill_from: 'positive_z_face',
-                    },
+                    hole: buildHolePayload(),
                 }),
             realize_now: true,
         });

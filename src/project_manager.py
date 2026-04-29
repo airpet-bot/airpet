@@ -1264,30 +1264,61 @@ class ProjectManager:
         target_solid = state.solids.get(target_solid_name)
         if target_solid is None:
             return None, f"Target solid '{target_solid_name}' was not found."
-        if target_solid.type != 'box':
-            return None, f"{generator_label} generators currently support only box target solids."
+        if target_solid.type not in ('box', 'tube'):
+            return None, f"{generator_label} generators currently support only box and tube target solids."
 
         pattern = generator_entry.get('pattern', {}) or {}
         hole = generator_entry.get('hole', {}) or {}
 
-        if pattern.get('anchor') != 'target_center':
-            return None, f"{generator_label} generators currently require anchor 'target_center'."
-        if hole.get('shape') != 'cylindrical':
-            return None, f"{generator_label} generators currently require cylindrical holes."
-        if hole.get('axis') != 'z':
-            return None, f"{generator_label} generators currently support only z-axis drilling."
-        if hole.get('drill_from') != 'positive_z_face':
-            return None, f"{generator_label} generators currently drill only from the positive-z face."
+        anchor = pattern.get('anchor') or 'target_center'
+        if anchor not in ('target_center', 'corner', 'center_edge'):
+            return None, f"{generator_label} generators currently support anchors: target_center, corner, center_edge."
+        hole_shape = hole.get('shape') or 'cylindrical'
+        if hole_shape not in {'cylindrical', 'square', 'rectangular'}:
+            return None, f"{generator_label} generators require hole shape to be one of: cylindrical, square, rectangular."
 
         target_dims = target_solid._evaluated_parameters or {}
-        target_depth = float(target_dims.get('z', float('nan')))
-        if not math.isfinite(target_depth) or target_depth <= 0.0:
-            return None, f"Target solid '{target_solid_name}' has invalid evaluated depth."
+        hole_axis = hole.get('axis') or 'z'
+        drill_from = hole.get('drill_from') or 'positive_z_face'
+        if hole_axis not in {'x', 'y', 'z'}:
+            return None, f"{generator_label} generators require hole axis to be one of: x, y, z."
+        if drill_from not in {'positive_z_face', 'negative_z_face', 'both_faces'}:
+            return None, f"{generator_label} generators require drill_from to be one of: positive_z_face, negative_z_face, both_faces."
 
+        # Calculate target depth based on solid type
+        if target_solid.type == 'box':
+            axis_dim_key = hole_axis  # 'x', 'y', or 'z'
+            target_depth = float(target_dims.get(axis_dim_key, float('nan')))
+        elif target_solid.type == 'tube':
+            # For tubes: z-axis uses the z parameter, x/y axes use the diameter (2*rmax)
+            if hole_axis == 'z':
+                target_depth = float(target_dims.get('z', float('nan')))
+            else:
+                rmax = float(target_dims.get('rmax', float('nan')))
+                target_depth = 2.0 * rmax if math.isfinite(rmax) else float('nan')
+        else:
+            target_depth = float('nan')
+
+        if not math.isfinite(target_depth) or target_depth <= 0.0:
+            return None, f"Target solid '{target_solid_name}' has invalid evaluated depth for axis '{hole_axis}'."
+
+        hole_shape = hole.get('shape') or 'cylindrical'
         hole_diameter = float(hole.get('diameter_mm') or 0.0)
         hole_depth = float(hole.get('depth_mm') or 0.0)
-        if hole_diameter <= 0.0 or hole_depth <= 0.0:
-            return None, f"{generator_label} generators require positive hole diameter and depth."
+        hole_width = float(hole.get('width_mm') or hole.get('diameter_mm') or 0.0)
+        hole_height = float(hole.get('height_mm') or hole.get('diameter_mm') or 0.0)
+        if hole_shape == 'square':
+            hole_width = hole_width if hole_width > 0 else hole_diameter
+            hole_height = hole_width
+        if hole_shape == 'rectangular':
+            if hole_width <= 0 or hole_height <= 0:
+                return None, f"{generator_label} generators require positive width_mm and height_mm for rectangular holes."
+        if hole_shape == 'cylindrical' and hole_diameter <= 0.0:
+            return None, f"{generator_label} generators require a positive hole diameter."
+        if hole_shape in {'square', 'rectangular'} and (hole_width <= 0.0 or hole_height <= 0.0):
+            return None, f"{generator_label} generators require positive hole width and height."
+        if hole_depth <= 0.0:
+            return None, f"{generator_label} generators require a positive hole depth."
 
         realization = generator_entry.get('realization', {}) or {}
         prior_result_name = (
@@ -1302,18 +1333,11 @@ class ProjectManager:
             if prior_result_solid.type == 'boolean':
                 existing_result_name = prior_result_name
 
-        existing_cutter_name = None
-        for object_ref in prior_generated_solid_refs:
-            candidate_name = (
-                self._resolve_detector_feature_object_name(object_ref, state.solids)
-                or self._get_detector_feature_object_name_hint(object_ref)
-            )
-            if not candidate_name or candidate_name == prior_result_name or candidate_name not in state.solids:
-                continue
-            candidate_solid = state.solids[candidate_name]
-            if candidate_solid.type == 'tube':
-                existing_cutter_name = candidate_name
-                break
+        existing_cutter_name = self._find_detector_feature_generated_name(
+            prior_generated_solid_refs,
+            state.solids,
+            suffix='__cutter',
+        )
 
         cutter_name = existing_cutter_name or self._generate_unique_name(
             f"{generator_name}__cutter",
@@ -1330,9 +1354,14 @@ class ProjectManager:
             'generator_name': generator_name,
             'target_solid_name': target_solid_name,
             'pattern': pattern,
+            'hole_shape': hole_shape,
             'hole_diameter': hole_diameter,
             'hole_depth': hole_depth,
+            'hole_width': hole_width,
+            'hole_height': hole_height,
             'target_depth': target_depth,
+            'hole_axis': hole_axis,
+            'drill_from': drill_from,
             'prior_result_name': prior_result_name,
             'cutter_name': cutter_name,
             'result_name': result_name,
@@ -1343,9 +1372,14 @@ class ProjectManager:
         generator_id = context['generator_id']
         generator_name = context['generator_name']
         target_solid_name = context['target_solid_name']
+        hole_shape = context.get('hole_shape', 'cylindrical')
         hole_diameter = context['hole_diameter']
         hole_depth = context['hole_depth']
+        hole_width = context.get('hole_width', hole_diameter)
+        hole_height = context.get('hole_height', hole_diameter)
         target_depth = context['target_depth']
+        hole_axis = context.get('hole_axis', 'z')
+        drill_from = context.get('drill_from', 'positive_z_face')
         prior_result_name = context['prior_result_name']
         cutter_name = context['cutter_name']
         result_name = context['result_name']
@@ -1353,36 +1387,103 @@ class ProjectManager:
         def _fmt(value):
             return f"{float(value):.12g}"
 
-        cutter_params = {
-            'rmin': '0',
-            'rmax': _fmt(hole_diameter / 2.0),
-            'z': _fmt(hole_depth),
-            'startphi': '0',
-            'deltaphi': '360*deg',
-        }
+        # Determine effective hole depth and center offset along the drilling axis
+        effective_depth = hole_depth
+        if drill_from == 'both_faces':
+            effective_depth = target_depth  # Through-hole
+
+        if drill_from == 'positive_z_face':
+            axis_center = (target_depth / 2.0) - (effective_depth / 2.0)
+        elif drill_from == 'negative_z_face':
+            axis_center = -(target_depth / 2.0) + (effective_depth / 2.0)
+        else:  # both_faces
+            axis_center = 0.0
+
+        # Determine rotation to align the tube cutter with the drilling axis
+        # Tube symmetry axis is Z locally; rotate to match the drilling axis
+        if hole_axis == 'z':
+            rot_x, rot_y, rot_z = '0', '0', '0'
+        elif hole_axis == 'x':
+            rot_x, rot_y, rot_z = '0', _fmt(-math.pi / 2.0), '0'
+        elif hole_axis == 'y':
+            rot_x, rot_y, rot_z = _fmt(math.pi / 2.0), '0', '0'
+        else:
+            rot_x, rot_y, rot_z = '0', '0', '0'
 
         cutter_solid = state.solids.get(cutter_name)
-        if cutter_solid is None:
-            cutter_solid = Solid(cutter_name, 'tube', cutter_params)
-            state.add_solid(cutter_solid)
-        else:
-            cutter_solid.raw_parameters = cutter_params
 
-        z_center = (target_depth / 2.0) - (hole_depth / 2.0)
+        if hole_shape == 'cylindrical':
+            cutter_params = {
+                'rmin': '0',
+                'rmax': _fmt(hole_diameter / 2.0),
+                'z': _fmt(effective_depth),
+                'startphi': '0',
+                'deltaphi': '360*deg',
+            }
+            if cutter_solid is None:
+                cutter_solid = Solid(cutter_name, 'tube', cutter_params)
+                state.add_solid(cutter_solid)
+            else:
+                cutter_solid.type = 'tube'
+                cutter_solid.raw_parameters = cutter_params
+        else:  # square or rectangular
+            cutter_params = {
+                'x': _fmt(hole_width),
+                'y': _fmt(hole_height),
+                'z': _fmt(effective_depth),
+            }
+            if cutter_solid is None:
+                cutter_solid = Solid(cutter_name, 'box', cutter_params)
+                state.add_solid(cutter_solid)
+            else:
+                cutter_solid.type = 'box'
+                cutter_solid.raw_parameters = cutter_params
 
         recipe = [{'op': 'base', 'solid_ref': target_solid_name}]
         for x_position, y_position in hole_positions_xy:
-            recipe.append({
+            # Build position dict based on drilling axis
+            if hole_axis == 'z':
+                pos = {
+                    'x': _fmt(x_position),
+                    'y': _fmt(y_position),
+                    'z': _fmt(axis_center),
+                }
+            elif hole_axis == 'x':
+                pos = {
+                    'x': _fmt(axis_center),
+                    'y': _fmt(y_position),
+                    'z': _fmt(x_position),
+                }
+            elif hole_axis == 'y':
+                pos = {
+                    'x': _fmt(x_position),
+                    'y': _fmt(axis_center),
+                    'z': _fmt(y_position),
+                }
+            else:
+                pos = {
+                    'x': _fmt(x_position),
+                    'y': _fmt(y_position),
+                    'z': _fmt(axis_center),
+                }
+
+            recipe_entry = {
                 'op': 'subtraction',
                 'solid_ref': cutter_name,
                 'transform': {
-                    'position': {
-                        'x': _fmt(x_position),
-                        'y': _fmt(y_position),
-                        'z': _fmt(z_center),
-                    },
+                    'position': pos,
                 },
-            })
+            }
+
+            # Add rotation if not drilling along Z
+            if hole_axis != 'z':
+                recipe_entry['transform']['rotation'] = {
+                    'x': rot_x,
+                    'y': rot_y,
+                    'z': rot_z,
+                }
+
+            recipe.append(recipe_entry)
 
         result_solid = state.solids.get(result_name)
         if result_solid is None:
@@ -1466,8 +1567,19 @@ class ProjectManager:
         if pitch_x <= 0.0 or pitch_y <= 0.0:
             return None, "Rectangular drilled-hole generators require positive x/y pitch values."
 
-        x_origin = -((count_x - 1) * pitch_x) / 2.0 + offset_x
-        y_origin = -((count_y - 1) * pitch_y) / 2.0 + offset_y
+        anchor = pattern.get('anchor') or 'target_center'
+
+        if anchor == 'corner':
+            # Pattern starts from the bottom-left corner
+            x_origin = 0.0 + offset_x
+            y_origin = 0.0 + offset_y
+        elif anchor == 'center_edge':
+            # Pattern starts from the center of the bottom edge
+            x_origin = 0.0 + offset_x
+            y_origin = 0.0 + offset_y
+        else:  # target_center (default)
+            x_origin = -((count_x - 1) * pitch_x) / 2.0 + offset_x
+            y_origin = -((count_y - 1) * pitch_y) / 2.0 + offset_y
         hole_positions_xy = []
         for y_index in range(count_y):
             y_position = y_origin + y_index * pitch_y

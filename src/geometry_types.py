@@ -52,11 +52,11 @@ _SUPPORTED_DETECTOR_FEATURE_GENERATOR_TYPES = {
     "channel_cut_array",
     "annular_shield_sleeve",
 }
-_SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS = {"target_center"}
+_SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS = {"target_center", "corner", "center_edge"}
 _SUPPORTED_DETECTOR_FEATURE_LINEAR_AXES = {"x", "y"}
-_SUPPORTED_DETECTOR_FEATURE_HOLE_SHAPES = {"cylindrical"}
-_SUPPORTED_DETECTOR_FEATURE_HOLE_AXES = {"z"}
-_SUPPORTED_DETECTOR_FEATURE_DRILL_FROM = {"positive_z_face"}
+_SUPPORTED_DETECTOR_FEATURE_HOLE_SHAPES = {"cylindrical", "square", "rectangular"}
+_SUPPORTED_DETECTOR_FEATURE_HOLE_AXES = {"x", "y", "z"}
+_SUPPORTED_DETECTOR_FEATURE_DRILL_FROM = {"positive_z_face", "negative_z_face", "both_faces"}
 _SUPPORTED_DETECTOR_FEATURE_REALIZATION_MODES = {"boolean_subtraction", "layered_stack", "placement_array"}
 _SUPPORTED_DETECTOR_FEATURE_REALIZATION_STATUSES = {"spec_only", "generated"}
 
@@ -864,10 +864,7 @@ def _normalize_detector_feature_generator_entry(raw_entry):
         }
         normalized_hole = {
             "shape": hole_shape,
-            "diameter_mm": _normalize_positive_float(
-                hole.get("diameter_mm"),
-                "detector_feature_generators[].hole.diameter_mm",
-            ),
+            "diameter_mm": None,
             "depth_mm": _normalize_positive_float(
                 hole.get("depth_mm"),
                 "detector_feature_generators[].hole.depth_mm",
@@ -875,6 +872,20 @@ def _normalize_detector_feature_generator_entry(raw_entry):
             "axis": hole_axis,
             "drill_from": drill_from,
         }
+        if hole_shape == 'cylindrical':
+            normalized_hole["diameter_mm"] = _normalize_positive_float(
+                hole.get("diameter_mm"),
+                "detector_feature_generators[].hole.diameter_mm",
+            )
+        elif hole_shape == 'square':
+            w = _normalize_positive_float(hole.get("width_mm") or hole.get("diameter_mm"), "detector_feature_generators[].hole.width_mm")
+            normalized_hole["width_mm"] = w
+            normalized_hole["height_mm"] = w
+            normalized_hole["diameter_mm"] = w
+        elif hole_shape == 'rectangular':
+            normalized_hole["width_mm"] = _normalize_positive_float(hole.get("width_mm"), "detector_feature_generators[].hole.width_mm")
+            normalized_hole["height_mm"] = _normalize_positive_float(hole.get("height_mm"), "detector_feature_generators[].hole.height_mm")
+            normalized_hole["diameter_mm"] = normalized_hole["width_mm"]
     elif generator_type == "circular_drilled_hole_array":
         origin_offset_mm = pattern.get("origin_offset_mm", {})
         if origin_offset_mm is None:
@@ -955,10 +966,7 @@ def _normalize_detector_feature_generator_entry(raw_entry):
         }
         normalized_hole = {
             "shape": hole_shape,
-            "diameter_mm": _normalize_positive_float(
-                hole.get("diameter_mm"),
-                "detector_feature_generators[].hole.diameter_mm",
-            ),
+            "diameter_mm": None,
             "depth_mm": _normalize_positive_float(
                 hole.get("depth_mm"),
                 "detector_feature_generators[].hole.depth_mm",
@@ -966,6 +974,20 @@ def _normalize_detector_feature_generator_entry(raw_entry):
             "axis": hole_axis,
             "drill_from": drill_from,
         }
+        if hole_shape == 'cylindrical':
+            normalized_hole["diameter_mm"] = _normalize_positive_float(
+                hole.get("diameter_mm"),
+                "detector_feature_generators[].hole.diameter_mm",
+            )
+        elif hole_shape == 'square':
+            w = _normalize_positive_float(hole.get("width_mm") or hole.get("diameter_mm"), "detector_feature_generators[].hole.width_mm")
+            normalized_hole["width_mm"] = w
+            normalized_hole["height_mm"] = w
+            normalized_hole["diameter_mm"] = w
+        elif hole_shape == 'rectangular':
+            normalized_hole["width_mm"] = _normalize_positive_float(hole.get("width_mm"), "detector_feature_generators[].hole.width_mm")
+            normalized_hole["height_mm"] = _normalize_positive_float(hole.get("height_mm"), "detector_feature_generators[].hole.height_mm")
+            normalized_hole["diameter_mm"] = normalized_hole["width_mm"]
     elif generator_type == "layered_detector_stack":
         stack_anchor = _normalize_non_empty_string(stack.get("anchor")) or "target_center"
         if stack_anchor not in _SUPPORTED_DETECTOR_FEATURE_PATTERN_ANCHORS:

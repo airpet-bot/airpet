@@ -667,7 +667,12 @@ export function buildDetectorFeatureGeneratorEditorModel(projectState, generator
                 : stackOriginOffset.z
         ) : 0,
         holeDiameter: Number.isFinite(Number(hole.diameter_mm)) ? Number(hole.diameter_mm) : 2,
+        holeWidth: Number.isFinite(Number(hole.width_mm)) ? Number(hole.width_mm) : (Number.isFinite(Number(hole.diameter_mm)) ? Number(hole.diameter_mm) : 2),
+        holeHeight: Number.isFinite(Number(hole.height_mm)) ? Number(hole.height_mm) : (Number.isFinite(Number(hole.diameter_mm)) ? Number(hole.diameter_mm) : 2),
         holeDepth: Number.isFinite(Number(hole.depth_mm)) ? Number(hole.depth_mm) : 5,
+        holeShape: normalizeString(hole.shape, 'cylindrical'),
+        holeAxis: normalizeString(hole.axis, 'z'),
+        drillFrom: normalizeString(hole.drill_from, 'positive_z_face'),
         moduleSizeX: Number.isFinite(Number(stackSize.x)) ? Number(stackSize.x) : 24,
         moduleSizeY: Number.isFinite(Number(stackSize.y)) ? Number(stackSize.y) : 18,
         moduleCount: Number.isFinite(Number(stack.module_count)) ? Number(stack.module_count) : 3,
@@ -694,6 +699,7 @@ export function buildDetectorFeatureGeneratorEditorModel(projectState, generator
         shieldOuterRadius: Number.isFinite(Number(shield.outer_radius_mm)) ? Number(shield.outer_radius_mm) : 12,
         shieldLength: Number.isFinite(Number(shield.length_mm)) ? Number(shield.length_mm) : 30,
         shieldMaterial: normalizeString(shield.material_ref, 'G4_Pb'),
+        anchor: normalizeString(pattern.anchor, 'target_center'),
     };
 }
 
@@ -923,8 +929,15 @@ export function describeDetectorFeatureGenerator(rawEntry, projectState) {
     const hole = entry.hole && typeof entry.hole === 'object' ? entry.hole : {};
     const offsetX = formatNumber(originOffset.x);
     const offsetY = formatNumber(originOffset.y);
+    const holeShape = normalizeString(hole.shape, 'cylindrical');
     const holeDiameter = formatNumber(hole.diameter_mm);
+    const holeWidth = formatNumber(hole.width_mm || hole.diameter_mm);
+    const holeHeight = formatNumber(hole.height_mm || hole.diameter_mm);
     const holeDepth = formatNumber(hole.depth_mm);
+    const holeAxis = normalizeString(hole.axis, 'z').toUpperCase();
+    const drillFrom = normalizeString(hole.drill_from, 'positive_z_face');
+    const drillFromLabel = drillFrom === 'both_faces' ? 'both faces' : drillFrom === 'negative_z_face' ? 'negative face' : 'positive face';
+    const holeSizeLabel = holeShape === 'cylindrical' ? `dia ${holeDiameter} mm` : holeShape === 'square' ? `${holeWidth} mm square` : `${holeWidth} x ${holeHeight} mm`;
 
     if (generatorType === CIRCULAR_DRILLED_HOLE_ARRAY) {
         const count = Number.isFinite(Number(pattern.count)) ? Number(pattern.count) : 0;
@@ -933,7 +946,7 @@ export function describeDetectorFeatureGenerator(rawEntry, projectState) {
 
         return {
             title: generatorName,
-            summary: `Circular drilled holes on ${targetSolidName} · ${count} holes on r ${radius} mm @ ${orientation} deg · dia ${holeDiameter} mm depth ${holeDepth} mm`,
+            summary: `Circular drilled holes on ${targetSolidName} · ${count} holes on r ${radius} mm @ ${orientation} deg · ${holeSizeLabel} depth ${holeDepth} mm`,
             statusBadge: status === 'generated' ? 'generated' : 'spec only',
             detailRows: [
                 { label: 'Generator ID', value: generatorId },
@@ -943,7 +956,7 @@ export function describeDetectorFeatureGenerator(rawEntry, projectState) {
                 { label: 'Pattern', value: `${count} holes on radius ${radius} mm` },
                 { label: 'Orientation', value: `${orientation} deg` },
                 { label: 'Origin Offset', value: `${offsetX}, ${offsetY} mm` },
-                { label: 'Hole', value: `cylindrical dia ${holeDiameter} mm, depth ${holeDepth} mm` },
+                { label: 'Hole', value: `${holeShape} ${holeSizeLabel}, depth ${holeDepth} mm, axis ${holeAxis}, ${drillFromLabel}` },
                 { label: 'Result Solid', value: resultSolidName || 'Not generated yet' },
                 { label: 'Generated Solids', value: buildListValue(generatedSolidNames, 'No generated solids recorded') },
             ],
@@ -957,7 +970,7 @@ export function describeDetectorFeatureGenerator(rawEntry, projectState) {
 
     return {
         title: generatorName,
-        summary: `Rectangular drilled holes on ${targetSolidName} · ${countX} x ${countY} @ ${pitchX} x ${pitchY} mm · dia ${holeDiameter} mm depth ${holeDepth} mm`,
+        summary: `Rectangular drilled holes on ${targetSolidName} · ${countX} x ${countY} @ ${pitchX} x ${pitchY} mm · ${holeSizeLabel} depth ${holeDepth} mm`,
         statusBadge: status === 'generated' ? 'generated' : 'spec only',
         detailRows: [
             { label: 'Generator ID', value: generatorId },
@@ -966,7 +979,7 @@ export function describeDetectorFeatureGenerator(rawEntry, projectState) {
             { label: 'Target Logical Volumes', value: buildListValue(targetedLogicalVolumeNames, 'All matching logical volumes') },
             { label: 'Pattern', value: `${countX} x ${countY} holes @ ${pitchX} x ${pitchY} mm` },
             { label: 'Origin Offset', value: `${offsetX}, ${offsetY} mm` },
-            { label: 'Hole', value: `cylindrical dia ${holeDiameter} mm, depth ${holeDepth} mm` },
+            { label: 'Hole', value: `${holeShape} ${holeSizeLabel}, depth ${holeDepth} mm, axis ${holeAxis}, ${drillFromLabel}` },
             { label: 'Result Solid', value: resultSolidName || 'Not generated yet' },
             { label: 'Generated Solids', value: buildListValue(generatedSolidNames, 'No generated solids recorded') },
         ],

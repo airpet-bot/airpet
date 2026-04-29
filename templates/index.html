@@ -3,8 +3,8 @@
 
 <head>
     <title>AIrPET</title>
-    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="{{ url_for('static', filename='vendor/plotly/plotly-2.35.2.min.js') }}" charset="utf-8"></script>
+    <script src="{{ url_for('static', filename='vendor/marked/marked.min.js') }}"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -2706,6 +2706,7 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            position: static;
         }
 
         #recenter-solid-preview-btn:hover {
@@ -5160,6 +5161,14 @@
                         <input type="text" id="detectorFeatureGeneratorShieldMaterial" value="G4_Pb" placeholder="e.g., G4_Pb">
                     </div>
                 </div>
+                <div class="property_item" id="detectorFeatureGeneratorAnchorRow">
+                    <label for="detectorFeatureGeneratorAnchor">Pattern Anchor:</label>
+                    <select id="detectorFeatureGeneratorAnchor">
+                        <option value="target_center">Center</option>
+                        <option value="corner">Corner</option>
+                        <option value="center_edge">Center Edge</option>
+                    </select>
+                </div>
                 <div class="property_item">
                     <label for="detectorFeatureGeneratorOffsetX">Offset X (mm):</label>
                     <input type="number" id="detectorFeatureGeneratorOffsetX" step="any" value="0">
@@ -5174,15 +5183,57 @@
                 </div>
                 <div id="detectorFeatureGeneratorHoleFields">
                     <div class="property_item">
-                        <label for="detectorFeatureGeneratorHoleDiameter">Hole Diameter (mm):</label>
-                        <input type="number" id="detectorFeatureGeneratorHoleDiameter" min="0.001" step="any" value="2">
+                        <label for="detectorFeatureGeneratorHoleShape">Hole Shape:</label>
+                        <select id="detectorFeatureGeneratorHoleShape">
+                            <option value="cylindrical">Cylindrical</option>
+                            <option value="square">Square</option>
+                            <option value="rectangular">Rectangular</option>
+                        </select>
+                    </div>
+                    <div id="detectorFeatureGeneratorHoleCylFields">
+                        <div class="property_item">
+                            <label for="detectorFeatureGeneratorHoleDiameter">Hole Diameter (mm):</label>
+                            <input type="number" id="detectorFeatureGeneratorHoleDiameter" min="0.001" step="any" value="2">
+                        </div>
+                    </div>
+                    <div id="detectorFeatureGeneratorHoleSquareFields" hidden>
+                        <div class="property_item">
+                            <label for="detectorFeatureGeneratorHoleSquareSize">Hole Size (mm):</label>
+                            <input type="number" id="detectorFeatureGeneratorHoleSquareSize" min="0.001" step="any" value="2">
+                        </div>
+                    </div>
+                    <div id="detectorFeatureGeneratorHoleRectFields" hidden>
+                        <div class="property_item">
+                            <label for="detectorFeatureGeneratorHoleRectWidth">Hole Width (mm):</label>
+                            <input type="number" id="detectorFeatureGeneratorHoleRectWidth" min="0.001" step="any" value="2">
+                        </div>
+                        <div class="property_item">
+                            <label for="detectorFeatureGeneratorHoleRectHeight">Hole Height (mm):</label>
+                            <input type="number" id="detectorFeatureGeneratorHoleRectHeight" min="0.001" step="any" value="2">
+                        </div>
                     </div>
                     <div class="property_item">
                         <label for="detectorFeatureGeneratorHoleDepth">Hole Depth (mm):</label>
                         <input type="number" id="detectorFeatureGeneratorHoleDepth" min="0.001" step="any" value="5">
                     </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorHoleAxis">Drill Axis:</label>
+                        <select id="detectorFeatureGeneratorHoleAxis">
+                            <option value="z">Z</option>
+                            <option value="x">X</option>
+                            <option value="y">Y</option>
+                        </select>
+                    </div>
+                    <div class="property_item">
+                        <label for="detectorFeatureGeneratorDrillFrom">Drill From:</label>
+                        <select id="detectorFeatureGeneratorDrillFrom">
+                            <option value="positive_z_face">Positive Face (+)</option>
+                            <option value="negative_z_face">Negative Face (-)</option>
+                            <option value="both_faces">Both Faces (Through-Hole)</option>
+                        </select>
+                    </div>
                 </div>
-                <p style="margin: 8px 0 0 0; font-size: 11px; color: #64748b;">Hole generators drill cylindrical holes along +Z into box solids. Channel generators cut repeated straight grooves into box solids, support-rib generators place repeated ribs inside a parent logical volume, layered stacks generate a fixed absorber/sensor/support sandwich, tiled sensor arrays place repeated sensor cells on an X/Y grid inside the selected parent logical volume, and annular shield sleeves place a hollow cylindrical shield inside the selected parent logical volume.</p>
+                <p style="margin: 8px 0 0 0; font-size: 11px; color: #64748b;">Hole generators drill cylindrical, square, or rectangular holes into box solids along any axis, from either face, or as through-holes. Channel generators cut repeated straight grooves into box solids, support-rib generators place repeated ribs inside a parent logical volume, layered stacks generate a fixed absorber/sensor/support sandwich, tiled sensor arrays place repeated sensor cells on an X/Y grid inside the selected parent logical volume, and annular shield sleeves place a hollow cylindrical shield inside the selected parent logical volume.</p>
             </div>
             <div class="modal-footer">
                 <button id="detectorFeatureGeneratorCancel">Cancel</button>
@@ -5723,10 +5774,10 @@
     <script type="importmap">
         {
             "imports": {
-                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
-                "three-mesh-bvh": "https://unpkg.com/three-mesh-bvh@0.9.0/build/index.module.js",
-                "three-bvh-csg": "https://unpkg.com/three-bvh-csg@0.0.16/build/index.module.js"
+                "three": "{{ url_for('static', filename='vendor/three/build/three.module.js') }}",
+                "three/addons/": "{{ url_for('static', filename='vendor/three/examples/jsm/') }}",
+                "three-mesh-bvh": "{{ url_for('static', filename='vendor/three-mesh-bvh/index.module.js') }}",
+                "three-bvh-csg": "{{ url_for('static', filename='vendor/three-bvh-csg/index.module.js') }}"
             }
         }
     </script>

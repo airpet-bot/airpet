@@ -151,17 +151,17 @@ AIRPET integrates with several external tools and Python libraries for core func
 - [Pandas](https://pandas.pydata.org/)
 - [Pillow](https://pillow.readthedocs.io/)
 
-AIRPET uses the following open-source JavaScript libraries, loaded via CDNs for convenience. Local copies may be added in future releases for better reliability.
+AIRPET uses the following open-source JavaScript libraries, vendored under `static/vendor/` so the browser UI can run without CDN access.
 
 - [three.js](https://github.com/mrdoob/three.js) (core library + addons)
-  - Core library loaded from: https://unpkg.com/three@0.160.0/build/three.module.js  
-  - Addons loaded from: https://unpkg.com/three@0.160.0/examples/jsm/  
+  - Core library vendored from: https://unpkg.com/three@0.160.0/build/three.module.js
+  - Addons vendored from: https://unpkg.com/three@0.160.0/examples/jsm/
 
-- [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh), loaded from https://unpkg.com/three-mesh-bvh@0.9.0/build/index.module.js  
+- [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh), vendored from https://unpkg.com/three-mesh-bvh@0.9.0/build/index.module.js
 
-- [three-bvh-csg](https://github.com/gkjohnson/three-bvh-csg), loaded from https://unpkg.com/three-bvh-csg@0.0.16/build/index.module.js  
+- [three-bvh-csg](https://github.com/gkjohnson/three-bvh-csg), vendored from https://unpkg.com/three-bvh-csg@0.0.16/build/index.module.js
 
-For offline use, consider downloading local copies (e.g., via npm), bundling them in the `static/` folder, and updating paths in `templates/index.html` to reduce external dependencies.
+License files for vendored browser libraries are kept alongside each library under `static/vendor/`.
 
 The AIRPET code and this documentation was written with extensive assistance from Google Gemini LLMs, in particular Gemini 2.5 Pro and Gemini 3 Pro.
 

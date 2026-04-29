@@ -2503,10 +2503,44 @@ async function handleAiGenerate(promptText) {
     }
 }
 
+// Find existing CAD import record by filename (case-insensitive)
+function findExistingCadImportByFilename(filename) {
+    const state = AppState.currentProjectState || {};
+    const cadImports = state.cad_imports || [];
+    const target = filename.toLowerCase().trim();
+    for (const record of cadImports) {
+        const sourceFilename = (record.source && record.source.filename) || '';
+        if (sourceFilename.toLowerCase().trim() === target) {
+            return record;
+        }
+    }
+    return null;
+}
+
 // Handler for STEP file import and supported reimport
 async function handleImportStep(file, importRecord = null) {
     if (!file) return;
-    StepImportEditor.show(file, AppState.currentProjectState, importRecord);
+
+    // If no explicit import record, check for existing import with same filename
+    let effectiveRecord = importRecord;
+    if (!effectiveRecord) {
+        effectiveRecord = findExistingCadImportByFilename(file.name);
+        if (effectiveRecord) {
+            const sourceFilename = effectiveRecord.source?.filename || file.name;
+            const answer = window.confirm(
+                `A STEP import from "${sourceFilename}" already exists in this project.\n\n` +
+                `Press OK to reimport (replace existing geometry in-place).\n` +
+                `Press Cancel to import as new (creates duplicate assemblies).`
+            );
+            if (!answer) {
+                // User chose "import as new", proceed without import record
+                effectiveRecord = null;
+            }
+            // else: user chose reimport, keep effectiveRecord
+        }
+    }
+
+    StepImportEditor.show(file, AppState.currentProjectState, effectiveRecord);
 }
 
 async function handleReimportStepImport(file, importRecord) {
