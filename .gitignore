@@ -17,7 +17,7 @@ setup_conda_env.sh
 AI_GDML_HARDENING_TRACKER.md
 AI_GDML_REFINEMENTS_TRACKER.md
 /benchmarks/
-/docs/
 /scripts/
 /surrogate/
 TASKS.md
+.local-packages/
