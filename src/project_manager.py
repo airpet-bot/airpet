@@ -9889,23 +9889,41 @@ class ProjectManager:
                 center = geo.get("center_mm", {})
                 size = geo.get("size_mm", {})
                 bins = mesh.get("bins", {})
-                hx = float(size.get("x", 10.0)) / 2.0
-                hy = float(size.get("y", 10.0)) / 2.0
-                hz = float(size.get("z", 10.0)) / 2.0
                 cx = float(center.get("x", 0.0))
                 cy = float(center.get("y", 0.0))
                 cz = float(center.get("z", 0.0))
-                nx = int(bins.get("x", 10))
-                ny = int(bins.get("y", 10))
-                nz = int(bins.get("z", 10))
-                macro_content.append(f"/score/create/boxMesh {mesh_name}")
-                macro_content.append(
-                    f"/score/mesh/boxSize {hx:.12g} {hy:.12g} {hz:.12g} mm"
-                )
-                macro_content.append(
-                    f"/score/mesh/translate/xyz {cx:.12g} {cy:.12g} {cz:.12g} mm"
-                )
-                macro_content.append(f"/score/mesh/nBin {nx} {ny} {nz}")
+                mesh_type = mesh.get("mesh_type", "box")
+
+                if mesh_type == "cylinder":
+                    rmin = float(size.get("rmin", 0.0))
+                    rmax = float(size.get("rmax", 10.0))
+                    sz = float(size.get("z", 10.0))
+                    nr = int(bins.get("r", 10))
+                    nphi = int(bins.get("phi", 10))
+                    nz = int(bins.get("z", 10))
+                    macro_content.append(f"/score/create/cylinderMesh {mesh_name}")
+                    macro_content.append(
+                        f"/score/mesh/cylinderSize {rmin:.12g} {rmax:.12g} {sz:.12g} mm"
+                    )
+                    macro_content.append(
+                        f"/score/mesh/translate/xyz {cx:.12g} {cy:.12g} {cz:.12g} mm"
+                    )
+                    macro_content.append(f"/score/mesh/nBin {nr} {nphi} {nz}")
+                else:
+                    hx = float(size.get("x", 10.0)) / 2.0
+                    hy = float(size.get("y", 10.0)) / 2.0
+                    hz = float(size.get("z", 10.0)) / 2.0
+                    nx = int(bins.get("x", 10))
+                    ny = int(bins.get("y", 10))
+                    nz = int(bins.get("z", 10))
+                    macro_content.append(f"/score/create/boxMesh {mesh_name}")
+                    macro_content.append(
+                        f"/score/mesh/boxSize {hx:.12g} {hy:.12g} {hz:.12g} mm"
+                    )
+                    macro_content.append(
+                        f"/score/mesh/translate/xyz {cx:.12g} {cy:.12g} {cz:.12g} mm"
+                    )
+                    macro_content.append(f"/score/mesh/nBin {nx} {ny} {nz}")
 
                 mesh_tallies = tally_by_mesh.get(mesh.get("mesh_id"), [])
                 if mesh_tallies:

@@ -61,7 +61,7 @@ _SUPPORTED_DETECTOR_FEATURE_REALIZATION_MODES = {"boolean_subtraction", "layered
 _SUPPORTED_DETECTOR_FEATURE_REALIZATION_STATUSES = {"spec_only", "generated"}
 
 SCORING_STATE_SCHEMA_VERSION = 1
-_SUPPORTED_SCORING_MESH_TYPES = {"box"}
+_SUPPORTED_SCORING_MESH_TYPES = {"box", "cylinder"}
 _SUPPORTED_SCORING_REFERENCE_FRAMES = {"world"}
 _SUPPORTED_SCORING_TALLY_QUANTITIES = {
     "cell_flux",
@@ -366,7 +366,7 @@ def _normalize_scoring_mesh_entry(raw_entry):
         raise ValueError("scoring.scoring_meshes[].bins must be an object.")
 
     default_name = f"{mesh_type}_mesh_{mesh_id.split('_')[-1][:8]}"
-    return {
+    result = {
         "mesh_id": mesh_id,
         "name": _normalize_non_empty_string(raw_entry.get("name")) or default_name,
         "schema_version": schema_version,
@@ -391,22 +391,26 @@ def _normalize_scoring_mesh_entry(raw_entry):
                     "scoring.scoring_meshes[].geometry.center_mm.z",
                 ),
             },
-            "size_mm": {
-                "x": _normalize_positive_float(
-                    size_mm.get("x", 10.0),
-                    "scoring.scoring_meshes[].geometry.size_mm.x",
-                ),
-                "y": _normalize_positive_float(
-                    size_mm.get("y", 10.0),
-                    "scoring.scoring_meshes[].geometry.size_mm.y",
-                ),
-                "z": _normalize_positive_float(
-                    size_mm.get("z", 10.0),
-                    "scoring.scoring_meshes[].geometry.size_mm.z",
-                ),
-            },
         },
-        "bins": {
+        "bins": {},
+    }
+
+    if mesh_type == "box":
+        result["geometry"]["size_mm"] = {
+            "x": _normalize_positive_float(
+                size_mm.get("x", 10.0),
+                "scoring.scoring_meshes[].geometry.size_mm.x",
+            ),
+            "y": _normalize_positive_float(
+                size_mm.get("y", 10.0),
+                "scoring.scoring_meshes[].geometry.size_mm.y",
+            ),
+            "z": _normalize_positive_float(
+                size_mm.get("z", 10.0),
+                "scoring.scoring_meshes[].geometry.size_mm.z",
+            ),
+        }
+        result["bins"] = {
             "x": _normalize_positive_int(
                 bins.get("x", 10),
                 "scoring.scoring_meshes[].bins.x",
@@ -419,8 +423,39 @@ def _normalize_scoring_mesh_entry(raw_entry):
                 bins.get("z", 10),
                 "scoring.scoring_meshes[].bins.z",
             ),
-        },
-    }
+        }
+    elif mesh_type == "cylinder":
+        result["geometry"]["size_mm"] = {
+            "rmin": _normalize_float(
+                size_mm.get("rmin", 0.0),
+                0.0,
+                "scoring.scoring_meshes[].geometry.size_mm.rmin",
+            ),
+            "rmax": _normalize_positive_float(
+                size_mm.get("rmax", 10.0),
+                "scoring.scoring_meshes[].geometry.size_mm.rmax",
+            ),
+            "z": _normalize_positive_float(
+                size_mm.get("z", 10.0),
+                "scoring.scoring_meshes[].geometry.size_mm.z",
+            ),
+        }
+        result["bins"] = {
+            "r": _normalize_positive_int(
+                bins.get("r", 10),
+                "scoring.scoring_meshes[].bins.r",
+            ),
+            "phi": _normalize_positive_int(
+                bins.get("phi", 10),
+                "scoring.scoring_meshes[].bins.phi",
+            ),
+            "z": _normalize_positive_int(
+                bins.get("z", 10),
+                "scoring.scoring_meshes[].bins.z",
+            ),
+        }
+
+    return result
 
 
 def _normalize_scoring_meshes(raw_meshes):

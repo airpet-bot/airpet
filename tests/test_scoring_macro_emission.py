@@ -205,6 +205,71 @@ def test_generate_macro_emits_particle_filter_for_tally_requests(tmp_path):
     assert "unfiltered_energy_filter" not in macro_text
 
 
+def test_generate_macro_emits_cylinder_mesh_commands(tmp_path):
+    """Verify that generate_macro_file emits /score/create/cylinderMesh and
+    related commands for cylindrical scoring meshes."""
+    pm = ProjectManager(ExpressionEvaluator())
+
+    scoring_payload = {
+        "scoring_meshes": [
+            {
+                "mesh_id": "mesh_cyl",
+                "name": "cyl_mesh",
+                "enabled": True,
+                "mesh_type": "cylinder",
+                "geometry": {
+                    "center_mm": {"x": 1.0, "y": 2.0, "z": 3.0},
+                    "size_mm": {"rmin": 5.0, "rmax": 15.0, "z": 20.0},
+                },
+                "bins": {"r": 4, "phi": 8, "z": 2},
+            },
+            {
+                "mesh_id": "mesh_box",
+                "name": "box_mesh",
+                "enabled": True,
+                "mesh_type": "box",
+                "geometry": {
+                    "center_mm": {"x": 0, "y": 0, "z": 0},
+                    "size_mm": {"x": 10, "y": 10, "z": 10},
+                },
+                "bins": {"x": 5, "y": 5, "z": 5},
+            },
+        ],
+    }
+
+    state = GeometryState()
+    state.scoring = ScoringState.from_dict(scoring_payload)
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(json.dumps(state.to_dict()), encoding="utf-8")
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "cylinder-mesh-job",
+            {"events": 1},
+            str(tmp_path),
+            str(tmp_path),
+            str(version_dir),
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    # Cylinder mesh commands
+    assert "/score/create/cylinderMesh cyl_mesh" in macro_text
+    assert "/score/mesh/cylinderSize 5 15 20 mm" in macro_text
+    assert "/score/mesh/translate/xyz 1 2 3 mm" in macro_text
+    assert "/score/mesh/nBin 4 8 2" in macro_text
+
+    # Box mesh commands still work
+    assert "/score/create/boxMesh box_mesh" in macro_text
+    assert "/score/mesh/boxSize 5 5 5 mm" in macro_text
+    assert "/score/mesh/nBin 5 5 5" in macro_text
+
+    # Both close properly
+    assert macro_text.count("/score/close") == 2
+
+
 def test_generate_macro_skips_scoring_section_when_no_meshes(tmp_path):
     """Verify that the macro comments out scoring when no meshes exist."""
     pm = ProjectManager(ExpressionEvaluator())
