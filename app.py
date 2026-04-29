@@ -3703,10 +3703,14 @@ def _build_simulation_log_payload(
     payload: Dict[str, Any] = {}
 
     if include_log_summary:
+        stderr_texts = [str(line) for line in stderr_lines]
+        has_warnings = any(t.strip().lower().startswith("warning:") for t in stderr_texts)
+        has_errors = any(not t.strip().lower().startswith("warning:") for t in stderr_texts)
         payload["log_summary"] = {
             "stdout_lines": len(stdout_lines),
             "stderr_lines": len(stderr_lines),
-            "has_errors": len(stderr_lines) > 0,
+            "has_errors": has_errors,
+            "has_warnings": has_warnings,
             "latest_stdout": stdout_lines[-1] if stdout_lines else None,
             "latest_stderr": stderr_lines[-1] if stderr_lines else None,
         }

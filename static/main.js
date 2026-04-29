@@ -3823,7 +3823,11 @@ async function pollSimStatus() {
                 status.new_stdout.forEach(line => UIManager.appendToSimConsole(line));
             }
             if (status.new_stderr) {
-                status.new_stderr.forEach(line => UIManager.appendToSimConsole(`[ERROR] ${line}`));
+                status.new_stderr.forEach(line => {
+                    const isWarning = typeof line === 'string' && line.trim().toLowerCase().startsWith('warning:');
+                    const prefix = isWarning ? '[WARNING]' : '[ERROR]';
+                    UIManager.appendToSimConsole(`${prefix} ${line}`);
+                });
             }
 
             // Update the line count

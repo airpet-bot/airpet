@@ -94,6 +94,7 @@ def test_simulation_status_api_supports_filter_aliases_and_pagination():
             "stdout_lines": 3,
             "stderr_lines": 2,
             "has_errors": True,
+            "has_warnings": False,
             "latest_stdout": "done",
             "latest_stderr": "note: ignored",
         }
@@ -216,6 +217,71 @@ def test_simulation_status_api_max_lines_zero_keeps_cursor_position_for_since_pa
         assert status["next_since"] == 1
         assert status["has_more_logs"] is True
         assert status["log_entries"] == []
+    finally:
+        _clear_sim_status(job_id)
+
+
+def test_simulation_status_api_distinguishes_warnings_from_errors():
+    app.config["TESTING"] = True
+    job_id = "api-sim-warnings"
+    _set_sim_status(
+        job_id,
+        status="Completed",
+        progress=10,
+        total_events=10,
+        stdout=["done"],
+        stderr=["Warning: Failed to generate scoring artifacts: no h5py"],
+    )
+
+    try:
+        with app.test_client() as client:
+            resp = client.get(
+                f"/api/simulation/status/{job_id}"
+                "?include_log_summary=true"
+            )
+
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload["success"] is True
+
+        status = payload["status"]
+        assert status["status"] == "Completed"
+        assert status["log_summary"]["has_errors"] is False
+        assert status["log_summary"]["has_warnings"] is True
+        assert status["log_summary"]["stderr_lines"] == 1
+    finally:
+        _clear_sim_status(job_id)
+
+
+def test_simulation_status_api_mixed_warnings_and_errors():
+    app.config["TESTING"] = True
+    job_id = "api-sim-mixed"
+    _set_sim_status(
+        job_id,
+        status="Completed",
+        progress=10,
+        total_events=10,
+        stdout=["done"],
+        stderr=[
+            "Warning: Failed to generate scoring artifacts: no h5py",
+            "Error: something actually broke",
+        ],
+    )
+
+    try:
+        with app.test_client() as client:
+            resp = client.get(
+                f"/api/simulation/status/{job_id}"
+                "?include_log_summary=true"
+            )
+
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload["success"] is True
+
+        status = payload["status"]
+        assert status["log_summary"]["has_errors"] is True
+        assert status["log_summary"]["has_warnings"] is True
     finally:
         _clear_sim_status(job_id)
 
