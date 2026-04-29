@@ -240,16 +240,21 @@ def build_scoring_runtime_plan(scoring_payload: Optional[Dict[str, Any]]) -> Dic
             )
             continue
 
-        supported_requests.append(
-            {
-                "artifact_id": str(tally.get("tally_id") or "").strip()
-                or f"artifact_{len(supported_requests) + 1}",
-                "tally_id": str(tally.get("tally_id") or "").strip(),
-                "tally_name": str(tally.get("name") or "").strip(),
-                "quantity": quantity,
-                "mesh": deepcopy(mesh),
+        supported_request = {
+            "artifact_id": str(tally.get("tally_id") or "").strip()
+            or f"artifact_{len(supported_requests) + 1}",
+            "tally_id": str(tally.get("tally_id") or "").strip(),
+            "tally_name": str(tally.get("name") or "").strip(),
+            "quantity": quantity,
+            "mesh": deepcopy(mesh),
+        }
+        pf = tally.get("particle_filter")
+        if isinstance(pf, dict) and pf.get("filter_name") and pf.get("particle"):
+            supported_request["particle_filter"] = {
+                "filter_name": str(pf["filter_name"]),
+                "particle": str(pf["particle"]),
             }
-        )
+        supported_requests.append(supported_request)
 
     return {
         "schema_version": SCORING_ARTIFACT_SCHEMA_VERSION,

@@ -9914,6 +9914,18 @@ class ProjectManager:
                         g4_cmd = _G4_QUANTITY_MAP.get(qty, "energyDeposit")
                         tally_name = tally.get("name", f"{mesh_name}_{qty}")
                         macro_content.append(f"/score/quantity/{g4_cmd} {tally_name}")
+                        particle_filter = tally.get("particle_filter")
+                        if isinstance(particle_filter, dict):
+                            filter_name = particle_filter.get("filter_name")
+                            particle = particle_filter.get("particle")
+                            if filter_name and particle:
+                                macro_content.append(
+                                    f"/score/filter/particle {filter_name} {particle}"
+                                )
+                else:
+                    macro_content.append(
+                        f"/score/quantity/energyDeposit {mesh_name}_eDep"
+                    )
                 else:
                     macro_content.append(
                         f"/score/quantity/energyDeposit {mesh_name}_eDep"

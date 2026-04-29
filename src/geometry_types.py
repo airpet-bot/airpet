@@ -549,8 +549,24 @@ def _normalize_scoring_tally_request_entry(raw_entry, mesh_lookup=None):
             normalized_mesh_ref["mesh_id"] = matched_mesh.get("mesh_id")
             normalized_mesh_ref["name"] = matched_mesh.get("name")
 
+    particle_filter = None
+    raw_pf = raw_entry.get("particle_filter")
+    if raw_pf is not None:
+        if not isinstance(raw_pf, dict):
+            raise ValueError("scoring.tally_requests[].particle_filter must be an object.")
+        pf_name = _normalize_non_empty_string(raw_pf.get("filter_name"))
+        pf_particle = _normalize_non_empty_string(raw_pf.get("particle"))
+        if not pf_name or not pf_particle:
+            raise ValueError(
+                "scoring.tally_requests[].particle_filter must contain filter_name and particle."
+            )
+        particle_filter = {
+            "filter_name": pf_name,
+            "particle": pf_particle,
+        }
+
     default_name = f"{quantity}_{tally_id.split('_')[-1][:8]}"
-    return {
+    result = {
         "tally_id": tally_id,
         "name": _normalize_non_empty_string(raw_entry.get("name")) or default_name,
         "schema_version": schema_version,
@@ -558,6 +574,9 @@ def _normalize_scoring_tally_request_entry(raw_entry, mesh_lookup=None):
         "mesh_ref": normalized_mesh_ref,
         "quantity": quantity,
     }
+    if particle_filter is not None:
+        result["particle_filter"] = particle_filter
+    return result
 
 
 def _normalize_scoring_tally_requests(raw_requests, mesh_lookup=None):

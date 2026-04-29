@@ -74,6 +74,137 @@ def test_generate_macro_emits_score_commands_for_enabled_meshes(tmp_path):
     assert macro_text.count("/score/close") >= 1
 
 
+def test_generate_macro_emits_particle_filter_for_tally_request(tmp_path):
+    """Verify that a tally request with particle_filter emits /score/filter/particle."""
+    pm = ProjectManager(ExpressionEvaluator())
+
+    scoring_payload = {
+        "scoring_meshes": [
+            {
+                "mesh_id": "mesh_main",
+                "name": "main_mesh",
+                "enabled": True,
+                "mesh_type": "box",
+                "geometry": {
+                    "center_mm": {"x": 0, "y": 0, "z": 0},
+                    "size_mm": {"x": 20, "y": 20, "z": 20},
+                },
+                "bins": {"x": 5, "y": 5, "z": 5},
+            }
+        ],
+        "tally_requests": [
+            {
+                "tally_id": "tally_gamma",
+                "name": "gamma_nOfStep",
+                "mesh_ref": {"mesh_id": "mesh_main"},
+                "quantity": "n_of_step",
+                "particle_filter": {
+                    "filter_name": "gammaFilter",
+                    "particle": "gamma",
+                },
+            },
+            {
+                "tally_id": "tally_no_filter",
+                "name": "energy_deposit",
+                "mesh_ref": {"mesh_id": "mesh_main"},
+                "quantity": "energy_deposit",
+            },
+        ],
+    }
+
+    state = GeometryState()
+    state.scoring = ScoringState.from_dict(scoring_payload)
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(json.dumps(state.to_dict()), encoding="utf-8")
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "filter-job",
+            {"events": 1},
+            str(tmp_path),
+            str(tmp_path),
+            str(version_dir),
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    assert "/score/quantity/nOfStep gamma_nOfStep" in macro_text
+    assert "/score/filter/particle gammaFilter gamma" in macro_text
+    assert "/score/quantity/energyDeposit energy_deposit" in macro_text
+    assert "energy_deposit_filter" not in macro_text
+
+
+def test_generate_macro_emits_particle_filter_for_tally_requests(tmp_path):
+    """Verify that tally requests with particle_filter emit /score/filter/particle."""
+    pm = ProjectManager(ExpressionEvaluator())
+
+    scoring_payload = {
+        "scoring_meshes": [
+            {
+                "mesh_id": "mesh_main",
+                "name": "mesh_main",
+                "geometry": {"size_mm": {"x": 20, "y": 20, "z": 20}},
+                "bins": {"x": 10, "y": 10, "z": 10},
+            }
+        ],
+        "tally_requests": [
+            {
+                "tally_id": "tally_gamma",
+                "name": "gamma_nOfStep",
+                "mesh_ref": {"mesh_id": "mesh_main"},
+                "quantity": "n_of_step",
+                "particle_filter": {
+                    "filter_name": "gammaFilter",
+                    "particle": "gamma",
+                },
+            },
+            {
+                "tally_id": "tally_neutron",
+                "name": "neutron_track_length",
+                "mesh_ref": {"mesh_id": "mesh_main"},
+                "quantity": "track_length",
+                "particle_filter": {
+                    "filter_name": "neutronFilter",
+                    "particle": "neutron",
+                },
+            },
+            {
+                "tally_id": "tally_unfiltered",
+                "name": "unfiltered_energy",
+                "mesh_ref": {"mesh_id": "mesh_main"},
+                "quantity": "energy_deposit",
+            },
+        ],
+    }
+
+    state = GeometryState()
+    state.scoring = ScoringState.from_dict(scoring_payload)
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(json.dumps(state.to_dict()), encoding="utf-8")
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "filter-job", {}, str(tmp_path), str(tmp_path), str(version_dir)
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    # Filtered tallies should emit quantity then filter
+    assert "/score/quantity/nOfStep gamma_nOfStep" in macro_text
+    assert "/score/filter/particle gammaFilter gamma" in macro_text
+
+    assert "/score/quantity/trackLength neutron_track_length" in macro_text
+    assert "/score/filter/particle neutronFilter neutron" in macro_text
+
+    # Unfiltered tally should not emit a filter line
+    assert "/score/quantity/energyDeposit unfiltered_energy" in macro_text
+    assert "unfiltered_energy_filter" not in macro_text
+
+
 def test_generate_macro_skips_scoring_section_when_no_meshes(tmp_path):
     """Verify that the macro comments out scoring when no meshes exist."""
     pm = ProjectManager(ExpressionEvaluator())
