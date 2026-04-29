@@ -11,6 +11,11 @@ The loop should use Playwright MCP for browser validation whenever the task
 touches user-visible behavior. Python, Node, and Geant4 tests should complement
 the UI checks, not replace them when the risk is clearly interactive.
 
+When the reliability backlog is exhausted, the loop may switch into bounded
+Geant4 capability discovery. Discovery is not permission to invent arbitrary
+work. It is a narrow process for comparing AIRPET against local Geant4 examples
+and source, then seeding evidence-backed tasks with acceptance criteria.
+
 ## Current Product Need
 
 AIRPET has accumulated substantial capability: AI-assisted geometry editing,
@@ -51,9 +56,21 @@ For each task:
 - commit locally on `dev`
 - do not attempt `git push`
 
+If there is no `NEXT` task and no `PENDING` task:
+
+- read `docs/GEANT4_CAPABILITY_DISCOVERY_GUIDE.md`
+- perform exactly one Geant4 capability-discovery audit
+- inspect one bounded Geant4 area under `ref/geant4-v11.3.2`
+- compare it with AIRPET code, tests, and docs
+- add at most three evidence-backed backlog tasks
+- mark exactly one discovered task as `NEXT`
+- do not implement the discovered task in the same run
+- stop cleanly if no suitable task is found
+
 Stop cleanly if:
 
-- there is no `NEXT` task and no `PENDING` task
+- there is no `NEXT` task, no `PENDING` task, and discovery finds no admissible
+  task
 - Playwright cannot access a running AIRPET server and the task requires UI work
 - the same task fails twice for the same reason
 - the repo has conflicting tracked changes from a human or another agent
@@ -67,14 +84,21 @@ You are working on AIRPET in /Volumes/nvme/projects/airpet.
 
 Read docs/CONTINUOUS_RELIABILITY_CONTEXT.md and docs/CONTINUOUS_RELIABILITY_TRACKER.md.
 Work exactly one tracker item per run. Use the item marked NEXT, or promote the
-highest-priority PENDING item if no NEXT item exists. If there is no NEXT and no
-PENDING item, stop and record that the backlog is exhausted.
+highest-priority PENDING item if no NEXT item exists.
 
 Before editing, verify that the repo is on branch dev and HEAD is not detached.
 Inspect git status --short. Ignore untracked files and ignored local scratch
 files, but stop if there are tracked changes outside docs that appear unrelated
 to the current task or conflict with it. Being ahead of origin/dev is not a
 blocker.
+
+If there is no NEXT and no PENDING task, read
+docs/GEANT4_CAPABILITY_DISCOVERY_GUIDE.md and perform exactly one bounded
+Geant4 capability-discovery audit using the local tree at ref/geant4-v11.3.2.
+Inspect one Geant4 capability area, compare it with AIRPET support, update the
+tracker work log with evidence, and add at most three concrete G4CAP backlog
+tasks. Mark exactly one as NEXT. Do not implement a task in the same run that
+discovers it. If no admissible task is found, record that and stop.
 
 For UI-facing tasks, use the Playwright MCP server to reproduce or validate the
 workflow. For backend or pure JS helper work, run the smallest relevant Python,

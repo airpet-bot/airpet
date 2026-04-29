@@ -17,6 +17,10 @@
 6. Update the work log and choose the next `NEXT` task.
 7. Do not append speculative tasks unless the tracker is nearly exhausted and
    the new task is directly supported by a reproduced workflow gap.
+8. If no `NEXT` or `PENDING` tasks remain, use
+   `docs/GEANT4_CAPABILITY_DISCOVERY_GUIDE.md` to run exactly one bounded
+   Geant4 capability-discovery audit and seed at most three evidence-backed
+   tasks.
 
 ## Status Values
 
@@ -28,12 +32,8 @@
 
 ## Current NEXT Task
 
-Backlog exhausted. All tasks from ACR-002 through ACR-010 are DONE. The loop should
-stop until the human operator seeds new tasks or promotes existing backlog items.
-
-If new work is needed, the spike plan in `docs/AI_MULTIMODAL_SPIKE_PLAN.md` contains
-ready-to-promote acceptance criteria and fixture needs for artifact-store route
-coverage and a Playwright end-to-end multimodal workflow.
+`G4CAP-001`: Emit and parse GDML `<auxiliary auxtype="SensDet">` tags so
+sensitive-detector assignments survive GDML round-trips.
 
 ## Backlog
 
@@ -48,6 +48,10 @@ coverage and a Playwright end-to-end multimodal workflow.
 | ACR-008 | P2 | Git Hygiene | Add or update local ignore guidance for Playwright logs, scratch GDML, verification output, and machine-local reference folders | DONE | `.gitignore` updated; added `tests/test_gitignore_hygiene.py` to prevent accidental removal of ignore patterns |
 | ACR-009 | P2 | AI Parity | Add one route-vs-AI parity workflow for a high-value operation covered by Playwright | DONE | Added `tests/test_route_ai_parity_detector_generators.py` covering tiled_sensor_array and channel_cut_array; both paths produce equivalent geometry state after normalizing volatile IDs |
 | ACR-010 | P2 | Multimodal Prep | Turn `docs/AI_MULTIMODAL_ARTIFACT_INTAKE.md` into a small spike plan with acceptance criteria and fixture needs | DONE | Created `docs/AI_MULTIMODAL_SPIKE_PLAN.md` with acceptance criteria for artifact store routes, extraction→planning→execution end-to-end, preflight cross-checks, parity reports, and Playwright coverage; enumerated fixture needs (upload files, extraction payloads, replay fixtures, UI sketch fixtures); identified test gaps (no artifact store route tests, no Playwright end-to-end). No code changes.
+| G4DISC-001 | P0 | Discovery | Run a bounded Geant4 capability-discovery audit and seed the next evidence-backed `G4CAP-*` backlog tasks | DONE | Inspected `ref/geant4-v11.3.2/examples/extended/persistency/gdml/G04`, `ref/geant4-v11.3.2/source/physics_lists/lists/src/`, and `ref/geant4-v11.3.2/examples/extended/runAndEvent/RE03`. Seeded three evidence-backed tasks. |
+| G4CAP-001 | P1 | GDML | Emit and parse GDML `<auxiliary auxtype="SensDet">` tags so sensitive-detector assignments survive GDML round-trips | NEXT | Evidence: Geant4 persistency/gdml/G04 uses auxinfo for SD association; AIRPET `src/gdml_writer.py` and `src/gdml_parser.py` ignore auxiliary tags. Validation: round-trip test in `tests/test_gdml.py`. |
+| G4CAP-002 | P2 | Physics Lists | Expand the physics-list dropdown to include high-value missing lists (QBBC, QGSP_BERT_HP, QGSP_BIC, FTFP_BERT_ATL, QGSP_FTFP_BERT) | PENDING | Evidence: Geant4 ships ~20 lists in `source/physics_lists/lists/src/`; AIRPET only exposes 5. Validation: backend test verifying each new list is accepted by macro generation. |
+| G4CAP-003 | P2 | Scoring | Emit `/score/create/boxMesh` and `/score/quantity/energyDeposit` macro commands for enabled scoring meshes, and instantiate `G4ScoringManager` in the C++ main | PENDING | Evidence: RE03 example demonstrates command-based scoring meshes; AIRPET defines meshes in UI/data model but `generate_macro_file` never emits `/score/` commands and `geant4/src` lacks `G4ScoringManager`. Validation: backend test verifying macro content; C++ compile check. |
 
 ## Work Log
 
@@ -65,3 +69,5 @@ coverage and a Playwright end-to-end multimodal workflow.
 | 2026-04-29 | ACR-008 git ignore guidance (test follow-up) | DONE | Added `tests/test_gitignore_hygiene.py` with 8 assertions covering Playwright artifacts, scratch GDML, verification output, machine-local folders, and `.DS_Store`. All tests pass. Fixed tracker `Current NEXT Task` header to ACR-009. Next: ACR-009. |
 | 2026-04-29 | ACR-009 route-vs-AI parity | DONE | Added `tests/test_route_ai_parity_detector_generators.py` with two parity tests: `test_route_vs_ai_parity_tiled_sensor_array` and `test_route_vs_ai_parity_channel_cut_array`. Each test verifies that the direct Flask route (`/api/detector_feature_generators/upsert`) and the AI tool dispatch (`manage_detector_feature_generator`) produce equivalent geometry state. Comparison normalizes volatile object-ref `id` fields to focus on functional parity. All tests pass. Next: ACR-010. |
 | 2026-04-29 | ACR-010 multimodal spike plan | DONE | Created `docs/AI_MULTIMODAL_SPIKE_PLAN.md` distilling `docs/AI_MULTIMODAL_ARTIFACT_INTAKE.md` into actionable acceptance criteria (artifact store routes, extraction→planning→execution, preflight cross-checks, parity reports, Playwright smoke) and enumerated fixture needs (upload files, extraction payloads, replay fixtures, UI sketch fixtures). Identified current test gaps: no artifact store route tests and no Playwright end-to-end coverage. No code changes. Backlog exhausted.
+| 2026-04-29 | Self-expanding backlog setup | DONE | Added `docs/GEANT4_CAPABILITY_DISCOVERY_GUIDE.md`, updated the continuous-reliability context so an exhausted backlog triggers one bounded Geant4 capability-discovery audit, and seeded `G4DISC-001` as the next task. |
+| 2026-04-29 | G4DISC-001 capability discovery | DONE | Inspected Geant4 `examples/extended/persistency/gdml/G04` (auxiliary SD info), `source/physics_lists/lists/src/` (~20 physics lists vs AIRPET's 5), and `examples/extended/runAndEvent/RE03` (command-based scoring meshes). Compared against AIRPET `src/gdml_writer.py`, `src/gdml_parser.py`, `templates/index.html`, `src/project_manager.py`, and `geant4/src/`. Found three concrete gaps and seeded `G4CAP-001` (GDML SD auxinfo), `G4CAP-002` (physics list expansion), and `G4CAP-003` (scoring mesh macro emission). Marked `G4CAP-001` as NEXT. |
