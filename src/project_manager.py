@@ -9915,6 +9915,12 @@ class ProjectManager:
                         f"/score/mesh/translate/xyz {cx:.12g} {cy:.12g} {cz:.12g} mm"
                     )
                     macro_content.append(f"/score/mesh/nBin {nr} {nphi} {nz}")
+                elif mesh_type == "realWorldLogVol":
+                    lv_name = geo.get("logical_volume_name")
+                    copy_level = int(geo.get("copy_number_level", 0))
+                    macro_content.append(
+                        f"/score/create/realWorldLogVol {lv_name} {copy_level}"
+                    )
                 else:
                     hx = float(size.get("x", 10.0)) / 2.0
                     hy = float(size.get("y", 10.0)) / 2.0

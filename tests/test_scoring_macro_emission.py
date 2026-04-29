@@ -370,3 +370,67 @@ def test_generate_macro_maps_new_quantities_to_g4_commands(tmp_path):
     assert "/score/quantity/flatSurfaceFlux flatSurfaceFlux_tally" in macro_text
     assert "/score/quantity/nOfCollision nOfCollision_tally" in macro_text
     assert "/score/quantity/population population_tally" in macro_text
+
+
+def test_generate_macro_emits_real_world_log_vol_commands(tmp_path):
+    """Verify that generate_macro_file emits /score/create/realWorldLogVol and
+    omits mesh geometry commands for realWorldLogVol meshes."""
+    pm = ProjectManager(ExpressionEvaluator())
+
+    scoring_payload = {
+        "scoring_meshes": [
+            {
+                "mesh_id": "mesh_rwlv",
+                "name": "rwlv_mesh",
+                "enabled": True,
+                "mesh_type": "realWorldLogVol",
+                "geometry": {
+                    "logical_volume_name": "box_LV",
+                    "copy_number_level": 1,
+                },
+            },
+            {
+                "mesh_id": "mesh_box",
+                "name": "box_mesh",
+                "enabled": True,
+                "mesh_type": "box",
+                "geometry": {
+                    "center_mm": {"x": 0, "y": 0, "z": 0},
+                    "size_mm": {"x": 10, "y": 10, "z": 10},
+                },
+                "bins": {"x": 5, "y": 5, "z": 5},
+            },
+        ],
+        "tally_requests": [
+            {
+                "tally_id": "tally_rwlv",
+                "name": "rwlv_energy",
+                "mesh_ref": {"mesh_id": "mesh_rwlv"},
+                "quantity": "energy_deposit",
+            }
+        ],
+    }
+
+    state = GeometryState()
+    state.scoring = ScoringState.from_dict(scoring_payload)
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(json.dumps(state.to_dict()), encoding="utf-8")
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "rwlv-job", {}, str(tmp_path), str(tmp_path), str(version_dir)
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    # realWorldLogVol mesh commands
+    assert "/score/create/realWorldLogVol box_LV 1" in macro_text
+    assert "/score/quantity/energyDeposit rwlv_energy" in macro_text
+
+    # Box mesh still works alongside realWorldLogVol
+    assert "/score/create/boxMesh box_mesh" in macro_text
+
+    # Both meshes close properly
+    assert macro_text.count("/score/close") == 2

@@ -61,7 +61,7 @@ _SUPPORTED_DETECTOR_FEATURE_REALIZATION_MODES = {"boolean_subtraction", "layered
 _SUPPORTED_DETECTOR_FEATURE_REALIZATION_STATUSES = {"spec_only", "generated"}
 
 SCORING_STATE_SCHEMA_VERSION = 1
-_SUPPORTED_SCORING_MESH_TYPES = {"box", "cylinder"}
+_SUPPORTED_SCORING_MESH_TYPES = {"box", "cylinder", "realWorldLogVol"}
 _SUPPORTED_SCORING_REFERENCE_FRAMES = {"world"}
 _SUPPORTED_SCORING_TALLY_QUANTITIES = {
     "cell_flux",
@@ -460,6 +460,21 @@ def _normalize_scoring_mesh_entry(raw_entry):
                 "scoring.scoring_meshes[].bins.z",
             ),
         }
+    elif mesh_type == "realWorldLogVol":
+        logical_volume_name = _normalize_non_empty_string(
+            geometry.get("logical_volume_name")
+            or raw_entry.get("logical_volume_name")
+        )
+        if not logical_volume_name:
+            raise ValueError(
+                "scoring.scoring_meshes[].geometry.logical_volume_name is required for realWorldLogVol meshes."
+            )
+        result["geometry"]["logical_volume_name"] = logical_volume_name
+        result["geometry"]["copy_number_level"] = _normalize_non_negative_int(
+            geometry.get("copy_number_level", raw_entry.get("copy_number_level", 0)),
+            0,
+            "scoring.scoring_meshes[].geometry.copy_number_level",
+        )
 
     return result
 
