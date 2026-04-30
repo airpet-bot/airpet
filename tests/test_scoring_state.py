@@ -214,7 +214,7 @@ def test_scoring_state_validation_and_invalid_entries_default_cleanly():
 
     ok, err = ScoringState.validate(invalid_payload)
     assert ok is False
-    assert err == "scoring.scoring_meshes[].mesh_type must be one of: box, cylinder, realWorldLogVol."
+    assert err == "scoring.scoring_meshes[].mesh_type must be one of: box, cylinder, probe, realWorldLogVol."
 
     loaded = GeometryState.from_dict({"scoring": invalid_payload})
     scoring = loaded.scoring.to_dict()
@@ -356,7 +356,7 @@ def test_update_object_property_rejects_invalid_scoring_state_payload():
     )
 
     assert success is False
-    assert error == "scoring.scoring_meshes[].mesh_type must be one of: box, cylinder, realWorldLogVol."
+    assert error == "scoring.scoring_meshes[].mesh_type must be one of: box, cylinder, probe, realWorldLogVol."
     assert pm.current_geometry_state.scoring.to_dict()["scoring_meshes"] == []
 
 

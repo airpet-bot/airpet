@@ -103,14 +103,19 @@ function pluralize(count, singular, plural = `${singular}s`) {
     return `${count} ${count === 1 ? singular : plural}`;
 }
 
+const SUPPORTED_SCORING_MESH_TYPES = ['box', 'cylinder', 'realWorldLogVol', 'probe'];
+
 function normalizeScoringMesh(rawMesh, index = 0) {
     const mesh = rawMesh && typeof rawMesh === 'object' ? rawMesh : {};
-    return {
+    const rawMeshType = normalizeString(mesh.mesh_type, '');
+    const meshType = SUPPORTED_SCORING_MESH_TYPES.includes(rawMeshType) ? rawMeshType : 'box';
+    const defaultName = meshType === 'probe' ? `probe_mesh_${index + 1}` : `box_mesh_${index + 1}`;
+    const normalized = {
         mesh_id: normalizeString(mesh.mesh_id, `scoring_mesh_ui_${index + 1}`),
-        name: normalizeString(mesh.name, `box_mesh_${index + 1}`),
+        name: normalizeString(mesh.name, defaultName),
         schema_version: 1,
         enabled: normalizeBoolean(mesh.enabled, true),
-        mesh_type: 'box',
+        mesh_type: meshType,
         reference_frame: 'world',
         geometry: {
             center_mm: {
@@ -130,6 +135,28 @@ function normalizeScoringMesh(rawMesh, index = 0) {
             z: normalizePositiveInt(mesh?.bins?.z, 10),
         },
     };
+    if (meshType === 'probe') {
+        normalized.geometry.half_size_mm = normalizePositiveNumber(
+            mesh?.geometry?.half_size_mm,
+            1.0,
+        );
+        normalized.geometry.unit = normalizeString(mesh?.geometry?.unit, 'mm');
+        normalized.geometry.check_overlap = normalizeBoolean(
+            mesh?.geometry?.check_overlap,
+            false,
+        );
+    }
+    if (meshType === 'realWorldLogVol') {
+        normalized.geometry.logical_volume_name = normalizeString(
+            mesh?.geometry?.logical_volume_name,
+            '',
+        );
+        normalized.geometry.copy_number_level = normalizeNonNegativeInt(
+            mesh?.geometry?.copy_number_level,
+            0,
+        );
+    }
+    return normalized;
 }
 
 function normalizeTallyQuantity(value) {

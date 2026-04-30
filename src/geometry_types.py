@@ -61,7 +61,7 @@ _SUPPORTED_DETECTOR_FEATURE_REALIZATION_MODES = {"boolean_subtraction", "layered
 _SUPPORTED_DETECTOR_FEATURE_REALIZATION_STATUSES = {"spec_only", "generated"}
 
 SCORING_STATE_SCHEMA_VERSION = 1
-_SUPPORTED_SCORING_MESH_TYPES = {"box", "cylinder", "realWorldLogVol"}
+_SUPPORTED_SCORING_MESH_TYPES = {"box", "cylinder", "realWorldLogVol", "probe"}
 _SUPPORTED_SCORING_REFERENCE_FRAMES = {"world"}
 _SUPPORTED_SCORING_TALLY_QUANTITIES = {
     "cell_flux",
@@ -474,6 +474,24 @@ def _normalize_scoring_mesh_entry(raw_entry):
             geometry.get("copy_number_level", raw_entry.get("copy_number_level", 0)),
             0,
             "scoring.scoring_meshes[].geometry.copy_number_level",
+        )
+    elif mesh_type == "probe":
+        half_size = geometry.get("half_size_mm")
+        if half_size is None:
+            half_size = raw_entry.get("half_size_mm")
+        result["geometry"]["half_size_mm"] = _normalize_positive_float(
+            half_size,
+            "scoring.scoring_meshes[].geometry.half_size_mm",
+        )
+        result["geometry"]["unit"] = _normalize_non_empty_string_with_default(
+            geometry.get("unit", raw_entry.get("unit")),
+            "mm",
+            "scoring.scoring_meshes[].geometry.unit",
+        )
+        result["geometry"]["check_overlap"] = _normalize_boolean(
+            geometry.get("check_overlap", raw_entry.get("check_overlap")),
+            False,
+            "scoring.scoring_meshes[].geometry.check_overlap",
         )
 
     return result

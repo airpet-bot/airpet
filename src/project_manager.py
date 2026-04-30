@@ -9921,6 +9921,14 @@ class ProjectManager:
                     macro_content.append(
                         f"/score/create/realWorldLogVol {lv_name} {copy_level}"
                     )
+                elif mesh_type == "probe":
+                    half_size = float(geo.get("half_size_mm", 1.0))
+                    unit = geo.get("unit", "mm") or "mm"
+                    check_overlap = bool(geo.get("check_overlap", False))
+                    check_overlap_int = 1 if check_overlap else 0
+                    macro_content.append(
+                        f"/score/create/probe {mesh_name} {half_size:.12g} {unit} {check_overlap_int}"
+                    )
                 else:
                     hx = float(size.get("x", 10.0)) / 2.0
                     hy = float(size.get("y", 10.0)) / 2.0
