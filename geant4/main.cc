@@ -12,6 +12,7 @@
 #include "G4PhysListFactory.hh"
 #include "G4VModularPhysicsList.hh"
 #include "G4OpticalPhysics.hh"
+#include "G4StepLimiterPhysics.hh"
 
 // Main program
 int main(int argc, char **argv) {
@@ -59,6 +60,10 @@ int main(int argc, char **argv) {
     G4cout << "--> Registering G4OpticalPhysics..." << G4endl;
     physicsList->RegisterPhysics(new G4OpticalPhysics());
   }
+
+  // Register step limiter physics so that G4UserLimits are enforced
+  physicsList->RegisterPhysics(new G4StepLimiterPhysics());
+  G4cout << "--> Registering G4StepLimiterPhysics..." << G4endl;
 
   runManager->SetUserInitialization(physicsList);
 
