@@ -64,19 +64,24 @@ SCORING_STATE_SCHEMA_VERSION = 1
 _SUPPORTED_SCORING_MESH_TYPES = {"box", "cylinder", "realWorldLogVol", "probe"}
 _SUPPORTED_SCORING_REFERENCE_FRAMES = {"world"}
 _SUPPORTED_SCORING_TALLY_QUANTITIES = {
+    "cell_charge",
     "cell_flux",
     "dose_deposit",
     "energy_deposit",
     "flat_surface_current",
     "flat_surface_flux",
+    "min_kin_e_at_generation",
     "n_of_collision",
     "n_of_secondary",
     "n_of_step",
+    "n_of_terminated_track",
     "n_of_track",
+    "passage_cell_current",
     "passage_cell_flux",
     "passage_track_length",
     "population",
     "track_length",
+    "volume_flux",
 }
 
 def convert_to_internal_units(value, unit_str, category="length"):

@@ -13,19 +13,24 @@ SCORING_ARTIFACT_SCHEMA_VERSION = 1
 RUN_MANIFEST_SUMMARY_SCHEMA_VERSION = 1
 SCORING_RUN_SUMMARY_SCHEMA_VERSION = 1
 _SCORING_RUNTIME_VALUE_UNITS = {
+    "cell_charge": "e",
     "cell_flux": "percm2",
     "dose_deposit": "Gy",
     "energy_deposit": "MeV",
     "flat_surface_current": "percm2",
     "flat_surface_flux": "percm2",
+    "min_kin_e_at_generation": "MeV",
     "n_of_collision": "collisions",
     "n_of_secondary": "secondaries",
     "n_of_step": "steps",
+    "n_of_terminated_track": "tracks",
     "n_of_track": "tracks",
+    "passage_cell_current": "A",
     "passage_cell_flux": "percm2",
     "passage_track_length": "mm",
     "population": "tracks",
     "track_length": "mm",
+    "volume_flux": "percm3",
 }
 SUPPORTED_SCORING_RUNTIME_QUANTITIES = tuple(_SCORING_RUNTIME_VALUE_UNITS.keys())
 

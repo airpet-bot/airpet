@@ -2,6 +2,7 @@ export const SCORING_OBJECT_TYPE = 'scoring';
 export const SCORING_OBJECT_ID = 'scoring_state';
 
 export const SUPPORTED_SCORING_TALLY_QUANTITIES = [
+    'cell_charge',
     'energy_deposit',
     'dose_deposit',
     'cell_flux',
@@ -13,8 +14,12 @@ export const SUPPORTED_SCORING_TALLY_QUANTITIES = [
     'passage_track_length',
     'flat_surface_current',
     'flat_surface_flux',
+    'min_kin_e_at_generation',
     'n_of_collision',
+    'n_of_terminated_track',
+    'passage_cell_current',
     'population',
+    'volume_flux',
 ];
 
 export const RUNTIME_READY_SCORING_QUANTITIES = ['energy_deposit', 'n_of_step'];
