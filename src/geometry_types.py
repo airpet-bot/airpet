@@ -1776,7 +1776,7 @@ class Isotope:
 
 class Material:
     """Represents a material."""
-    def __init__(self, name, mat_type='standard', Z_expr=None, A_expr=None, density_expr="0.0", state=None, components=None):
+    def __init__(self, name, mat_type='standard', Z_expr=None, A_expr=None, density_expr="0.0", state=None, components=None, properties=None):
         self.id = str(uuid.uuid4())
         self.name = name
         self.mat_type = mat_type
@@ -1793,6 +1793,7 @@ class Material:
 
         self.state = state 
         self.components = components if components else [] 
+        self.properties = properties if properties is not None else {}
 
     def to_dict(self):
         return {
@@ -1804,7 +1805,8 @@ class Material:
             "_evaluated_A": self._evaluated_A,
             "_evaluated_density": self._evaluated_density,
             "state": self.state, 
-            "components": self.components
+            "components": self.components,
+            "properties": self.properties,
         }
 
     @classmethod
@@ -1827,7 +1829,8 @@ class Material:
             A_expr=data.get('A_expr', str(data.get('A', ""))), 
             density_expr=data.get('density_expr', str(data.get('density', "0.0"))), 
             state=data.get('state'), 
-            components=data.get('components')
+            components=data.get('components'),
+            properties=data.get('properties'),
         )
         instance.id = data.get('id', str(uuid.uuid4()))
         

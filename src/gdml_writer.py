@@ -153,6 +153,10 @@ class GDMLWriter:
             else:
                 if mat_obj.Z_expr: mat_el.set("Z", str(mat_obj.Z_expr))
                 if mat_obj.A_expr: ET.SubElement(mat_el, "atom", {"value": str(mat_obj.A_expr)})
+
+            for prop_name, prop_ref in (mat_obj.properties or {}).items():
+                ET.SubElement(mat_el, "property", {"name": prop_name, "ref": prop_ref})
+
             self.written_materials.add(name)
 
     def _add_solids(self):

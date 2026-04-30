@@ -356,6 +356,13 @@ class GDMLParser:
                             "natoms": comp_el.get('n') # Keep 'n' as an expression string
                         })
 
+                    # Handle material optical properties
+                    for prop_el in element.findall('property'):
+                        prop_name = prop_el.get('name')
+                        prop_ref = prop_el.get('ref')
+                        if prop_name and prop_ref:
+                            mat.properties[prop_name] = prop_ref
+
                     self.geometry_state.add_material(mat)
             
             elif tag == 'element':
