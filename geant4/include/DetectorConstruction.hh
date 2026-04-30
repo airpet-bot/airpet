@@ -38,6 +38,7 @@ public:
   void SetLocalMagneticField(G4String assignmentPayload);
   void SetLocalElectricField(G4String assignmentPayload);
   void SetRegionCutsAndLimits(G4String assignmentPayload);
+  void SetMaterialPropertyConst(G4String assignmentPayload);
 
 private:
   struct RegionControlConfig
@@ -66,6 +67,7 @@ private:
 
   G4String fGDMLFilename;
   std::map<G4String, G4String> fSensitiveDetectorsMap;
+  std::map<G4String, std::map<G4String, G4double>> fMaterialPropertyAssignments;
 };
 
 #endif

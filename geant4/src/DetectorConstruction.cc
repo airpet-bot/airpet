@@ -7,6 +7,8 @@
 #include "G4GeometryManager.hh"
 #include "G4LogicalVolume.hh"
 #include "G4LogicalVolumeStore.hh"
+#include "G4Material.hh"
+#include "G4MaterialPropertiesTable.hh"
 #include "G4ProductionCuts.hh"
 #include "G4Region.hh"
 #include "G4RegionStore.hh"
@@ -324,6 +326,13 @@ void DetectorConstruction::DefineCommands()
     .SetParameterName("Assignment", false)
     .SetStates(G4State_PreInit, G4State_Idle)
     .SetToBeBroadcasted(false);
+
+  fMessenger->DeclareMethod("addMaterialPropertyConst", &DetectorConstruction::SetMaterialPropertyConst)
+    .SetGuidance("Assign a constant optical property to a material.")
+    .SetGuidance("Usage: /g4pet/detector/addMaterialPropertyConst <MaterialName>|<PropertyName>|<Value>")
+    .SetParameterName("Assignment", false)
+    .SetStates(G4State_PreInit, G4State_Idle)
+    .SetToBeBroadcasted(false);
 }
 
 void DetectorConstruction::SetSensitiveDetector(G4String logicalVolumeName, G4String sdName)
@@ -424,6 +433,37 @@ void DetectorConstruction::SetRegionCutsAndLimits(G4String assignmentPayload)
 
   if (auto* runManager = G4RunManager::GetRunManager()) {
     runManager->GeometryHasBeenModified();
+  }
+}
+
+void DetectorConstruction::SetMaterialPropertyConst(G4String assignmentPayload)
+{
+  std::stringstream stream(assignmentPayload);
+  std::string materialNameText;
+  std::string propertyNameText;
+  std::string valueText;
+
+  if (!std::getline(stream, materialNameText, '|') ||
+      !std::getline(stream, propertyNameText, '|') ||
+      !std::getline(stream, valueText, '|')) {
+    G4cerr << "--> WARNING: Invalid material const property payload '"
+           << assignmentPayload << "'. Expected <MaterialName>|<PropertyName>|<Value>."
+           << G4endl;
+    return;
+  }
+
+  try {
+    const G4double value = std::stod(TrimWhitespace(valueText));
+    const G4String materialName = TrimWhitespace(materialNameText).c_str();
+    const G4String propertyName = TrimWhitespace(propertyNameText).c_str();
+
+    fMaterialPropertyAssignments[materialName][propertyName] = value;
+    G4cout << "--> Requested const property '" << propertyName << "' = " << value
+           << " for material '" << materialName << "'" << G4endl;
+  } catch (const std::exception&) {
+    G4cerr << "--> WARNING: Invalid numeric value in material const property payload '"
+           << assignmentPayload << "'. Expected <MaterialName>|<PropertyName>|<Value>."
+           << G4endl;
   }
 }
 
@@ -637,6 +677,40 @@ void DetectorConstruction::ConstructSDandField()
       }
       region->SetUserLimits(userLimits);
       G4cout << "--> Requested region user limits for region '" << regionName << "'" << G4endl;
+    }
+  }
+
+  for (const auto& matPair : fMaterialPropertyAssignments) {
+    const G4String& materialName = matPair.first;
+    const auto& propMap = matPair.second;
+
+    G4Material* material = nullptr;
+    G4MaterialTable* materialTable = G4Material::GetMaterialTable();
+    if (materialTable) {
+      for (auto* mat : *materialTable) {
+        if (mat && mat->GetName() == materialName) {
+          material = mat;
+          break;
+        }
+      }
+    }
+
+    if (!material) {
+      G4cerr << "--> WARNING: Material '" << materialName
+             << "' not found in geometry. Cannot attach material properties." << G4endl;
+      continue;
+    }
+
+    G4MaterialPropertiesTable* matprop = material->GetMaterialPropertiesTable();
+    if (!matprop) {
+      matprop = new G4MaterialPropertiesTable();
+      material->SetMaterialPropertiesTable(matprop);
+    }
+
+    for (const auto& propPair : propMap) {
+      matprop->AddConstProperty(propPair.first, propPair.second, true);
+      G4cout << "--> Attached const property '" << propPair.first << "' = " << propPair.second
+             << " to material '" << materialName << "'" << G4endl;
     }
   }
 

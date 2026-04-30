@@ -936,8 +936,12 @@ def test_gdml_material_properties_round_trip():
     """Material optical properties must survive GDML export and re-import."""
     state = GeometryState()
 
-    from src.geometry_types import Solid
+    from src.geometry_types import Solid, Define
     state.add_solid(Solid("world_solid", "box", {"x": "100", "y": "100", "z": "100"}))
+
+    # Add matrix defines so the property references are valid
+    state.add_define(Define("AIRRINDEX", "matrix", {"coldim": "2", "values": ["1.0*eV", "1.0", "2.0*eV", "1.33"]}))
+    state.add_define(Define("AIRABSLENGTH", "matrix", {"coldim": "1", "values": ["100.0"]}))
 
     mat = Material(
         "OpticalAir",
@@ -958,11 +962,14 @@ def test_gdml_material_properties_round_trip():
     gdml_str = writer.get_gdml_string()
 
     # Verify property tags are emitted inside the material
-    mat_start = gdml_str.find('<material name="OpticalAir">')
+    mat_start = gdml_str.find('<material name="OpticalAir"')
     mat_end = gdml_str.find('</material>', mat_start) + len('</material>')
     mat_block = gdml_str[mat_start:mat_end]
     assert '<property name="RINDEX" ref="AIRRINDEX"/>' in mat_block
     assert '<property name="ABSLENGTH" ref="AIRABSLENGTH"/>' in mat_block
+    # Verify matrices are in defines
+    assert '<matrix name="AIRRINDEX"' in gdml_str
+    assert '<matrix name="AIRABSLENGTH"' in gdml_str
 
     # Parse back
     parser = GDMLParser()
@@ -988,40 +995,3 @@ def test_gdml_material_properties_round_trip():
     assert imported_state2.materials["PlainSi"].properties == {}
 
 
-def test_gdml_material_properties_round_trip():
-    """Material optical properties must survive GDML export and re-import."""
-    state = GeometryState()
-
-    from src.geometry_types import Solid
-    state.add_solid(Solid("world_solid", "box", {"x": "100", "y": "100", "z": "100"}))
-
-    mat = Material(
-        "OpticalAir",
-        Z_expr="14",
-        A_expr="28.085",
-        density_expr="0.001225*g/cm3",
-        state="gas",
-        properties={"RINDEX": "AIRRINDEX", "ABSLENGTH": "AIRABSLENGTH"},
-    )
-    state.add_material(mat)
-
-    lv_world = LogicalVolume("world_lv", "world_solid", "OpticalAir")
-    state.add_logical_volume(lv_world)
-    state.world_volume_ref = "world_lv"
-
-    writer = GDMLWriter(state)
-    gdml_str = writer.get_gdml_string()
-
-    # Verify property tags are emitted inside the material block
-    mat_start = gdml_str.find('<material name="OpticalAir"')
-    mat_end = gdml_str.find('</material>', mat_start) + len('</material>')
-    mat_block = gdml_str[mat_start:mat_end]
-    assert '<property name="RINDEX" ref="AIRRINDEX"/>' in mat_block
-    assert '<property name="ABSLENGTH" ref="AIRABSLENGTH"/>' in mat_block
-
-    # Parse back and verify properties survive
-    parser = GDMLParser()
-    imported_state = parser.parse_gdml_string(gdml_str)
-
-    imported_mat = imported_state.materials["OpticalAir"]
-    assert imported_mat.properties == {"RINDEX": "AIRRINDEX", "ABSLENGTH": "AIRABSLENGTH"}

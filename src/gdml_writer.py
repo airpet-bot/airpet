@@ -155,7 +155,12 @@ class GDMLWriter:
                 if mat_obj.A_expr: ET.SubElement(mat_el, "atom", {"value": str(mat_obj.A_expr)})
 
             for prop_name, prop_ref in (mat_obj.properties or {}).items():
-                ET.SubElement(mat_el, "property", {"name": prop_name, "ref": prop_ref})
+                if isinstance(prop_ref, str):
+                    if prop_ref in self.geometry_state.defines:
+                        ET.SubElement(mat_el, "property", {"name": prop_name, "ref": prop_ref})
+                    else:
+                        print(f"Warning: Material '{mat_obj.name}' property '{prop_name}' references "
+                              f"undefined matrix '{prop_ref}'. Skipping property emission.")
 
             self.written_materials.add(name)
 

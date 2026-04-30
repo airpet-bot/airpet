@@ -9842,6 +9842,33 @@ class ProjectManager:
 
         macro_content.append("")
 
+        # --- Material Optical Properties ---
+        macro_content.append("# --- Material Optical Properties ---")
+        materials_with_props = [
+            m for m in temp_state.materials.values()
+            if getattr(m, 'properties', None)
+        ]
+        emitted_any_property = False
+        for mat in materials_with_props:
+            for prop_name, prop_value in mat.properties.items():
+                numeric_value = None
+                if isinstance(prop_value, (int, float)):
+                    numeric_value = float(prop_value)
+                elif isinstance(prop_value, str):
+                    try:
+                        numeric_value = float(prop_value)
+                    except ValueError:
+                        pass
+                if numeric_value is not None:
+                    macro_content.append(
+                        f"/g4pet/detector/addMaterialPropertyConst "
+                        f"{mat.name}|{prop_name}|{numeric_value}"
+                    )
+                    emitted_any_property = True
+        if not emitted_any_property:
+            macro_content.append("# No material optical properties defined.")
+        macro_content.append("")
+
         # --- Initialize ---
         macro_content.append("/run/initialize")
         macro_content.append("")
