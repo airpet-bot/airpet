@@ -534,7 +534,7 @@ export function buildResolvedSimulationOptions(projectState, rawOverrides = {}) 
         ),
         optical_physics: normalizeBoolean(
             overrides.optical_physics,
-            DEFAULT_TRANSIENT_SIMULATION_OPTIONS.optical_physics,
+            projectState?.environment?.optical_physics ?? DEFAULT_TRANSIENT_SIMULATION_OPTIONS.optical_physics,
         ),
     };
 }
@@ -556,7 +556,8 @@ export function buildSimulationOptionOverrides(projectState, rawOptions = {}) {
     if (resolvedOptions.physics_list !== DEFAULT_TRANSIENT_SIMULATION_OPTIONS.physics_list) {
         overrides.physics_list = resolvedOptions.physics_list;
     }
-    if (resolvedOptions.optical_physics !== DEFAULT_TRANSIENT_SIMULATION_OPTIONS.optical_physics) {
+    const defaultOpticalPhysics = projectState?.environment?.optical_physics ?? DEFAULT_TRANSIENT_SIMULATION_OPTIONS.optical_physics;
+    if (resolvedOptions.optical_physics !== defaultOpticalPhysics) {
         overrides.optical_physics = resolvedOptions.optical_physics;
     }
 

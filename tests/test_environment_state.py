@@ -64,6 +64,7 @@ def test_environment_state_defaults_and_roundtrip():
             "min_kinetic_energy_mev": 0.0,
             "min_range_mm": 0.0,
         },
+        "optical_physics": False,
     }
 
     assert state.environment.to_summary_dict() == {
@@ -108,6 +109,7 @@ def test_environment_state_validation_and_project_roundtrip():
             "min_kinetic_energy_mev": 0.002,
             "min_range_mm": 0.05,
         },
+        "optical_physics": False,
     }
 
     ok, err = EnvironmentState.validate(valid_payload)

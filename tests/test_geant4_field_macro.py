@@ -42,6 +42,7 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
             "min_kinetic_energy_mev": 0.002,
             "min_range_mm": 0.05,
         },
+        "optical_physics": False,
     }
 
     state = GeometryState()

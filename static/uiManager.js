@@ -5058,6 +5058,12 @@ export function setSimOptions(options) {
     simSaveParticlesCheckbox.checked = options.save_particles || false;
     simSaveTracksRangeInput.value = options.save_tracks_range || '';
     simPrintProgressInput.value = options.print_progress || 1000;
+    if (simPhysicsListSelect) {
+        simPhysicsListSelect.value = options.physics_list || 'FTFP_BERT';
+    }
+    if (simOpticalPhysicsCheckbox) {
+        simOpticalPhysicsCheckbox.checked = options.optical_physics || false;
+    }
 }
 
 export function getSimOptions() {

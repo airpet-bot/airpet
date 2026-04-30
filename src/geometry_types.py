@@ -2904,6 +2904,8 @@ class EnvironmentState:
             f"{cls._summary_number(vector.get('z', 0.0))}) {unit_label}"
         )
 
+    ENVIRONMENT_FIELD_NAME = "environment"
+
     def __init__(
         self,
         global_uniform_magnetic_field=None,
@@ -2911,7 +2913,9 @@ class EnvironmentState:
         local_uniform_magnetic_field=None,
         local_uniform_electric_field=None,
         region_cuts_and_limits=None,
+        optical_physics=False,
     ):
+        self.optical_physics = bool(optical_physics)
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -2936,6 +2940,8 @@ class EnvironmentState:
             self.region_cuts_and_limits = region_cuts_and_limits
         else:
             self.region_cuts_and_limits = RegionCutsAndLimits.from_dict(region_cuts_and_limits)
+
+        self.optical_physics = bool(optical_physics)
 
     @classmethod
     def validate(cls, data, field_name="environment"):
@@ -2992,10 +2998,17 @@ class EnvironmentState:
         if region_controls_data is None and 'region_controls' in data:
             region_controls_data = data.get('region_controls')
 
-        return RegionCutsAndLimits.validate(
+        ok, err = RegionCutsAndLimits.validate(
             region_controls_data,
             field_name=f"{field_name}.region_cuts_and_limits",
         )
+        if not ok:
+            return ok, err
+
+        if 'optical_physics' in data and not isinstance(data['optical_physics'], bool):
+            return False, f"{field_name}.optical_physics must be a boolean."
+
+        return True, None
 
     def to_dict(self):
         return {
@@ -3004,6 +3017,7 @@ class EnvironmentState:
             "local_uniform_magnetic_field": self.local_uniform_magnetic_field.to_dict(),
             "local_uniform_electric_field": self.local_uniform_electric_field.to_dict(),
             "region_cuts_and_limits": self.region_cuts_and_limits.to_dict(),
+            "optical_physics": self.optical_physics,
         }
 
     def to_summary_dict(self):
@@ -3073,6 +3087,14 @@ class EnvironmentState:
                 region_controls.to_dict(),
             )
 
+        if self.optical_physics:
+            add_control(
+                "optical_physics",
+                "Optical physics",
+                "Optical physics: enabled",
+                {"enabled": True},
+            )
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3109,6 +3131,10 @@ class EnvironmentState:
         if region_controls_data is None and 'region_controls' in data:
             region_controls_data = data.get('region_controls')
 
+        optical_physics = data.get('optical_physics', False)
+        if isinstance(optical_physics, str):
+            optical_physics = optical_physics.strip().lower() in {'true', '1', 'yes', 'on'}
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3139,7 +3165,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics)
 
 
 class ScoringState:

@@ -5587,6 +5587,19 @@ class ProjectManager:
     def _normalize_environment_update_value(self, target_obj, property_path, new_value):
         field_name, vector_name = self._environment_field_descriptor(target_obj)
 
+        if property_path == 'optical_physics':
+            if isinstance(new_value, bool):
+                return new_value, None
+
+            if isinstance(new_value, str):
+                normalized = new_value.strip().lower()
+                if normalized in {'true', '1', 'yes', 'on'}:
+                    return True, None
+                if normalized in {'false', '0', 'no', 'off'}:
+                    return False, None
+
+            return None, f"{field_name}.optical_physics must be a boolean."
+
         if property_path == 'enabled':
             if isinstance(new_value, bool):
                 return new_value, None
@@ -5711,6 +5724,7 @@ class ProjectManager:
                 "local_uniform_magnetic_field": self.current_geometry_state.environment.local_uniform_magnetic_field,
                 "local_uniform_electric_field": self.current_geometry_state.environment.local_uniform_electric_field,
                 "region_cuts_and_limits": self.current_geometry_state.environment.region_cuts_and_limits,
+                "optical_physics": self.current_geometry_state.environment.optical_physics,
             }
             target_obj = environment_objects.get(object_id)
             if target_obj is None:

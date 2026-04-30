@@ -286,6 +286,14 @@ def get_geant4_env(sim_params=None):
          
     return env
 
+
+def _merge_project_sim_params(pm, sim_params):
+    """Merge persisted project simulation settings into sim_params if absent."""
+    merged = dict(sim_params) if sim_params else {}
+    if pm and pm.current_geometry_state and 'optical_physics' not in merged:
+        merged['optical_physics'] = pm.current_geometry_state.environment.optical_physics
+    return merged
+
 # --- New Global Configuration ---
 # Path to the Geant4 application directory and executable
 # We assume the script is run from the `virtual-pet` root directory
@@ -3478,6 +3486,8 @@ def run_simulation():
     if not sim_params:
         return jsonify({"success": False, "error": "Missing simulation parameters."}), 400
 
+    sim_params = _merge_project_sim_params(pm, sim_params)
+
     preflight_report = pm.run_preflight_checks()
     if not preflight_report.get('summary', {}).get('can_run', False):
         return jsonify({
@@ -4008,10 +4018,12 @@ def _build_simulation_candidate_evaluator(
                 run_dir = os.path.join(version_dir, "sim_runs", job_id)
                 os.makedirs(run_dir, exist_ok=True)
 
+                merged_sim_params = _merge_project_sim_params(project_manager, sim_params)
+
                 try:
                     project_manager.generate_macro_file(
                         job_id=job_id,
-                        sim_params=sim_params,
+                        sim_params=merged_sim_params,
                         build_dir=GEANT4_BUILD_DIR,
                         run_dir=run_dir,
                         version_dir=version_dir,
@@ -4028,7 +4040,7 @@ def _build_simulation_candidate_evaluator(
                         },
                     }
 
-                run_g4_simulation(job_id=job_id, run_dir=run_dir, executable_path=GEANT4_EXECUTABLE, sim_params=sim_params)
+                run_g4_simulation(job_id=job_id, run_dir=run_dir, executable_path=GEANT4_EXECUTABLE, sim_params=merged_sim_params)
 
                 with SIMULATION_LOCK:
                     status = dict(SIMULATION_STATUS.get(job_id, {}))
@@ -10685,6 +10697,7 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 if isinstance(value, str) and not value.strip():
                     continue
                 sim_params[key] = value
+            sim_params = _merge_project_sim_params(pm, sim_params)
             version_id = pm.current_version_id
             if pm.is_changed or not version_id:
                 version_id, _ = pm.save_project_version(f"AI_Sim_Run_{job_id[:8]}")
