@@ -283,6 +283,17 @@ def build_scoring_runtime_plan(scoring_payload: Optional[Dict[str, Any]]) -> Dic
                 "e_high": float(kef["e_high"]),
                 "unit": str(kef["unit"]),
             }
+        pkef = tally.get("particle_with_kinetic_energy_filter")
+        if isinstance(pkef, dict) and pkef.get("filter_name") and pkef.get("e_low") is not None and pkef.get("e_high") is not None and pkef.get("unit"):
+            raw_particles = pkef.get("particles")
+            if isinstance(raw_particles, list) and raw_particles:
+                supported_request["particle_with_kinetic_energy_filter"] = {
+                    "filter_name": str(pkef["filter_name"]),
+                    "e_low": float(pkef["e_low"]),
+                    "e_high": float(pkef["e_high"]),
+                    "unit": str(pkef["unit"]),
+                    "particles": [str(p) for p in raw_particles],
+                }
         supported_requests.append(supported_request)
 
     return {

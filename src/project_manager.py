@@ -9984,6 +9984,18 @@ class ProjectManager:
                                 macro_content.append(
                                     f"/score/filter/kineticEnergy {filter_name} {e_low} {e_high} {unit}"
                                 )
+                        particle_with_kinetic_energy_filter = tally.get("particle_with_kinetic_energy_filter")
+                        if isinstance(particle_with_kinetic_energy_filter, dict):
+                            filter_name = particle_with_kinetic_energy_filter.get("filter_name")
+                            e_low = particle_with_kinetic_energy_filter.get("e_low")
+                            e_high = particle_with_kinetic_energy_filter.get("e_high")
+                            unit = particle_with_kinetic_energy_filter.get("unit")
+                            particles = particle_with_kinetic_energy_filter.get("particles")
+                            if filter_name and e_low is not None and e_high is not None and unit and isinstance(particles, list) and particles:
+                                particles_str = " ".join(str(p) for p in particles)
+                                macro_content.append(
+                                    f"/score/filter/particleWithKineticEnergy {filter_name} {e_low} {e_high} {unit} {particles_str}"
+                                )
                 else:
                     macro_content.append(
                         f"/score/quantity/energyDeposit {mesh_name}_eDep"

@@ -699,6 +699,52 @@ def _normalize_scoring_tally_request_entry(raw_entry, mesh_lookup=None):
             "unit": kef_unit,
         }
 
+    particle_with_kinetic_energy_filter = None
+    raw_pkef = raw_entry.get("particle_with_kinetic_energy_filter")
+    if raw_pkef is not None:
+        if not isinstance(raw_pkef, dict):
+            raise ValueError("scoring.tally_requests[].particle_with_kinetic_energy_filter must be an object.")
+        pkef_name = _normalize_non_empty_string(raw_pkef.get("filter_name"))
+        pkef_e_low = _normalize_float(raw_pkef.get("e_low"), None, "scoring.tally_requests[].particle_with_kinetic_energy_filter.e_low")
+        pkef_e_high = _normalize_float(raw_pkef.get("e_high"), None, "scoring.tally_requests[].particle_with_kinetic_energy_filter.e_high")
+        pkef_unit = _normalize_non_empty_string(raw_pkef.get("unit"))
+        raw_pkef_particles = raw_pkef.get("particles")
+        if not isinstance(raw_pkef_particles, list) or not raw_pkef_particles:
+            raise ValueError(
+                "scoring.tally_requests[].particle_with_kinetic_energy_filter must contain a non-empty particles list."
+            )
+        pkef_particles = []
+        for p in raw_pkef_particles:
+            np = _normalize_non_empty_string(p)
+            if not np:
+                raise ValueError(
+                    "scoring.tally_requests[].particle_with_kinetic_energy_filter.particles must contain non-empty strings."
+                )
+            pkef_particles.append(np)
+        if not pkef_name:
+            raise ValueError(
+                "scoring.tally_requests[].particle_with_kinetic_energy_filter must contain filter_name."
+            )
+        if pkef_e_low is None or pkef_e_high is None:
+            raise ValueError(
+                "scoring.tally_requests[].particle_with_kinetic_energy_filter must contain e_low and e_high."
+            )
+        if pkef_e_low >= pkef_e_high:
+            raise ValueError(
+                "scoring.tally_requests[].particle_with_kinetic_energy_filter.e_low must be less than e_high."
+            )
+        if not pkef_unit:
+            raise ValueError(
+                "scoring.tally_requests[].particle_with_kinetic_energy_filter must contain unit."
+            )
+        particle_with_kinetic_energy_filter = {
+            "filter_name": pkef_name,
+            "e_low": pkef_e_low,
+            "e_high": pkef_e_high,
+            "unit": pkef_unit,
+            "particles": pkef_particles,
+        }
+
     default_name = f"{quantity}_{tally_id.split('_')[-1][:8]}"
     result = {
         "tally_id": tally_id,
@@ -716,6 +762,8 @@ def _normalize_scoring_tally_request_entry(raw_entry, mesh_lookup=None):
         result["neutral_filter"] = neutral_filter
     if kinetic_energy_filter is not None:
         result["kinetic_energy_filter"] = kinetic_energy_filter
+    if particle_with_kinetic_energy_filter is not None:
+        result["particle_with_kinetic_energy_filter"] = particle_with_kinetic_energy_filter
     return result
 
 

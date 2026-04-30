@@ -234,6 +234,19 @@ function normalizeScoringTally(rawTally, index = 0) {
             unit: normalizeString(tally.kinetic_energy_filter.unit, 'MeV'),
         };
     }
+    if (tally.particle_with_kinetic_energy_filter && typeof tally.particle_with_kinetic_energy_filter === 'object') {
+        const rawPkefParticles = tally.particle_with_kinetic_energy_filter.particles;
+        const pkefParticles = Array.isArray(rawPkefParticles)
+            ? rawPkefParticles.filter(p => typeof p === 'string' && p.trim() !== '')
+            : [];
+        normalized.particle_with_kinetic_energy_filter = {
+            filter_name: normalizeString(tally.particle_with_kinetic_energy_filter.filter_name, ''),
+            e_low: normalizeFiniteNumber(tally.particle_with_kinetic_energy_filter.e_low, 0),
+            e_high: normalizeFiniteNumber(tally.particle_with_kinetic_energy_filter.e_high, 0),
+            unit: normalizeString(tally.particle_with_kinetic_energy_filter.unit, 'MeV'),
+            particles: pkefParticles,
+        };
+    }
     return normalized;
 }
 

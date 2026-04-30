@@ -593,3 +593,52 @@ def test_generate_macro_emits_probe_mesh_commands(tmp_path):
 
     # Both meshes close properly
     assert macro_text.count("/score/close") == 2
+
+
+def test_generate_macro_emits_particle_with_kinetic_energy_filter(tmp_path):
+    """Verify that a tally request with particle_with_kinetic_energy_filter emits
+    /score/filter/particleWithKineticEnergy with the correct signature."""
+    pm = ProjectManager(ExpressionEvaluator())
+
+    scoring_payload = {
+        "scoring_meshes": [
+            {
+                "mesh_id": "mesh_main",
+                "name": "mesh_main",
+                "geometry": {"size_mm": {"x": 20, "y": 20, "z": 20}},
+                "bins": {"x": 10, "y": 10, "z": 10},
+            }
+        ],
+        "tally_requests": [
+            {
+                "tally_id": "tally_pkef",
+                "name": "pkef_energy_deposit",
+                "mesh_ref": {"mesh_id": "mesh_main"},
+                "quantity": "energy_deposit",
+                "particle_with_kinetic_energy_filter": {
+                    "filter_name": "gammaKEFilter",
+                    "e_low": 0.5,
+                    "e_high": 5.0,
+                    "unit": "MeV",
+                    "particles": ["gamma", "e-"],
+                },
+            }
+        ],
+    }
+
+    state = GeometryState()
+    state.scoring = ScoringState.from_dict(scoring_payload)
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(json.dumps(state.to_dict()), encoding="utf-8")
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "pkef-job", {}, str(tmp_path), str(tmp_path), str(version_dir)
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    assert "/score/quantity/energyDeposit pkef_energy_deposit" in macro_text
+    assert "/score/filter/particleWithKineticEnergy gammaKEFilter 0.5 5.0 MeV gamma e-" in macro_text
