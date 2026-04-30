@@ -24,6 +24,7 @@ class GDMLWriter:
         self.written_isotopes = set()
         self.written_materials = set()
         self.written_optical_surfaces = set()
+        self._synthetic_defines = {}
 
     def _format_density_for_gdml(self, mat_obj):
         raw_density = str(mat_obj.density_expr or "").strip()
@@ -49,8 +50,29 @@ class GDMLWriter:
 
         return {"value": f"{density_value:.12g}", "unit": "g/cm3"}
 
+    def _collect_synthetic_defines(self):
+        for mat in self.geometry_state.materials.values():
+            if not getattr(mat, 'properties', None):
+                continue
+            for prop_name, prop_value in mat.properties.items():
+                if isinstance(prop_value, list) and prop_value:
+                    matrix_name = f"{mat.name}_{prop_name}_matprop_vec"
+                    flat = []
+                    for pair in prop_value:
+                        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                            flat.extend([str(pair[0]), str(pair[1])])
+                        else:
+                            print(f"Warning: Material '{mat.name}' property '{prop_name}' "
+                                  f"contains invalid pair '{pair}'. Skipping.")
+                    if flat:
+                        self._synthetic_defines[matrix_name] = {
+                            "coldim": "2",
+                            "values": flat
+                        }
+
     def _add_defines(self):
-        if not self.geometry_state.defines: return
+        if not self.geometry_state.defines and not self._synthetic_defines:
+            return
         define_el = ET.SubElement(self.root, "define")
 
         for name, define_obj in self.geometry_state.defines.items():
@@ -90,6 +112,13 @@ class GDMLWriter:
                 }
                 ET.SubElement(define_el, "matrix", attrs)
 
+        for name, raw_expr in self._synthetic_defines.items():
+            attrs = {
+                "name": name,
+                "coldim": str(raw_expr.get('coldim', 1)),
+                "values": " ".join(map(str, raw_expr.get('values', [])))
+            }
+            ET.SubElement(define_el, "matrix", attrs)
 
     def _add_materials(self):
 
@@ -154,13 +183,16 @@ class GDMLWriter:
                 if mat_obj.Z_expr: mat_el.set("Z", str(mat_obj.Z_expr))
                 if mat_obj.A_expr: ET.SubElement(mat_el, "atom", {"value": str(mat_obj.A_expr)})
 
-            for prop_name, prop_ref in (mat_obj.properties or {}).items():
-                if isinstance(prop_ref, str):
-                    if prop_ref in self.geometry_state.defines:
-                        ET.SubElement(mat_el, "property", {"name": prop_name, "ref": prop_ref})
+            for prop_name, prop_value in (mat_obj.properties or {}).items():
+                if isinstance(prop_value, str):
+                    if prop_value in self.geometry_state.defines:
+                        ET.SubElement(mat_el, "property", {"name": prop_name, "ref": prop_value})
                     else:
                         print(f"Warning: Material '{mat_obj.name}' property '{prop_name}' references "
-                              f"undefined matrix '{prop_ref}'. Skipping property emission.")
+                              f"undefined matrix '{prop_value}'. Skipping property emission.")
+                elif isinstance(prop_value, list) and prop_value:
+                    matrix_name = f"{mat_obj.name}_{prop_name}_matprop_vec"
+                    ET.SubElement(mat_el, "property", {"name": prop_name, "ref": matrix_name})
 
             self.written_materials.add(name)
 
@@ -829,6 +861,7 @@ class GDMLWriter:
         ET.SubElement(setup_el, "world", {"ref": self.geometry_state.world_volume_ref})
 
     def get_gdml_string(self):
+        self._collect_synthetic_defines()
         self._add_defines()
         self._add_materials()
         self._add_solids()

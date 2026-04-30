@@ -976,7 +976,21 @@ def test_gdml_material_properties_round_trip():
     imported_state = parser.parse_gdml_string(gdml_str)
 
     imported_mat = imported_state.materials["OpticalAir"]
-    assert imported_mat.properties == {"RINDEX": "AIRRINDEX", "ABSLENGTH": "AIRABSLENGTH"}
+    # coldim="2" matrix refs are resolved to evaluated vector data; coldim="1" remains a string ref
+    assert imported_mat.properties["RINDEX"] == [[0.001, 1.0], [0.002, 1.33]]
+    assert imported_mat.properties["ABSLENGTH"] == "AIRABSLENGTH"
+
+    # Verify re-export from the resolved state creates a new matrix define for the vector
+    writer_rt = GDMLWriter(imported_state)
+    gdml_str_rt = writer_rt.get_gdml_string()
+    assert '<property name="RINDEX" ref="OpticalAir_RINDEX_matprop_vec"/>' in gdml_str_rt
+    assert '<matrix name="OpticalAir_RINDEX_matprop_vec"' in gdml_str_rt
+    assert 'coldim="2"' in gdml_str_rt
+
+    # Parse again and verify vector data survives the second round-trip
+    parser2 = GDMLParser()
+    imported_state2 = parser2.parse_gdml_string(gdml_str_rt)
+    assert imported_state2.materials["OpticalAir"].properties["RINDEX"] == [[0.001, 1.0], [0.002, 1.33]]
 
     # Verify a material without properties round-trips as empty dict
     mat_no_props = Material("PlainSi", Z_expr="14", A_expr="28.085", density_expr="2.33*g/cm3")

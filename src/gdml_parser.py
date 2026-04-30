@@ -361,7 +361,30 @@ class GDMLParser:
                         prop_name = prop_el.get('name')
                         prop_ref = prop_el.get('ref')
                         if prop_name and prop_ref:
-                            mat.properties[prop_name] = prop_ref
+                            define_obj = self.geometry_state.defines.get(prop_ref)
+                            if define_obj and define_obj.type == 'matrix':
+                                raw_expr = define_obj.raw_expression
+                                if str(raw_expr.get('coldim', '1')) == '2':
+                                    values_list = raw_expr.get('values', [])
+                                    evaluated = []
+                                    try:
+                                        for val_str in values_list:
+                                            val = self.aeval.eval(str(val_str))
+                                            evaluated.append(float(val))
+                                        pairs = []
+                                        for i in range(0, len(evaluated), 2):
+                                            if i + 1 < len(evaluated):
+                                                pairs.append([evaluated[i], evaluated[i+1]])
+                                        if pairs:
+                                            mat.properties[prop_name] = pairs
+                                        else:
+                                            mat.properties[prop_name] = prop_ref
+                                    except Exception:
+                                        mat.properties[prop_name] = prop_ref
+                                else:
+                                    mat.properties[prop_name] = prop_ref
+                            else:
+                                mat.properties[prop_name] = prop_ref
 
                     self.geometry_state.add_material(mat)
             

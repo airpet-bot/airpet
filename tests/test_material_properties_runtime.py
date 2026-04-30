@@ -148,3 +148,80 @@ def test_generate_macro_skips_material_properties_when_none_numeric():
 
         assert "# No material optical properties defined." in macro_content
         assert "/g4pet/detector/addMaterialPropertyConst" not in macro_content
+
+
+def test_generate_macro_emits_material_property_vector():
+    """Macro generation must emit addMaterialProperty for list property values."""
+    pm = ProjectManager(ExpressionEvaluator())
+    pm.create_empty_project()
+
+    pm.add_material(
+        "OpticalWater",
+        {
+            "Z_expr": "8",
+            "A_expr": "16.00",
+            "density_expr": "1.0*g/cm3",
+            "state": "liquid",
+            "properties": {
+                # Values in keV (AIRPET internal energy unit); macro emits MeV for Geant4
+                "RINDEX": [[1.0, 1.33], [2.0, 1.34], [3.0, 1.35]],
+                "ABSLENGTH": "WATERABSLENGTH",  # non-numeric non-list, should be skipped
+            },
+        },
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        version_dir = os.path.join(tmpdir, "version")
+        run_dir = os.path.join(tmpdir, "run")
+        os.makedirs(version_dir)
+        os.makedirs(run_dir)
+
+        version_json = pm.save_project_to_json_string()
+        with open(os.path.join(version_dir, "version.json"), "w") as f:
+            f.write(version_json)
+
+        macro_path = pm.generate_macro_file(
+            job_id="test-job",
+            sim_params={"events": 10},
+            build_dir=tmpdir,
+            run_dir=run_dir,
+            version_dir=version_dir,
+        )
+
+        with open(macro_path, "r") as f:
+            macro_content = f.read()
+
+        # Energies converted from keV to MeV (multiply by 0.001)
+        assert "/g4pet/detector/addMaterialProperty OpticalWater|RINDEX|3|0.001|1.33|0.002|1.34|0.003|1.35" in macro_content
+        assert "WATERABSLENGTH" not in macro_content
+
+
+def test_gdml_writer_emits_vector_properties_as_matrices():
+    """GDML writer must create coldim=\"2\" matrix defines for list property values."""
+    state = GeometryState()
+    state.add_solid(Solid("box_solid", "box", {"x": "10", "y": "10", "z": "10"}))
+    mat = Material(
+        "OpticalWater",
+        Z_expr="8",
+        A_expr="16.00",
+        density_expr="1.0*g/cm3",
+        state="liquid",
+        properties={"RINDEX": [[1.0, 1.33], [2.0, 1.34]]},
+    )
+    state.add_material(mat)
+    state.add_logical_volume(LogicalVolume("lv", "box_solid", "OpticalWater"))
+    state.world_volume_ref = "lv"
+
+    writer = GDMLWriter(state)
+    gdml_str = writer.get_gdml_string()
+
+    assert '<matrix name="OpticalWater_RINDEX_matprop_vec"' in gdml_str
+    assert 'coldim="2"' in gdml_str
+    assert '<property name="RINDEX" ref="OpticalWater_RINDEX_matprop_vec"/>' in gdml_str
+
+
+def test_cpp_app_compiles_with_vector_property_support():
+    """The C++ executable must exist after successful compilation."""
+    build_dir = os.path.join(os.path.dirname(__file__), "..", "geant4", "build")
+    executable = os.path.join(build_dir, "airpet-sim")
+    assert os.path.exists(executable), f"C++ executable not found at {executable}"

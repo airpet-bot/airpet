@@ -333,6 +333,13 @@ void DetectorConstruction::DefineCommands()
     .SetParameterName("Assignment", false)
     .SetStates(G4State_PreInit, G4State_Idle)
     .SetToBeBroadcasted(false);
+
+  fMessenger->DeclareMethod("addMaterialProperty", &DetectorConstruction::SetMaterialPropertyVector)
+    .SetGuidance("Assign an energy-dependent optical property vector to a material.")
+    .SetGuidance("Usage: /g4pet/detector/addMaterialProperty <MaterialName>|<PropertyName>|<nPairs>|<e1>|<v1>|<e2>|<v2>|...")
+    .SetParameterName("Assignment", false)
+    .SetStates(G4State_PreInit, G4State_Idle)
+    .SetToBeBroadcasted(false);
 }
 
 void DetectorConstruction::SetSensitiveDetector(G4String logicalVolumeName, G4String sdName)
@@ -464,6 +471,51 @@ void DetectorConstruction::SetMaterialPropertyConst(G4String assignmentPayload)
     G4cerr << "--> WARNING: Invalid numeric value in material const property payload '"
            << assignmentPayload << "'. Expected <MaterialName>|<PropertyName>|<Value>."
            << G4endl;
+  }
+}
+
+void DetectorConstruction::SetMaterialPropertyVector(G4String assignmentPayload)
+{
+  std::stringstream stream(assignmentPayload);
+  std::string materialNameText;
+  std::string propertyNameText;
+  std::string nPairsText;
+
+  if (!std::getline(stream, materialNameText, '|') ||
+      !std::getline(stream, propertyNameText, '|') ||
+      !std::getline(stream, nPairsText, '|')) {
+    G4cerr << "--> WARNING: Invalid material property vector payload '"
+           << assignmentPayload << "'. Expected <MaterialName>|<PropertyName>|<nPairs>|..."
+           << G4endl;
+    return;
+  }
+
+  try {
+    const std::size_t nPairs = std::stoul(TrimWhitespace(nPairsText));
+    const G4String materialName = TrimWhitespace(materialNameText).c_str();
+    const G4String propertyName = TrimWhitespace(propertyNameText).c_str();
+    std::vector<std::pair<G4double, G4double>> pairs;
+    pairs.reserve(nPairs);
+
+    for (std::size_t i = 0; i < nPairs; ++i) {
+      std::string energyText;
+      std::string valueText;
+      if (!std::getline(stream, energyText, '|') || !std::getline(stream, valueText, '|')) {
+        G4cerr << "--> WARNING: Incomplete material property vector payload '"
+               << assignmentPayload << "' at pair " << i << "." << G4endl;
+        return;
+      }
+      const G4double energy = std::stod(TrimWhitespace(energyText));
+      const G4double value = std::stod(TrimWhitespace(valueText));
+      pairs.emplace_back(energy, value);
+    }
+
+    fMaterialPropertyVectorAssignments[materialName][propertyName] = std::move(pairs);
+    G4cout << "--> Requested property vector '" << propertyName << "' with " << nPairs
+           << " pairs for material '" << materialName << "'" << G4endl;
+  } catch (const std::exception&) {
+    G4cerr << "--> WARNING: Invalid numeric value in material property vector payload '"
+           << assignmentPayload << "'." << G4endl;
   }
 }
 
@@ -711,6 +763,50 @@ void DetectorConstruction::ConstructSDandField()
       matprop->AddConstProperty(propPair.first, propPair.second, true);
       G4cout << "--> Attached const property '" << propPair.first << "' = " << propPair.second
              << " to material '" << materialName << "'" << G4endl;
+    }
+  }
+
+  for (const auto& matPair : fMaterialPropertyVectorAssignments) {
+    const G4String& materialName = matPair.first;
+    const auto& propMap = matPair.second;
+
+    G4Material* material = nullptr;
+    G4MaterialTable* materialTable = G4Material::GetMaterialTable();
+    if (materialTable) {
+      for (auto* mat : *materialTable) {
+        if (mat && mat->GetName() == materialName) {
+          material = mat;
+          break;
+        }
+      }
+    }
+
+    if (!material) {
+      G4cerr << "--> WARNING: Material '" << materialName
+             << "' not found in geometry. Cannot attach material property vectors." << G4endl;
+      continue;
+    }
+
+    G4MaterialPropertiesTable* matprop = material->GetMaterialPropertiesTable();
+    if (!matprop) {
+      matprop = new G4MaterialPropertiesTable();
+      material->SetMaterialPropertiesTable(matprop);
+    }
+
+    for (const auto& propPair : propMap) {
+      const G4String& propName = propPair.first;
+      const auto& pairs = propPair.second;
+      std::vector<G4double> energies;
+      std::vector<G4double> values;
+      energies.reserve(pairs.size());
+      values.reserve(pairs.size());
+      for (const auto& p : pairs) {
+        energies.push_back(p.first * MeV);
+        values.push_back(p.second);
+      }
+      matprop->AddProperty(propName, energies.data(), values.data(), energies.size());
+      G4cout << "--> Attached property vector '" << propName << "' with " << pairs.size()
+             << " pairs to material '" << materialName << "'" << G4endl;
     }
   }
 

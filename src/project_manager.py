@@ -9865,6 +9865,32 @@ class ProjectManager:
                         f"{mat.name}|{prop_name}|{numeric_value}"
                     )
                     emitted_any_property = True
+                elif isinstance(prop_value, list) and prop_value:
+                    parts = [f"{mat.name}|{prop_name}", str(len(prop_value))]
+                    for pair in prop_value:
+                        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                            continue
+                        energy_raw = pair[0]
+                        val_raw = pair[1]
+                        # Evaluate string expressions (e.g., "1.0*eV") using the evaluator
+                        try:
+                            if isinstance(energy_raw, str):
+                                energy_val = float(self.expression_evaluator.evaluate(energy_raw)[1])
+                            else:
+                                energy_val = float(energy_raw)
+                            if isinstance(val_raw, str):
+                                val = float(self.expression_evaluator.evaluate(val_raw)[1])
+                            else:
+                                val = float(val_raw)
+                        except Exception:
+                            continue
+                        # Convert energy to MeV (Geant4 internal energy unit)
+                        energy_mev = energy_val * 0.001
+                        parts.append(f"{energy_mev:.12g}")
+                        parts.append(f"{val:.12g}")
+                    if len(parts) > 2:
+                        macro_content.append("/g4pet/detector/addMaterialProperty " + "|".join(parts))
+                        emitted_any_property = True
         if not emitted_any_property:
             macro_content.append("# No material optical properties defined.")
         macro_content.append("")
