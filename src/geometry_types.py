@@ -621,6 +621,66 @@ def _normalize_scoring_tally_request_entry(raw_entry, mesh_lookup=None):
             "particle": pf_particle,
         }
 
+    charged_filter = None
+    raw_cf = raw_entry.get("charged_filter")
+    if raw_cf is not None:
+        if not isinstance(raw_cf, dict):
+            raise ValueError("scoring.tally_requests[].charged_filter must be an object.")
+        cf_name = _normalize_non_empty_string(raw_cf.get("filter_name"))
+        if not cf_name:
+            raise ValueError(
+                "scoring.tally_requests[].charged_filter must contain filter_name."
+            )
+        charged_filter = {
+            "filter_name": cf_name,
+        }
+
+    neutral_filter = None
+    raw_nf = raw_entry.get("neutral_filter")
+    if raw_nf is not None:
+        if not isinstance(raw_nf, dict):
+            raise ValueError("scoring.tally_requests[].neutral_filter must be an object.")
+        nf_name = _normalize_non_empty_string(raw_nf.get("filter_name"))
+        if not nf_name:
+            raise ValueError(
+                "scoring.tally_requests[].neutral_filter must contain filter_name."
+            )
+        neutral_filter = {
+            "filter_name": nf_name,
+        }
+
+    kinetic_energy_filter = None
+    raw_kef = raw_entry.get("kinetic_energy_filter")
+    if raw_kef is not None:
+        if not isinstance(raw_kef, dict):
+            raise ValueError("scoring.tally_requests[].kinetic_energy_filter must be an object.")
+        kef_name = _normalize_non_empty_string(raw_kef.get("filter_name"))
+        kef_e_low = _normalize_float(raw_kef.get("e_low"), None, "scoring.tally_requests[].kinetic_energy_filter.e_low")
+        kef_e_high = _normalize_float(raw_kef.get("e_high"), None, "scoring.tally_requests[].kinetic_energy_filter.e_high")
+        kef_unit = _normalize_non_empty_string(raw_kef.get("unit"))
+        if not kef_name:
+            raise ValueError(
+                "scoring.tally_requests[].kinetic_energy_filter must contain filter_name."
+            )
+        if kef_e_low is None or kef_e_high is None:
+            raise ValueError(
+                "scoring.tally_requests[].kinetic_energy_filter must contain e_low and e_high."
+            )
+        if kef_e_low >= kef_e_high:
+            raise ValueError(
+                "scoring.tally_requests[].kinetic_energy_filter.e_low must be less than e_high."
+            )
+        if not kef_unit:
+            raise ValueError(
+                "scoring.tally_requests[].kinetic_energy_filter must contain unit."
+            )
+        kinetic_energy_filter = {
+            "filter_name": kef_name,
+            "e_low": kef_e_low,
+            "e_high": kef_e_high,
+            "unit": kef_unit,
+        }
+
     default_name = f"{quantity}_{tally_id.split('_')[-1][:8]}"
     result = {
         "tally_id": tally_id,
@@ -632,6 +692,12 @@ def _normalize_scoring_tally_request_entry(raw_entry, mesh_lookup=None):
     }
     if particle_filter is not None:
         result["particle_filter"] = particle_filter
+    if charged_filter is not None:
+        result["charged_filter"] = charged_filter
+    if neutral_filter is not None:
+        result["neutral_filter"] = neutral_filter
+    if kinetic_energy_filter is not None:
+        result["kinetic_energy_filter"] = kinetic_energy_filter
     return result
 
 

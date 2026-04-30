@@ -172,7 +172,7 @@ function normalizeScoringTally(rawTally, index = 0) {
     const tally = rawTally && typeof rawTally === 'object' ? rawTally : {};
     const quantity = normalizeTallyQuantity(tally.quantity);
     const meshRef = tally.mesh_ref && typeof tally.mesh_ref === 'object' ? tally.mesh_ref : {};
-    return {
+    const normalized = {
         tally_id: normalizeString(tally.tally_id, `scoring_tally_ui_${index + 1}`),
         name: normalizeString(tally.name, `${quantity}_tally_${index + 1}`),
         schema_version: 1,
@@ -183,6 +183,31 @@ function normalizeScoringTally(rawTally, index = 0) {
         },
         quantity,
     };
+    if (tally.particle_filter && typeof tally.particle_filter === 'object') {
+        normalized.particle_filter = {
+            filter_name: normalizeString(tally.particle_filter.filter_name, ''),
+            particle: normalizeString(tally.particle_filter.particle, ''),
+        };
+    }
+    if (tally.charged_filter && typeof tally.charged_filter === 'object') {
+        normalized.charged_filter = {
+            filter_name: normalizeString(tally.charged_filter.filter_name, ''),
+        };
+    }
+    if (tally.neutral_filter && typeof tally.neutral_filter === 'object') {
+        normalized.neutral_filter = {
+            filter_name: normalizeString(tally.neutral_filter.filter_name, ''),
+        };
+    }
+    if (tally.kinetic_energy_filter && typeof tally.kinetic_energy_filter === 'object') {
+        normalized.kinetic_energy_filter = {
+            filter_name: normalizeString(tally.kinetic_energy_filter.filter_name, ''),
+            e_low: normalizeFiniteNumber(tally.kinetic_energy_filter.e_low, 0),
+            e_high: normalizeFiniteNumber(tally.kinetic_energy_filter.e_high, 0),
+            unit: normalizeString(tally.kinetic_energy_filter.unit, 'MeV'),
+        };
+    }
+    return normalized;
 }
 
 export function normalizeScoringState(rawState) {

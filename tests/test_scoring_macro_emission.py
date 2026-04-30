@@ -372,6 +372,99 @@ def test_generate_macro_maps_new_quantities_to_g4_commands(tmp_path):
     assert "/score/quantity/population population_tally" in macro_text
 
 
+def test_generate_macro_emits_charged_neutral_and_kinetic_energy_filters(tmp_path):
+    """Verify that tally requests with charged, neutral, and kinetic energy
+    filters emit the correct /score/filter/ macro commands."""
+    pm = ProjectManager(ExpressionEvaluator())
+
+    scoring_payload = {
+        "scoring_meshes": [
+            {
+                "mesh_id": "mesh_main",
+                "name": "mesh_main",
+                "geometry": {"size_mm": {"x": 20, "y": 20, "z": 20}},
+                "bins": {"x": 10, "y": 10, "z": 10},
+            }
+        ],
+        "tally_requests": [
+            {
+                "tally_id": "tally_charged",
+                "name": "charged_nOfStep",
+                "mesh_ref": {"mesh_id": "mesh_main"},
+                "quantity": "n_of_step",
+                "charged_filter": {
+                    "filter_name": "chargedFilter",
+                },
+            },
+            {
+                "tally_id": "tally_neutral",
+                "name": "neutral_track_length",
+                "mesh_ref": {"mesh_id": "mesh_main"},
+                "quantity": "track_length",
+                "neutral_filter": {
+                    "filter_name": "neutralFilter",
+                },
+            },
+            {
+                "tally_id": "tally_ke",
+                "name": "ke_energy_deposit",
+                "mesh_ref": {"mesh_id": "mesh_main"},
+                "quantity": "energy_deposit",
+                "kinetic_energy_filter": {
+                    "filter_name": "keFilter",
+                    "e_low": 0.1,
+                    "e_high": 10.0,
+                    "unit": "MeV",
+                },
+            },
+            {
+                "tally_id": "tally_mixed",
+                "name": "mixed_cell_flux",
+                "mesh_ref": {"mesh_id": "mesh_main"},
+                "quantity": "cell_flux",
+                "particle_filter": {
+                    "filter_name": "gammaFilter",
+                    "particle": "gamma",
+                },
+                "charged_filter": {
+                    "filter_name": "mixedChargedFilter",
+                },
+            },
+        ],
+    }
+
+    state = GeometryState()
+    state.scoring = ScoringState.from_dict(scoring_payload)
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(json.dumps(state.to_dict()), encoding="utf-8")
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "filter-job", {}, str(tmp_path), str(tmp_path), str(version_dir)
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    # Charged filter
+    assert "/score/quantity/nOfStep charged_nOfStep" in macro_text
+    assert "/score/filter/charged chargedFilter" in macro_text
+
+    # Neutral filter
+    assert "/score/quantity/trackLength neutral_track_length" in macro_text
+    assert "/score/filter/neutral neutralFilter" in macro_text
+
+    # Kinetic energy filter
+    assert "/score/quantity/energyDeposit ke_energy_deposit" in macro_text
+    assert "/score/filter/kineticEnergy keFilter 0.1 10.0 MeV" in macro_text
+
+    # Mixed filters on same tally
+    assert "/score/quantity/cellFlux mixed_cell_flux" in macro_text
+    assert "/score/filter/particle gammaFilter gamma" in macro_text
+    assert "/score/filter/charged mixedChargedFilter" in macro_text
+
+
 def test_generate_macro_emits_real_world_log_vol_commands(tmp_path):
     """Verify that generate_macro_file emits /score/create/realWorldLogVol and
     omits mesh geometry commands for realWorldLogVol meshes."""

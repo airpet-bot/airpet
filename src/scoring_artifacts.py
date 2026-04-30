@@ -265,6 +265,24 @@ def build_scoring_runtime_plan(scoring_payload: Optional[Dict[str, Any]]) -> Dic
                 "filter_name": str(pf["filter_name"]),
                 "particle": str(pf["particle"]),
             }
+        cf = tally.get("charged_filter")
+        if isinstance(cf, dict) and cf.get("filter_name"):
+            supported_request["charged_filter"] = {
+                "filter_name": str(cf["filter_name"]),
+            }
+        nf = tally.get("neutral_filter")
+        if isinstance(nf, dict) and nf.get("filter_name"):
+            supported_request["neutral_filter"] = {
+                "filter_name": str(nf["filter_name"]),
+            }
+        kef = tally.get("kinetic_energy_filter")
+        if isinstance(kef, dict) and kef.get("filter_name") and kef.get("e_low") is not None and kef.get("e_high") is not None and kef.get("unit"):
+            supported_request["kinetic_energy_filter"] = {
+                "filter_name": str(kef["filter_name"]),
+                "e_low": float(kef["e_low"]),
+                "e_high": float(kef["e_high"]),
+                "unit": str(kef["unit"]),
+            }
         supported_requests.append(supported_request)
 
     return {
