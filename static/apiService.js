@@ -1363,11 +1363,11 @@ export async function realizeDetectorFeatureGenerator(generatorId) {
     return handleResponse(response);
 }
 
-export async function addParticleSource(name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id) {
+export async function addParticleSource(name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id, source_type = 'gps', ion_params = null) {
     const response = await fetch(`${API_BASE_URL}/api/add_source`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id })
+        body: JSON.stringify({ name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id, source_type, ion_params })
     });
     return handleResponse(response);
 }
@@ -1390,7 +1390,7 @@ export async function getSourceParamsFromVolume(volumeId) {
     return handleResponse(response);
 }
 
-export async function updateParticleSource(sourceId, name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id) {
+export async function updateParticleSource(sourceId, name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id, source_type = null, ion_params = null) {
     const response = await fetch(`${API_BASE_URL}/api/update_source`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1402,7 +1402,9 @@ export async function updateParticleSource(sourceId, name, gps_commands, positio
             rotation: rotation,
             activity: activity,
             confine_to_pv: confine_to_pv,
-            volume_link_id: volume_link_id
+            volume_link_id: volume_link_id,
+            source_type: source_type,
+            ion_params: ion_params
         })
     });
     return handleResponse(response);

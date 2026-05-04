@@ -10,6 +10,8 @@ import {
 let modalElement, titleElement, nameInput, confirmButton, cancelButton;
 let particleSelect, energyContainer, shapeSelect, shapeParamsContainer;
 let linkedCheckbox, linkedSelect;
+let sourceTypeSelect, gpsParticleControls, ionControls;
+let ionZInput, ionAInput, ionQInput, ionEInput;
 let onConfirmCallback = null;
 let isEditMode = false;
 let editingSourceId = null;
@@ -36,11 +38,20 @@ export function initGpsEditor(callbacks) {
     linkedCheckbox = document.getElementById('gpsLinkedVolumeEnabled');
     linkedSelect = document.getElementById('gpsLinkedVolumeSelect'); // This is now an Input
 
+    sourceTypeSelect = document.getElementById('gpsEditorSourceType');
+    gpsParticleControls = document.getElementById('gps-particle-controls');
+    ionControls = document.getElementById('gps-ion-controls');
+    ionZInput = document.getElementById('gpsIonZ');
+    ionAInput = document.getElementById('gpsIonA');
+    ionQInput = document.getElementById('gpsIonQ');
+    ionEInput = document.getElementById('gpsIonE');
+
     // Wire up events
     cancelButton.addEventListener('click', hide);
     confirmButton.addEventListener('click', handleConfirm);
     shapeSelect.addEventListener('change', () => renderShapeParamsUI());
     linkedCheckbox.addEventListener('change', toggleLinkedMode);
+    sourceTypeSelect.addEventListener('change', toggleSourceType);
 
     console.log("GPS Editor Initialized.");
 }
@@ -104,6 +115,13 @@ export function show(sourceData = null, availableVolumes = []) {
             linkedSelect.value = "";
         }
 
+        sourceTypeSelect.value = sourceData.type || 'gps';
+        const ion = sourceData.ion_params || {};
+        if (ionZInput) ionZInput.value = ion.Z ?? 6;
+        if (ionAInput) ionAInput.value = ion.A ?? 14;
+        if (ionQInput) ionQInput.value = ion.Q ?? 4;
+        if (ionEInput) ionEInput.value = ion.excitation_energy_keV ?? 0;
+
         renderShapeParamsUI(shape, commands, sourceData.position, sourceData.rotation, sourceData.confine_to_pv);
 
     } else { // CREATE MODE
@@ -124,9 +142,16 @@ export function show(sourceData = null, availableVolumes = []) {
         linkedCheckbox.checked = false;
         linkedSelect.value = "";
 
+        sourceTypeSelect.value = 'gps';
+        if (ionZInput) ionZInput.value = 6;
+        if (ionAInput) ionAInput.value = 14;
+        if (ionQInput) ionQInput.value = 4;
+        if (ionEInput) ionEInput.value = 0;
+
         renderShapeParamsUI('Point', {}, { x: '0', y: '0', z: '0' }, { x: '0', y: '0', z: '0' }, null);
     }
     toggleLinkedMode(); // Apply Linked UI state
+    toggleSourceType();
     modalElement.style.display = 'block';
 }
 
@@ -153,6 +178,15 @@ function toggleLinkedMode() {
     }
 }
 
+function toggleSourceType() {
+    const isIon = sourceTypeSelect.value === 'ion';
+    if (gpsParticleControls) {
+        gpsParticleControls.style.display = isIon ? 'none' : 'block';
+    }
+    if (ionControls) {
+        ionControls.style.display = isIon ? 'block' : 'none';
+    }
+}
 
 function renderShapeParamsUI(shapeType = null, commands = {}, position = {}, rotation = {}, confineToPv = null) {
     const shape = shapeType || shapeSelect.value;
@@ -266,9 +300,15 @@ function handleConfirm() {
         return;
     }
 
+    const sourceType = sourceTypeSelect ? sourceTypeSelect.value : 'gps';
+
     // Collect all GPS commands into a dictionary
     const gpsCommands = {};
-    gpsCommands['particle'] = particleSelect.value;
+    if (sourceType === 'ion') {
+        gpsCommands['particle'] = 'ion';
+    } else {
+        gpsCommands['particle'] = particleSelect.value;
+    }
     // For e+, the energy spectrum is usually handled by the physics list,
     // so we set a monoenergetic energy of 0 keV by default unless specified otherwise.
     const energyValue = document.getElementById('gps_energy').value.trim();
@@ -346,11 +386,23 @@ function handleConfirm() {
         confineToPv = null;
     }
 
+    let ionParams = null;
+    if (sourceType === 'ion') {
+        ionParams = {
+            Z: parseInt(ionZInput ? ionZInput.value : 6, 10) || 6,
+            A: parseInt(ionAInput ? ionAInput.value : 14, 10) || 14,
+            Q: parseInt(ionQInput ? ionQInput.value : 4, 10) || 4,
+            excitation_energy_keV: parseFloat(ionEInput ? ionEInput.value : 0) || 0.0
+        };
+    }
+
     onConfirmCallback({
         isEdit: isEditMode,
         id: isEditMode ? editingSourceId : name,
         name: name,
+        source_type: sourceType,
         gps_commands: gpsCommands,
+        ion_params: ionParams,
         position: position,
         rotation: rotation,
         activity: document.getElementById('gps_activity').value,

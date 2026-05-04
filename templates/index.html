@@ -5459,23 +5459,54 @@
                     <input type="text" id="gpsEditorName" placeholder="e.g., PET_Source">
                 </div>
                 <hr>
-                <!-- Particle Type -->
+                <!-- Source Type -->
                 <div class="property_item">
-                    <label for="gpsEditorParticle">Particle:</label>
-                    <select id="gpsEditorParticle">
-                        <option value="gamma">gamma</option>
-                        <option value="e+">e+</option>
-                        <option value="e-">e-</option>
-                        <option value="proton">proton</option>
-                        <option value="neutron">neutron</option>
-                        <option value="alpha">alpha</option>
-                        <!-- Add more common particles as needed -->
+                    <label for="gpsEditorSourceType">Source Type:</label>
+                    <select id="gpsEditorSourceType">
+                        <option value="gps">GPS</option>
+                        <option value="ion">Ion</option>
                     </select>
+                </div>
+
+                <!-- GPS-specific controls -->
+                <div id="gps-particle-controls">
+                    <div class="property_item">
+                        <label for="gpsEditorParticle">Particle:</label>
+                        <select id="gpsEditorParticle">
+                            <option value="gamma">gamma</option>
+                            <option value="e+">e+</option>
+                            <option value="e-">e-</option>
+                            <option value="proton">proton</option>
+                            <option value="neutron">neutron</option>
+                            <option value="alpha">alpha</option>
+                            <!-- Add more common particles as needed -->
+                        </select>
+                    </div>
                 </div>
 
                 <!-- Energy Distribution -->
                 <div id="gps-energy-params">
                     <!-- Energy ExpressionInput will be added by JS -->
+                </div>
+
+                <!-- Ion-specific controls -->
+                <div id="gps-ion-controls" style="display: none;">
+                    <div class="property_item">
+                        <label for="gpsIonZ">Z (Atomic Number):</label>
+                        <input type="number" id="gpsIonZ" value="6" min="1">
+                    </div>
+                    <div class="property_item">
+                        <label for="gpsIonA">A (Mass Number):</label>
+                        <input type="number" id="gpsIonA" value="14" min="1">
+                    </div>
+                    <div class="property_item">
+                        <label for="gpsIonQ">Q (Charge):</label>
+                        <input type="number" id="gpsIonQ" value="4">
+                    </div>
+                    <div class="property_item">
+                        <label for="gpsIonE">Excitation Energy (keV):</label>
+                        <input type="number" id="gpsIonE" value="0" step="0.1">
+                    </div>
                 </div>
 
                 <hr>

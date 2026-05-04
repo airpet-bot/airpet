@@ -8081,7 +8081,7 @@ class ProjectManager:
         
         return new_source.to_dict(), None
 
-    def update_particle_source(self, source_id, new_name, new_gps_commands, new_position, new_rotation, new_activity=None, new_confine_to_pv=None, new_volume_link_id=None):
+    def update_particle_source(self, source_id, new_name, new_gps_commands, new_position, new_rotation, new_activity=None, new_confine_to_pv=None, new_volume_link_id=None, new_source_type=None, new_ion_params=None):
         """Updates the properties of an existing particle source."""
         if not self.current_geometry_state:
             return False, "No project loaded"
@@ -8113,21 +8113,27 @@ class ProjectManager:
 
         if new_rotation is not None:
             source_to_update.rotation = new_rotation
-        
+
         if new_activity is not None:
             # simple validation
             try:
                 source_to_update.activity = float(new_activity)
             except ValueError:
                 return False, f"Invalid activity value: {new_activity}"
-        
+
         if new_confine_to_pv is not None:
             # We treat an empty string as "no confinement" (None)
             if new_confine_to_pv == "":
                 source_to_update.confine_to_pv = None
             else:
                 source_to_update.confine_to_pv = new_confine_to_pv
-        
+
+        if new_source_type is not None:
+            source_to_update.type = new_source_type
+
+        if new_ion_params is not None:
+            source_to_update.ion_params = new_ion_params
+
         # Handle Linked Volume Updates
         source_to_update.volume_link_id = new_volume_link_id
         if source_to_update.volume_link_id:

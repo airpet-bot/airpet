@@ -6524,6 +6524,36 @@ def test_ai_tool_manage_particle_source_normalizes_common_aliases(pm):
     assert source.gps_commands["energy"] == "10*GeV"
 
 
+def test_ai_tool_manage_particle_source_ion_params(pm):
+    create_res = dispatch_ai_tool(pm, "manage_particle_source", {
+        "action": "create",
+        "name": "IonAI",
+        "source_type": "ion",
+        "ion_params": {"Z": 26, "A": 56, "Q": 2, "excitation_energy_keV": 10.5},
+        "gps_commands": {"energy": "100*keV"},
+    })
+    assert create_res['success'], create_res
+    source = pm.current_geometry_state.sources["IonAI"]
+    assert source.type == "ion"
+    assert source.ion_params == {"Z": 26, "A": 56, "Q": 2, "excitation_energy_keV": 10.5}
+    assert source.gps_commands["energy"] == "100*keV"
+
+    upd_res = dispatch_ai_tool(pm, "manage_particle_source", {
+        "action": "update",
+        "source_id": source.id,
+        "name": "IonAI",
+        "source_type": "gps",
+        "ion_params": {},
+        "gps_commands": {"particle": "gamma"},
+    })
+    assert upd_res['success'], upd_res
+    print("SOURCES KEYS:", list(pm.current_geometry_state.sources.keys()))
+    updated_source = pm.current_geometry_state.sources["IonAI"]
+    assert updated_source.type == "gps"
+    assert updated_source.ion_params == {}
+    assert updated_source.gps_commands["particle"] == "gamma"
+
+
 def test_persist_final_stream_reply_preserves_tool_intermediate_entries():
     history = [
         {

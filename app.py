@@ -5009,8 +5009,11 @@ def add_source_route():
     activity = data.get('activity', 1.0)
     volume_link_id = data.get('volume_link_id')
     
+    source_type = data.get('source_type', 'gps')
+    ion_params = data.get('ion_params')
     new_source, error_msg = pm.add_source(
-        name_suggestion, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id)
+        name_suggestion, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id,
+        source_type=source_type, ion_params=ion_params)
     if new_source:
         return create_success_response(pm, "Particle source created.")
     else:
@@ -5060,12 +5063,15 @@ def update_source_route():
     new_activity = data.get('activity')
     new_confine_to_pv = data.get('confine_to_pv')
     new_volume_link_id = data.get('volume_link_id')
+    new_source_type = data.get('source_type')
+    new_ion_params = data.get('ion_params')
 
     if not source_id:
         return jsonify({"success": False, "error": "Source ID is required."}), 400
 
     success, error_msg = pm.update_particle_source(
-        source_id, new_name, new_gps_commands, new_position, new_rotation, new_activity, new_confine_to_pv, new_volume_link_id
+        source_id, new_name, new_gps_commands, new_position, new_rotation, new_activity, new_confine_to_pv, new_volume_link_id,
+        new_source_type, new_ion_params
     )
 
     if success:
@@ -9044,7 +9050,9 @@ AI_TOOL_ARG_ALIASES = {
         "id": "source_id",
         "source": "source_id",
         "gps": "gps_commands",
-        "commands": "gps_commands"
+        "commands": "gps_commands",
+        "ion": "ion_params",
+        "ion_params": "ion_params"
     },
     "configure_incident_beam": {
         "name": "source_name",
@@ -9125,7 +9133,9 @@ AI_TOOL_DEFAULTS = {
     "manage_ui_group": {"item_ids": []},
     "manage_particle_source": {
         "name": "gps_source",
+        "source_type": "gps",
         "gps_commands": {},
+        "ion_params": {},
         "position": {"x": "0", "y": "0", "z": "0"},
         "rotation": {"x": "0", "y": "0", "z": "0"},
         "activity": 1.0
@@ -11072,7 +11082,9 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     to_vec_dict(args.get('rotation', {'x': '0', 'y': '0', 'z': '0'})),
                     args.get('activity', 1.0),
                     args.get('confine_to_pv'),
-                    args.get('volume_link_id')
+                    args.get('volume_link_id'),
+                    args.get('source_type', 'gps'),
+                    args.get('ion_params')
                 )
                 if new_source:
                     return {
@@ -11099,7 +11111,9 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     rot,
                     args.get('activity'),
                     args.get('confine_to_pv'),
-                    args.get('volume_link_id')
+                    args.get('volume_link_id'),
+                    args.get('source_type'),
+                    args.get('ion_params')
                 )
                 if success:
                     return {"success": True, "message": f"Particle source '{source_id}' updated."}

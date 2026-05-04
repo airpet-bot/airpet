@@ -1714,6 +1714,13 @@ export async function populateInspector(itemContext, projectState) {
     if (type === 'particle_source') {
         createReadOnlyProperty(inspectorContentDiv, "Source Type:", data.type.toUpperCase());
 
+        if (data.type === 'ion' && data.ion_params) {
+            createReadOnlyProperty(inspectorContentDiv, "Ion Z:", data.ion_params.Z);
+            createReadOnlyProperty(inspectorContentDiv, "Ion A:", data.ion_params.A);
+            createReadOnlyProperty(inspectorContentDiv, "Ion Q:", data.ion_params.Q);
+            createReadOnlyProperty(inspectorContentDiv, "Excitation Energy (keV):", data.ion_params.excitation_energy_keV);
+        }
+
         const commands = data.gps_commands || {};
         for (const [key, value] of Object.entries(commands)) {
             createReadOnlyProperty(inspectorContentDiv, `/gps/${key}:`, value);
