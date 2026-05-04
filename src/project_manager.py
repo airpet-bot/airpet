@@ -6569,7 +6569,7 @@ class ProjectManager:
 
         return success, error_msg
     
-    def add_particle_source(self, name_suggestion, gps_commands, position, rotation, activity=1.0, confine_to_pv=None):
+    def add_particle_source(self, name_suggestion, gps_commands, position, rotation, activity=1.0, confine_to_pv=None, source_type="gps", ion_params=None):
         if not self.current_geometry_state:
             return None, "No project loaded"
 
@@ -6577,7 +6577,7 @@ class ProjectManager:
             confine_to_pv = None
 
         name = self._generate_unique_name(name_suggestion, self.current_geometry_state.sources)
-        new_source = ParticleSource(name, gps_commands, position, rotation, activity=activity, confine_to_pv=confine_to_pv)
+        new_source = ParticleSource(name, gps_commands, position, rotation, activity=activity, confine_to_pv=confine_to_pv, source_type=source_type, ion_params=ion_params)
         self.current_geometry_state.add_source(new_source)
         self.recalculate_geometry_state()
         self._capture_history_state(f"Added particle source {name}")
@@ -8043,16 +8043,16 @@ class ProjectManager:
         
         return normalized
 
-    def add_source(self, name_suggestion, gps_commands, position, rotation, activity=1.0, confine_to_pv=None, volume_link_id=None):
+    def add_source(self, name_suggestion, gps_commands, position, rotation, activity=1.0, confine_to_pv=None, volume_link_id=None, source_type="gps", ion_params=None):
         """Adds a new particle source to the project, optionally linked to a volume."""
         if not self.current_geometry_state:
             return None, "No project loaded"
 
         # Normalize gps_commands to ensure all values are strings
         gps_commands = self._normalize_gps_commands(gps_commands)
-        
+
         name = self._generate_unique_name(name_suggestion, self.current_geometry_state.sources)
-        
+
         linked_pv = self._find_pv_by_id(volume_link_id) if volume_link_id else None
 
         new_source = ParticleSource(
@@ -8062,7 +8062,9 @@ class ProjectManager:
             rotation=rotation,
             activity=activity,
             confine_to_pv=confine_to_pv,
-            volume_link_id=volume_link_id
+            volume_link_id=volume_link_id,
+            source_type=source_type,
+            ion_params=ion_params,
         )
 
         if linked_pv:
@@ -10136,14 +10138,28 @@ class ProjectManager:
                     macro_content.append(f"/gps/source/add {relative_intensity}")
 
                 macro_content.append(f"# Source: {source.name} (Activity: {source.activity} Bq)")
-                
+
                 cmds = source.gps_commands.copy()
                 direction_vector = str(cmds.pop('ang/dir1', '') or '').strip()
                 ang_type = str(cmds.get('ang/type', '') or '').strip().lower()
                 emit_gps_direction = bool(direction_vector) and ang_type in {'beam1d', 'direction', 'directed', 'beam'}
                 if emit_gps_direction:
                     cmds.pop('ang/type', None)
-                
+
+                # Ion source handling
+                if getattr(source, 'type', 'gps') == 'ion':
+                    ion_params = getattr(source, 'ion_params', None) or {}
+                    z = int(ion_params.get('Z', 0))
+                    a = int(ion_params.get('A', 0))
+                    if z <= 0 or a <= 0:
+                        raise ValueError(f"Ion source '{source.name}' requires positive integer Z and A.")
+                    q = int(ion_params.get('Q', 0))
+                    e = float(ion_params.get('excitation_energy_keV', 0.0))
+                    macro_content.append("/gps/particle ion")
+                    macro_content.append(f"/gps/ion {z} {a} {q} {e}")
+                    cmds.pop('particle', None)
+                    cmds.pop('ion', None)
+
                 # Handling Confinement and Transform
                 evaluated_pos = source._evaluated_position
                 evaluated_rot = source._evaluated_rotation

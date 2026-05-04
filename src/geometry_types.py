@@ -2343,13 +2343,14 @@ class BorderSurface:
     
 class ParticleSource:
     """Represents a particle source (G4GeneralParticleSource) in the project."""
-    def __init__(self, name, gps_commands=None, position=None, rotation=None, vis_attributes=None, activity=1.0, confine_to_pv=None, volume_link_id=None):
+    def __init__(self, name, gps_commands=None, position=None, rotation=None, vis_attributes=None, activity=1.0, confine_to_pv=None, volume_link_id=None, source_type="gps", ion_params=None):
         self.id = str(uuid.uuid4())
         self.name = name
-        self.type = "gps" # To distinguish from other potential source types later
+        self.type = source_type # "gps" or "ion"
         
         # Store the raw GPS commands as a dictionary for easy editing
         self.gps_commands = gps_commands if gps_commands is not None else {}
+        self.ion_params = ion_params if ion_params is not None else {}
 
         # Store the position separately for easy access by the transform gizmo
         self.position = position if position is not None else {'x': '0', 'y': '0', 'z': '0'}
@@ -2375,6 +2376,7 @@ class ParticleSource:
             "name": self.name,
             "type": self.type,
             "gps_commands": self.gps_commands,
+            "ion_params": self.ion_params,
             "position": self.position,
             "rotation": self.rotation,
             "activity": self.activity,
@@ -2390,7 +2392,7 @@ class ParticleSource:
         activity = data.get('activity')
         if activity is None:
             activity = data.get('intensity', 1.0)
-            
+
         instance = cls(
             data['name'],
             data.get('gps_commands', {}),
@@ -2398,7 +2400,9 @@ class ParticleSource:
             data.get('rotation', {'x': '0', 'y': '0', 'z': '0'}),
             activity=activity,
             confine_to_pv=data.get('confine_to_pv'),
-            volume_link_id=data.get('volume_link_id')
+            volume_link_id=data.get('volume_link_id'),
+            source_type=data.get('type', 'gps'),
+            ion_params=data.get('ion_params'),
         )
         instance.id = data.get('id', str(uuid.uuid4()))
         instance._evaluated_position = data.get('_evaluated_position', {'x': 0, 'y': 0, 'z': 0})
