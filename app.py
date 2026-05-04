@@ -278,8 +278,10 @@ def get_geant4_env(sim_params=None):
             env['G4PHYSICSLIST'] = str(sim_params['physics_list'])
         if 'optical_physics' in sim_params:
             env['G4OPTICALPHYSICS'] = 'true' if sim_params['optical_physics'] else 'false'
+        if 'radioactive_decay_physics' in sim_params:
+            env['G4RADIOACTIVEDECAYPHYSICS'] = 'true' if sim_params['radioactive_decay_physics'] else 'false'
 
-   # Also ensure the binary directory is in PATH
+    # Also ensure the binary directory is in PATH
     bin_dir = os.path.join(conda_prefix, "bin")
     if bin_dir not in env["PATH"]:
         env["PATH"] = bin_dir + os.pathsep + env["PATH"]

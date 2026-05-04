@@ -13,6 +13,7 @@
 #include "G4VModularPhysicsList.hh"
 #include "G4OpticalPhysics.hh"
 #include "G4StepLimiterPhysics.hh"
+#include "G4RadioactiveDecayPhysics.hh"
 
 // Main program
 int main(int argc, char **argv) {
@@ -64,6 +65,13 @@ int main(int argc, char **argv) {
   // Register step limiter physics so that G4UserLimits are enforced
   physicsList->RegisterPhysics(new G4StepLimiterPhysics());
   G4cout << "--> Registering G4StepLimiterPhysics..." << G4endl;
+
+  // Check for Radioactive Decay Physics
+  const char* envRadioactive = std::getenv("G4RADIOACTIVEDECAYPHYSICS");
+  if (envRadioactive && (std::string(envRadioactive) == "on" || std::string(envRadioactive) == "true")) {
+    G4cout << "--> Registering G4RadioactiveDecayPhysics..." << G4endl;
+    physicsList->RegisterPhysics(new G4RadioactiveDecayPhysics());
+  }
 
   runManager->SetUserInitialization(physicsList);
 
