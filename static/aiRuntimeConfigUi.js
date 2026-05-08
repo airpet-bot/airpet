@@ -15,6 +15,7 @@ export const LOCAL_BACKEND_RUNTIME_DEFAULTS = Object.freeze({
         max_retries: 1,
         retry_backoff_seconds: 0.25,
         verify_tls: true,
+        supports_vision: false,
         headers: Object.freeze({}),
     }),
     lm_studio: Object.freeze({
@@ -26,6 +27,7 @@ export const LOCAL_BACKEND_RUNTIME_DEFAULTS = Object.freeze({
         max_retries: 1,
         retry_backoff_seconds: 0.25,
         verify_tls: true,
+        supports_vision: false,
         headers: Object.freeze({}),
     }),
 });
@@ -77,6 +79,7 @@ function normalizeBackendConfig(runtimeConfig, backendId) {
         max_retries: Number(raw.max_retries ?? defaults.max_retries ?? 0),
         retry_backoff_seconds: Number(raw.retry_backoff_seconds ?? defaults.retry_backoff_seconds ?? 0),
         verify_tls: coerceBoolean(raw.verify_tls, defaults.verify_tls),
+        supports_vision: coerceBoolean(raw.supports_vision, defaults.supports_vision),
         headers: normalizeHeadersObject(raw.headers ?? defaults.headers),
     };
 }
@@ -95,6 +98,7 @@ export function runtimeConfigToFormState(runtimeConfig = {}) {
             max_retries: String(normalized.max_retries),
             retry_backoff_seconds: String(normalized.retry_backoff_seconds),
             verify_tls: !!normalized.verify_tls,
+            supports_vision: !!normalized.supports_vision,
             headers_json: JSON.stringify(normalized.headers, null, 2),
         };
     });
@@ -194,6 +198,7 @@ export function buildRuntimeConfigPayloadFromFormState(formState = {}) {
             max_retries: maxRetries.value,
             retry_backoff_seconds: retryBackoff.value,
             verify_tls: coerceBoolean(raw.verify_tls, defaults.verify_tls),
+            supports_vision: coerceBoolean(raw.supports_vision, defaults.supports_vision),
             headers: parsedHeaders.value,
         };
     }

@@ -90,12 +90,34 @@ class AdapterSelection:
 class TextMessage:
     role: str
     content: str
+    image_parts: Optional[Tuple[Dict[str, Any], ...]] = None
     tool_calls: Optional[Tuple[Dict[str, Any], ...]] = None
     tool_call_id: Optional[str] = None
     name: Optional[str] = None
 
     def as_openai_message(self) -> Dict[str, Any]:
-        message: Dict[str, Any] = {"role": self.role, "content": self.content}
+        content: Any = self.content
+        if self.image_parts:
+            parts: List[Dict[str, Any]] = []
+            if self.content:
+                parts.append({"type": "text", "text": self.content})
+            for image_part in self.image_parts:
+                if not isinstance(image_part, Mapping):
+                    continue
+                data = str(image_part.get("data_base64") or "").strip()
+                mime_type = str(image_part.get("mime_type") or "").strip()
+                if not data or not mime_type.startswith("image/"):
+                    continue
+                image_url: Dict[str, Any] = {
+                    "url": f"data:{mime_type};base64,{data}",
+                }
+                detail = str(image_part.get("detail") or "").strip()
+                if detail:
+                    image_url["detail"] = detail
+                parts.append({"type": "image_url", "image_url": image_url})
+            content = parts or self.content
+
+        message: Dict[str, Any] = {"role": self.role, "content": content}
         if self.tool_calls:
             message["tool_calls"] = [dict(tc) for tc in self.tool_calls]
         if self.tool_call_id:
@@ -112,6 +134,7 @@ class TextGenerationRequest:
     messages: Tuple[TextMessage, ...]
     require_tools: bool = False
     require_json_mode: bool = True
+    require_vision: bool = False
     require_streaming: bool = False
     min_context_tokens: Optional[int] = None
     temperature: Optional[float] = None
@@ -570,6 +593,7 @@ def text_requirements_for_request(request: TextGenerationRequest) -> BackendRequ
     return BackendRequirements(
         require_tools=request.require_tools,
         require_json_mode=request.require_json_mode,
+        require_vision=request.require_vision,
         require_streaming=request.require_streaming,
         min_context_tokens=request.min_context_tokens,
     )

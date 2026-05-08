@@ -822,10 +822,10 @@ class GDMLParser:
         
         if surf_el.tag == 'skinsurface':
             volumeref_el = surf_el.find('volumeref')
-            if not volumeref_el:
+            if volumeref_el is None:
                 print(f"Warning: Skin surface '{name}' is missing a volumeref. Skipping.")
                 return
-            
+
             volume_ref = self._evaluate_name(volumeref_el.get('ref'))
             skin_surf = SkinSurface(name, volume_ref, surface_property_ref)
             self.geometry_state.add_skin_surface(skin_surf)
@@ -835,17 +835,17 @@ class GDMLParser:
             if len(physvol_refs) < 2:
                 print(f"Warning: Border surface '{name}' needs two physvolref tags. Skipping.")
                 return
-            
-            # Note: GDML does not name PV placements. The ref here points to the LV, and Geant4
-            # figures out the PVs. Our model needs PV IDs. This is a future challenge.
-            # For now, we will store the LV refs and resolve them later.
-            # A robust implementation would need to find the unique PV that places LV X inside LV Y.
-            # For parsing, we store the *names* of the PVs from the GDML, if they exist.
-            # The GDML schema implies these are references to the PV names.
-            pv1_ref = self._evaluate_name(physvol_refs[0].get('ref'))
-            pv2_ref = self._evaluate_name(physvol_refs[1].get('ref'))
-            
-            border_surf = BorderSurface(name, pv1_ref, pv2_ref, surface_property_ref)
+
+            # Resolve physvolref names to PV IDs so the writer can round-trip.
+            pv1_name = self._evaluate_name(physvol_refs[0].get('ref'))
+            pv2_name = self._evaluate_name(physvol_refs[1].get('ref'))
+            pv1 = self.geometry_state._find_pv_by_name(pv1_name)
+            pv2 = self.geometry_state._find_pv_by_name(pv2_name)
+            if pv1 is None or pv2 is None:
+                print(f"Warning: Border surface '{name}' references unknown physical volumes '{pv1_name}' / '{pv2_name}'. Skipping.")
+                return
+
+            border_surf = BorderSurface(name, pv1.id, pv2.id, surface_property_ref)
             self.geometry_state.add_border_surface(border_surf)
 
     def get_material(self, name):

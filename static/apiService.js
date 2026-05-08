@@ -821,14 +821,38 @@ export async function clearAiBackendRuntimeConfig() {
 }
 
 /**
+ * Uploads an artifact for multimodal AI chat/planning workflows.
+ * @param {File} file
+ * @param {string} sourceLabel
+ * @returns {Promise<Object>}
+ */
+export async function uploadAiArtifact(file, sourceLabel = 'chat-attachment') {
+    const formData = new FormData();
+    formData.append('artifact', file);
+    if (sourceLabel) {
+        formData.append('source_label', sourceLabel);
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/ai/artifacts/upload`, {
+        method: 'POST',
+        body: formData,
+    });
+    return handleResponse(response);
+}
+
+/**
  * Sends a message to the stateful AI chat assistant.
  * @param {string} message - The user's text message.
  * @param {string} model - The model ID to use.
  * @param {number} turnLimit - Maximum number of tool iterations.
+ * @param {string[]} attachmentIds - Optional uploaded artifact ids to attach.
  * @returns {Promise<Object>}
  */
-export async function sendAiChatMessage(message, model, turnLimit = 10) {
+export async function sendAiChatMessage(message, model, turnLimit = 10, attachmentIds = []) {
     const payload = { message, model, turn_limit: turnLimit };
+    if (Array.isArray(attachmentIds) && attachmentIds.length > 0) {
+        payload.attachment_ids = attachmentIds;
+    }
 
     const localPrefixes = {
         'llama_cpp::': 'llama_cpp',
@@ -855,6 +879,7 @@ export async function sendAiChatMessage(message, model, turnLimit = 10) {
                     // Local adapters are currently text-first (no tool calling yet).
                     require_tools: false,
                     require_json_mode: true,
+                    require_vision: Array.isArray(attachmentIds) && attachmentIds.length > 0,
                     require_streaming: false
                 }
             };
@@ -876,10 +901,14 @@ export async function sendAiChatMessage(message, model, turnLimit = 10) {
  * @param {string} model The model to use.
  * @param {number} turnLimit Maximum turns.
  * @param {function} onProgress Callback for progress events.
+ * @param {string[]} attachmentIds Optional uploaded artifact ids to attach.
  * @returns {Promise<Object>} Final result.
  */
-export async function streamAiChatMessage(message, model, turnLimit = 10, onProgress) {
+export async function streamAiChatMessage(message, model, turnLimit = 10, onProgress, attachmentIds = []) {
     const payload = { message, model, turn_limit: turnLimit };
+    if (Array.isArray(attachmentIds) && attachmentIds.length > 0) {
+        payload.attachment_ids = attachmentIds;
+    }
 
     const localPrefixes = {
         'llama_cpp::': 'llama_cpp',
@@ -905,6 +934,7 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
                 requirements: {
                     require_tools: false,
                     require_json_mode: true,
+                    require_vision: Array.isArray(attachmentIds) && attachmentIds.length > 0,
                     require_streaming: false
                 }
             };

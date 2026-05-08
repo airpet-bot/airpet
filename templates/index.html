@@ -1423,6 +1423,68 @@
             align-items: flex-end;
         }
 
+        .ai-attachment-tray {
+            display: none;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding: 0 5px;
+        }
+
+        .ai-attachment-tray.has-attachments {
+            display: flex;
+        }
+
+        .ai-attachment-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            max-width: 260px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: #eef6ff;
+            border: 1px solid #bfdbfe;
+            color: #1e3a8a;
+            font-size: 11px;
+        }
+
+        .ai-attachment-chip span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .ai-message-attachments {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 8px;
+        }
+
+        .ai-attachment-remove {
+            border: none;
+            background: transparent;
+            color: #1e40af;
+            cursor: pointer;
+            font-size: 13px;
+            line-height: 1;
+            padding: 0;
+        }
+
+        #ai_attach_button {
+            height: 42px;
+            flex: 0 0 auto;
+            border-radius: 20px;
+            padding: 0 12px;
+            font-size: 12px;
+            background: #f8fafc;
+            color: #334155;
+            border: 1px solid #cbd5e1;
+        }
+
+        #ai_attach_button:hover {
+            background: #e2e8f0;
+        }
+
         #ai_prompt_input {
             flex-grow: 1;
             min-height: 40px;
@@ -3641,7 +3703,10 @@
                                 <button id="clear_chat_btn">Clear History</button>
                             </div>
                         </div>
+                        <div id="ai_attachment_tray" class="ai-attachment-tray" aria-live="polite"></div>
                         <div id="ai_input_row">
+                            <input type="file" id="ai_attachment_input" accept="image/png,image/jpeg,image/webp,application/pdf" multiple hidden>
+                            <button id="ai_attach_button" title="Attach detector diagram image or PDF">Attach</button>
                             <textarea id="ai_prompt_input" placeholder="Type a message or geometry instruction..." rows="1"></textarea>
                             <button id="ai_generate_button" title="Send message">
                                 <span class="button-text">➤</span>
@@ -5285,6 +5350,10 @@
                             <input type="checkbox" id="ai_runtime_llama_cpp_verify_tls" checked>
                             Verify TLS
                         </label>
+                        <label class="ai-runtime-inline-check" for="ai_runtime_llama_cpp_supports_vision">
+                            <input type="checkbox" id="ai_runtime_llama_cpp_supports_vision">
+                            Vision-capable model
+                        </label>
 
                         <div class="ai-runtime-field">
                             <label for="ai_runtime_llama_cpp_base_url">Base URL</label>
@@ -5326,6 +5395,10 @@
                         <label class="ai-runtime-inline-check" for="ai_runtime_lm_studio_verify_tls">
                             <input type="checkbox" id="ai_runtime_lm_studio_verify_tls" checked>
                             Verify TLS
+                        </label>
+                        <label class="ai-runtime-inline-check" for="ai_runtime_lm_studio_supports_vision">
+                            <input type="checkbox" id="ai_runtime_lm_studio_supports_vision">
+                            Vision-capable model
                         </label>
 
                         <div class="ai-runtime-field">

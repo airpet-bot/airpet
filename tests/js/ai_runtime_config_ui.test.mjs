@@ -15,11 +15,13 @@ test('runtimeConfigToFormState applies deterministic defaults for both local bac
     assert.equal(formState.backends.llama_cpp.endpoint_path, '/v1/chat/completions');
     assert.equal(formState.backends.llama_cpp.timeout_seconds, '600');
     assert.equal(formState.backends.llama_cpp.verify_tls, true);
+    assert.equal(formState.backends.llama_cpp.supports_vision, false);
     assert.equal(formState.backends.llama_cpp.headers_json, '{}');
 
     assert.equal(formState.backends.lm_studio.base_url, 'http://127.0.0.1:1234');
     assert.equal(formState.backends.lm_studio.timeout_seconds, '45');
     assert.equal(formState.backends.lm_studio.verify_tls, true);
+    assert.equal(formState.backends.lm_studio.supports_vision, false);
 });
 
 test('runtimeConfigToFormState supports session shape and legacy backend-key shape', () => {
@@ -66,6 +68,7 @@ test('buildRuntimeConfigPayloadFromFormState parses booleans, numbers, and heade
                 max_retries: '2',
                 retry_backoff_seconds: '0.5',
                 verify_tls: false,
+                supports_vision: true,
                 headers_json: '{"Authorization":"Bearer abc"}',
             },
             lm_studio: {
@@ -87,6 +90,7 @@ test('buildRuntimeConfigPayloadFromFormState parses booleans, numbers, and heade
     assert.equal(result.runtimeConfig.backends.llama_cpp.timeout_seconds, 120);
     assert.equal(result.runtimeConfig.backends.llama_cpp.max_retries, 2);
     assert.equal(result.runtimeConfig.backends.llama_cpp.retry_backoff_seconds, 0.5);
+    assert.equal(result.runtimeConfig.backends.llama_cpp.supports_vision, true);
     assert.deepEqual(result.runtimeConfig.backends.llama_cpp.headers, {
         Authorization: 'Bearer abc',
     });

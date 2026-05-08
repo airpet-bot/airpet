@@ -9,9 +9,11 @@ import {
 } from './aiRuntimeConfigUi.js';
 
 let messageList, promptInput, generateButton, clearButton, modelSelect, contextStatsEl;
+let attachmentInput, attachButton, attachmentTray;
 let isProcessing = false;
 let onGeometryUpdateCallback = () => {};
 let localUnsavedMessages = [];
+let pendingAttachments = [];
 let currentRecentTools = [];
 let currentTurn = 1;
 let currentTurnLimit = 50;
@@ -30,6 +32,9 @@ export function init(callbacks) {
     clearButton = document.getElementById('clear_chat_btn');
     modelSelect = document.getElementById('ai_model_select');
     contextStatsEl = document.getElementById('ai_context_stats');
+    attachmentInput = document.getElementById('ai_attachment_input');
+    attachButton = document.getElementById('ai_attach_button');
+    attachmentTray = document.getElementById('ai_attachment_tray');
 
     initRuntimeConfigUi();
 
@@ -47,6 +52,11 @@ export function init(callbacks) {
 
     if (clearButton) {
         clearButton.addEventListener('click', handleClear);
+    }
+
+    if (attachButton && attachmentInput) {
+        attachButton.addEventListener('click', () => attachmentInput.click());
+        attachmentInput.addEventListener('change', handleAttachmentSelection);
     }
 
     if (modelSelect) {
@@ -82,6 +92,7 @@ function initRuntimeConfigUi() {
             max_retries: document.getElementById(`ai_runtime_${backendId}_max_retries`),
             retry_backoff_seconds: document.getElementById(`ai_runtime_${backendId}_retry_backoff_seconds`),
             verify_tls: document.getElementById(`ai_runtime_${backendId}_verify_tls`),
+            supports_vision: document.getElementById(`ai_runtime_${backendId}_supports_vision`),
             headers_json: document.getElementById(`ai_runtime_${backendId}_headers_json`),
         };
     });
@@ -163,6 +174,7 @@ function collectRuntimeConfigFormState() {
             max_retries: fields.max_retries?.value ?? '',
             retry_backoff_seconds: fields.retry_backoff_seconds?.value ?? '',
             verify_tls: !!fields.verify_tls?.checked,
+            supports_vision: !!fields.supports_vision?.checked,
             headers_json: fields.headers_json?.value ?? '',
         };
     });
@@ -185,6 +197,7 @@ function applyRuntimeConfigFormState(formState) {
         if (fields.max_retries) fields.max_retries.value = values.max_retries ?? '';
         if (fields.retry_backoff_seconds) fields.retry_backoff_seconds.value = values.retry_backoff_seconds ?? '';
         if (fields.verify_tls) fields.verify_tls.checked = !!values.verify_tls;
+        if (fields.supports_vision) fields.supports_vision.checked = !!values.supports_vision;
         if (fields.headers_json) fields.headers_json.value = values.headers_json ?? '{}';
     });
 }
@@ -364,6 +377,11 @@ function getMessageDisplayText(msg) {
     return msg.parts ? msg.parts.map(p => p.text || '').join('\n').trim() : (msg.content || '').trim();
 }
 
+function getMessageAttachments(msg) {
+    const attachments = msg?.metadata?.ai_attachments;
+    return Array.isArray(attachments) ? attachments : [];
+}
+
 function getIntermediateToolNames(msg) {
     const toolNames = [];
 
@@ -439,7 +457,7 @@ function renderHistory(history) {
 
         const userText = getMessageDisplayText(userItem?.msg);
         if (userText && !userText.startsWith('[System Context Update]')) {
-            addMessageToUI('user', userText, false);
+            addMessageToUI('user', userText, false, getMessageAttachments(userItem?.msg));
         }
 
         if (intermediates.length > 0) {
@@ -490,8 +508,12 @@ async function handleSend() {
     const turnLimit = turnLimitInput ? parseInt(turnLimitInput.value, 10) : 10;
 
     setLoading(true);
-    addMessageToUI('user', message);
+    const attachmentsForTurn = [...pendingAttachments];
+    const attachmentIds = attachmentsForTurn.map(item => item.artifact_id).filter(Boolean);
+
+    addMessageToUI('user', message, false, attachmentsForTurn);
     promptInput.value = '';
+    clearPendingAttachments();
     scrollToBottom();
 
     currentRecentTools = [];
@@ -503,7 +525,7 @@ async function handleSend() {
     try {
         const result = await APIService.streamAiChatMessage(message, model, turnLimit, (progress) => {
             updateThinkingIndicator(thinkingIndicator, progress);
-        });
+        }, attachmentIds);
         removeThinkingIndicator(thinkingIndicator);
         addMessageToUI('model', result.message);
         
@@ -518,6 +540,10 @@ async function handleSend() {
         await loadHistory(true);
     } catch (err) {
         removeThinkingIndicator(thinkingIndicator);
+        if (attachmentIds.length > 0 && pendingAttachments.length === 0) {
+            pendingAttachments = attachmentsForTurn;
+            renderPendingAttachments();
+        }
         const backendError = formatBackendDiagnosticsError(err);
 
         if (backendError) {
@@ -545,6 +571,69 @@ async function handleSend() {
     }
 }
 
+async function handleAttachmentSelection(event) {
+    const files = Array.from(event.target?.files || []);
+    if (!files.length) return;
+
+    setAttachmentUploadBusy(true);
+    try {
+        for (const file of files) {
+            const response = await APIService.uploadAiArtifact(file, 'chat-attachment');
+            if (response?.success && response.artifact) {
+                pendingAttachments.push(response.artifact);
+            }
+        }
+        renderPendingAttachments();
+    } catch (err) {
+        UIManager.showError(`Failed to attach file: ${err.message || err}`);
+    } finally {
+        if (attachmentInput) attachmentInput.value = '';
+        setAttachmentUploadBusy(false);
+    }
+}
+
+function setAttachmentUploadBusy(isBusy) {
+    if (attachButton) {
+        attachButton.disabled = isBusy || isProcessing;
+        attachButton.textContent = isBusy ? 'Uploading...' : 'Attach';
+    }
+}
+
+function renderPendingAttachments() {
+    if (!attachmentTray) return;
+
+    attachmentTray.innerHTML = '';
+    attachmentTray.classList.toggle('has-attachments', pendingAttachments.length > 0);
+
+    pendingAttachments.forEach((attachment, index) => {
+        const chip = document.createElement('div');
+        chip.className = 'ai-attachment-chip';
+
+        const label = document.createElement('span');
+        label.textContent = attachment.original_filename || attachment.artifact_id || 'attachment';
+        label.title = `${attachment.mime_type || 'file'} ${attachment.artifact_id || ''}`.trim();
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'ai-attachment-remove';
+        remove.setAttribute('aria-label', `Remove ${label.textContent}`);
+        remove.textContent = 'x';
+        remove.addEventListener('click', () => {
+            pendingAttachments.splice(index, 1);
+            renderPendingAttachments();
+        });
+
+        chip.appendChild(label);
+        chip.appendChild(remove);
+        attachmentTray.appendChild(chip);
+    });
+}
+
+function clearPendingAttachments() {
+    pendingAttachments = [];
+    renderPendingAttachments();
+}
+
 async function handleClear() {
     if (!confirm("Clear AI chat history? This won't undo geometry changes.")) return;
     try {
@@ -559,12 +648,23 @@ async function handleClear() {
     }
 }
 
-function addMessageToUI(role, text, skipSave = false) {
+function addMessageToUI(role, text, skipSave = false, attachments = []) {
     const div = document.createElement('div');
     div.className = `chat-message ${role} markdown-content`;
     
     const formattedText = marked.marked(text);
     div.innerHTML = formattedText;
+    if (Array.isArray(attachments) && attachments.length > 0) {
+        const attachmentList = document.createElement('div');
+        attachmentList.className = 'ai-message-attachments';
+        attachments.forEach((attachment) => {
+            const chip = document.createElement('span');
+            chip.className = 'ai-attachment-chip';
+            chip.textContent = attachment.original_filename || attachment.artifact_id || 'attachment';
+            attachmentList.appendChild(chip);
+        });
+        div.appendChild(attachmentList);
+    }
     messageList.appendChild(div);
     
     if (!skipSave && (role === 'user' || role === 'model')) {
@@ -607,6 +707,7 @@ function setLoading(loading) {
     generateButton.classList.toggle('loading', loading);
     generateButton.disabled = loading;
     promptInput.disabled = loading;
+    if (attachButton) attachButton.disabled = loading;
 }
 
 function scrollToBottom() {

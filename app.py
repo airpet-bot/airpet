@@ -1,6 +1,7 @@
 # FILE: gdml-studio/app.py
 
 import ast
+import base64
 import glob
 import json
 import logging
@@ -11725,7 +11726,10 @@ def _to_openai_tool_calls(raw_tool_calls: Any, *, id_prefix: str = "call") -> Li
     return openai_calls
 
 
-def _build_local_adapter_message_history(chat_history: List[Dict[str, Any]]) -> List[TextMessage]:
+def _build_local_adapter_message_history(
+    chat_history: List[Dict[str, Any]],
+    artifact_store: Optional[AIArtifactStore] = None,
+) -> List[TextMessage]:
     messages: List[TextMessage] = []
 
     for msg in chat_history:
@@ -11749,6 +11753,11 @@ def _build_local_adapter_message_history(chat_history: List[Dict[str, Any]]) -> 
             content = ""
 
         kwargs: Dict[str, Any] = {}
+
+        if role == "user":
+            image_parts = _build_openai_image_parts_for_chat_message(msg, artifact_store)
+            if image_parts:
+                kwargs["image_parts"] = image_parts
 
         if role == "assistant" and isinstance(msg.get("tool_calls"), list):
             openai_tool_calls = _to_openai_tool_calls(msg.get("tool_calls"), id_prefix="hist")
@@ -11777,13 +11786,16 @@ def _normalize_gemini_history_role(role: Any) -> Optional[str]:
     return None
 
 
-def _build_gemini_history_parts(msg: Dict[str, Any]) -> List[Any]:
+def _build_gemini_history_parts(
+    msg: Dict[str, Any],
+    artifact_store: Optional[AIArtifactStore] = None,
+) -> List[Any]:
     if not isinstance(msg, dict):
         return []
 
     existing_parts = msg.get("parts")
     if isinstance(existing_parts, list) and existing_parts:
-        return existing_parts
+        return existing_parts + _build_gemini_attachment_parts_for_chat_message(msg, artifact_store)
 
     role = str(msg.get("role") or "").strip().lower()
     parts: List[Any] = []
@@ -11829,10 +11841,16 @@ def _build_gemini_history_parts(msg: Dict[str, Any]) -> List[Any]:
         elif isinstance(content, str) and content.strip():
             parts = [{"text": content}]
 
+    if role == "user":
+        parts.extend(_build_gemini_attachment_parts_for_chat_message(msg, artifact_store))
+
     return parts
 
 
-def _build_gemini_sdk_history(chat_history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _build_gemini_sdk_history(
+    chat_history: List[Dict[str, Any]],
+    artifact_store: Optional[AIArtifactStore] = None,
+) -> List[Dict[str, Any]]:
     sanitized_history: List[Dict[str, Any]] = []
 
     for msg in chat_history:
@@ -11843,7 +11861,7 @@ def _build_gemini_sdk_history(chat_history: List[Dict[str, Any]]) -> List[Dict[s
         if role is None:
             continue
 
-        parts = _build_gemini_history_parts(msg)
+        parts = _build_gemini_history_parts(msg, artifact_store)
         if not parts:
             continue
 
@@ -11983,6 +12001,194 @@ def _get_ai_artifact_store_for_session(pm: Optional[ProjectManager] = None) -> A
         base_dir=Path(pm.projects_dir) / ".airpet_ai_artifacts",
         workspace_root=Path(os.getcwd()),
     )
+
+
+AI_CHAT_ATTACHMENT_MAX_COUNT = 4
+AI_CHAT_ATTACHMENT_ALLOWED_MIME_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
+
+
+def _normalize_ai_chat_attachment_ids(raw_attachments: Any) -> List[str]:
+    if raw_attachments is None:
+        return []
+
+    if not isinstance(raw_attachments, list):
+        raise AIArtifactValidationError("attachments must be a list of artifact ids.")
+
+    artifact_ids: List[str] = []
+    for idx, item in enumerate(raw_attachments):
+        if isinstance(item, str):
+            artifact_id = item.strip()
+        elif isinstance(item, dict):
+            artifact_id = str(item.get("artifact_id") or item.get("id") or "").strip()
+        else:
+            raise AIArtifactValidationError(f"attachments[{idx}] must be an artifact id or object.")
+
+        if not artifact_id:
+            raise AIArtifactValidationError(f"attachments[{idx}] is missing artifact_id.")
+        if artifact_id not in artifact_ids:
+            artifact_ids.append(artifact_id)
+
+    if len(artifact_ids) > AI_CHAT_ATTACHMENT_MAX_COUNT:
+        raise AIArtifactValidationError(
+            f"At most {AI_CHAT_ATTACHMENT_MAX_COUNT} AI chat attachments are supported per message."
+        )
+
+    return artifact_ids
+
+
+def _resolve_ai_chat_attachments(pm: ProjectManager, raw_attachments: Any) -> List[Dict[str, Any]]:
+    artifact_ids = _normalize_ai_chat_attachment_ids(raw_attachments)
+    if not artifact_ids:
+        return []
+
+    store = _get_ai_artifact_store_for_session(pm)
+    attachments: List[Dict[str, Any]] = []
+    for artifact_id in artifact_ids:
+        metadata = store.get_metadata(artifact_id)
+        if metadata is None:
+            raise AIArtifactValidationError(f"AI attachment artifact not found: {artifact_id}")
+
+        mime_type = str(metadata.get("mime_type") or "").strip().lower()
+        if mime_type not in AI_CHAT_ATTACHMENT_ALLOWED_MIME_TYPES:
+            raise AIArtifactValidationError(
+                f"AI attachment '{artifact_id}' has unsupported mime type '{mime_type}'."
+            )
+
+        blob_path = store.resolve_artifact_path(artifact_id)
+        if blob_path is None:
+            raise AIArtifactValidationError(f"AI attachment blob is missing for artifact_id: {artifact_id}")
+
+        resolved = dict(metadata)
+        resolved["_blob_path"] = str(blob_path)
+        attachments.append(resolved)
+
+    return attachments
+
+
+def _public_ai_chat_attachment_metadata(attachments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    public_items: List[Dict[str, Any]] = []
+    for attachment in attachments or []:
+        if not isinstance(attachment, dict):
+            continue
+        public_items.append({
+            "artifact_id": attachment.get("artifact_id"),
+            "mime_type": attachment.get("mime_type"),
+            "original_filename": attachment.get("original_filename"),
+            "size_bytes": attachment.get("size_bytes"),
+            "sha256": attachment.get("sha256"),
+        })
+    return public_items
+
+
+def _build_ai_chat_attachment_notice(attachments: List[Dict[str, Any]]) -> str:
+    public_items = _public_ai_chat_attachment_metadata(attachments)
+    if not public_items:
+        return ""
+
+    lines = ["", "", "Attached artifact(s) for multimodal interpretation:"]
+    for item in public_items:
+        lines.append(
+            "- "
+            f"{item.get('original_filename') or item.get('artifact_id')} "
+            f"({item.get('mime_type')}, artifact_id={item.get('artifact_id')})"
+        )
+    return "\n".join(lines)
+
+
+def _validate_ai_chat_attachment_backend_support(
+    attachments: List[Dict[str, Any]],
+    *,
+    is_gemini: bool,
+    use_local_text_adapter: bool,
+) -> Optional[str]:
+    if not attachments:
+        return None
+
+    if is_gemini:
+        return None
+
+    if use_local_text_adapter:
+        non_image = [
+            str(item.get("original_filename") or item.get("artifact_id"))
+            for item in attachments
+            if not str(item.get("mime_type") or "").startswith("image/")
+        ]
+        if non_image:
+            return (
+                "The selected OpenAI-compatible local backend can receive image attachments only; "
+                f"PDF/document attachments require a Gemini vision-capable model. Unsupported: {', '.join(non_image)}"
+            )
+        return None
+
+    return (
+        "The selected AI backend does not support AIRPET chat attachments. "
+        "Choose a Gemini vision-capable model, or a local OpenAI-compatible backend explicitly configured with supports_vision=true."
+    )
+
+
+def _attachment_metadata_from_chat_message(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    metadata = msg.get("metadata") if isinstance(msg, dict) else None
+    if not isinstance(metadata, dict):
+        return []
+
+    attachments = metadata.get("ai_attachments")
+    if not isinstance(attachments, list):
+        return []
+
+    return [dict(item) for item in attachments if isinstance(item, dict)]
+
+
+def _build_openai_image_parts_for_chat_message(
+    msg: Dict[str, Any],
+    artifact_store: Optional[AIArtifactStore],
+) -> Tuple[Dict[str, Any], ...]:
+    if artifact_store is None:
+        return tuple()
+
+    image_parts: List[Dict[str, Any]] = []
+    for attachment in _attachment_metadata_from_chat_message(msg):
+        mime_type = str(attachment.get("mime_type") or "").strip().lower()
+        if not mime_type.startswith("image/"):
+            continue
+        artifact_id = str(attachment.get("artifact_id") or "").strip()
+        if not artifact_id:
+            continue
+        blob_path = artifact_store.resolve_artifact_path(artifact_id)
+        if blob_path is None:
+            continue
+        image_parts.append({
+            "mime_type": mime_type,
+            "data_base64": base64.b64encode(blob_path.read_bytes()).decode("ascii"),
+            "detail": "high",
+        })
+    return tuple(image_parts)
+
+
+def _build_gemini_attachment_parts_for_chat_message(
+    msg: Dict[str, Any],
+    artifact_store: Optional[AIArtifactStore],
+) -> List[Any]:
+    if artifact_store is None:
+        return []
+
+    attachment_parts: List[Any] = []
+    for attachment in _attachment_metadata_from_chat_message(msg):
+        mime_type = str(attachment.get("mime_type") or "").strip().lower()
+        if mime_type not in AI_CHAT_ATTACHMENT_ALLOWED_MIME_TYPES:
+            continue
+        artifact_id = str(attachment.get("artifact_id") or "").strip()
+        if not artifact_id:
+            continue
+        blob_path = artifact_store.resolve_artifact_path(artifact_id)
+        if blob_path is None:
+            continue
+        attachment_parts.append(types.Part.from_bytes(data=blob_path.read_bytes(), mime_type=mime_type))
+    return attachment_parts
 
 
 @app.route('/api/ai/artifacts/upload', methods=['POST'])
@@ -13726,12 +13932,30 @@ def _build_chat_backend_diagnostics(
     return diagnostics
 
 
-def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_selection_payload, selector_runtime_config, selector_session_runtime_config, selector_request_runtime_config, selector_requirements, use_local_text_adapter, is_gemini, chat_extra_payload, client_instance=None):
+def _stream_ai_chat_response(
+    pm,
+    user_message,
+    model_id,
+    turn_limit,
+    backend_selection_payload,
+    selector_runtime_config,
+    selector_session_runtime_config,
+    selector_request_runtime_config,
+    selector_requirements,
+    use_local_text_adapter,
+    is_gemini,
+    chat_extra_payload,
+    client_instance=None,
+    chat_attachments: Optional[List[Dict[str, Any]]] = None,
+):
     """Generator function for streaming AI chat progress via SSE."""
     import time
     
     context_summary = pm.get_summarized_context()
-    formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nUser Message: {user_message}"
+    attachment_notice = _build_ai_chat_attachment_notice(chat_attachments or [])
+    attachment_metadata = _public_ai_chat_attachment_metadata(chat_attachments or [])
+    formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nUser Message: {user_message}{attachment_notice}"
+    artifact_store = _get_ai_artifact_store_for_session(pm) if attachment_metadata else None
 
     if use_local_text_adapter:
         selected_backend_id = backend_selection_payload.get("resolved_backend_id") if backend_selection_payload else None
@@ -13743,6 +13967,7 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
                 "model_id": model_id,
                 "original_message": user_message,
                 "resolved_backend_id": selected_backend_id,
+                "ai_attachments": attachment_metadata,
             },
         })
 
@@ -13754,7 +13979,7 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
             require_streaming = bool((selector_requirements or {}).get("require_streaming", False))
             min_context_tokens = _coerce_optional_int((selector_requirements or {}).get("min_context_tokens"))
 
-            local_messages = _build_local_adapter_message_history(pm.chat_history)
+            local_messages = _build_local_adapter_message_history(pm.chat_history, artifact_store)
             if not local_messages:
                 local_messages = [
                     TextMessage(role="system", content=load_system_prompt()),
@@ -13784,6 +14009,7 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
                     require_json_mode=require_json_mode,
                     require_streaming=require_streaming,
                     min_context_tokens=min_context_tokens,
+                    require_vision=bool(attachment_metadata),
                     tool_schemas=openai_tool_schemas if effective_require_tools else None,
                     tool_choice="auto" if effective_require_tools else None,
                 )
@@ -13979,13 +14205,17 @@ def _stream_ai_chat_response(pm, user_message, model_id, turn_limit, backend_sel
         pm.chat_history.append({
             "role": "user", 
             "parts": [{"text": formatted_user_msg}],
-            "metadata": {"model_id": model_id, "original_message": user_message}
+            "metadata": {
+                "model_id": model_id,
+                "original_message": user_message,
+                "ai_attachments": attachment_metadata,
+            }
         })
         
         pm.begin_transaction()
         
         try:
-            sanitized_history = _build_gemini_sdk_history(pm.chat_history)
+            sanitized_history = _build_gemini_sdk_history(pm.chat_history, artifact_store)
             
             job_id = None
             version_id = None
@@ -14149,9 +14379,15 @@ def ai_chat_stream_route():
     user_message = data.get('message')
     model_id = data.get('model', 'models/gemini-3.1-flash-lite-preview')
     turn_limit = data.get('turn_limit', 50)
+    raw_attachments = data.get("attachment_ids", data.get("attachments"))
 
     if not user_message:
         return Response(f"data: {json.dumps({'type': 'error', 'message': 'No message provided.'})}\n\n", mimetype='text/event-stream')
+
+    try:
+        chat_attachments = _resolve_ai_chat_attachments(pm, raw_attachments)
+    except AIArtifactValidationError as exc:
+        return Response(f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n", mimetype='text/event-stream')
 
     backend_selection_payload = None
     selector_runtime_config = None
@@ -14207,6 +14443,7 @@ def ai_chat_stream_route():
             messages=(TextMessage(role="user", content=str(user_message)),),
             require_tools=_coerce_bool(requirements_cfg.get("require_tools"), True),
             require_json_mode=_coerce_bool(requirements_cfg.get("require_json_mode"), True),
+            require_vision=bool(chat_attachments) or _coerce_bool(requirements_cfg.get("require_vision"), False),
             require_streaming=_coerce_bool(requirements_cfg.get("require_streaming"), False),
             min_context_tokens=_coerce_optional_int(requirements_cfg.get("min_context_tokens")),
         )
@@ -14214,6 +14451,7 @@ def ai_chat_stream_route():
         requirements_payload = {
             "require_tools": text_request.require_tools,
             "require_json_mode": text_request.require_json_mode,
+            "require_vision": text_request.require_vision,
             "require_streaming": text_request.require_streaming,
             "min_context_tokens": text_request.min_context_tokens,
         }
@@ -14254,6 +14492,13 @@ def ai_chat_stream_route():
         is_gemini = model_id.startswith("models/")
 
     chat_extra_payload = {"backend_selection": backend_selection_payload} if backend_selection_payload else None
+    attachment_error = _validate_ai_chat_attachment_backend_support(
+        chat_attachments,
+        is_gemini=is_gemini,
+        use_local_text_adapter=use_local_text_adapter,
+    )
+    if attachment_error:
+        return Response(f"data: {json.dumps({'type': 'error', 'message': attachment_error})}\n\n", mimetype='text/event-stream')
 
     gemini_client = None
     if is_gemini:
@@ -14284,6 +14529,7 @@ def ai_chat_stream_route():
             is_gemini,
             chat_extra_payload,
             gemini_client,
+            chat_attachments,
         )
 
     return Response(generate(), mimetype='text/event-stream')
@@ -14296,11 +14542,17 @@ def ai_chat_route():
     user_message = data.get('message')
     model_id = data.get('model', 'models/gemini-3.1-flash-lite-preview')
     turn_limit = data.get('turn_limit', 50)
+    raw_attachments = data.get("attachment_ids", data.get("attachments"))
     if APP_MODE != "production":
         logger.debug(f"Received turn_limit: {turn_limit}")
 
     if not user_message:
         return jsonify({"success": False, "error": "No message provided."}), 400
+
+    try:
+        chat_attachments = _resolve_ai_chat_attachments(pm, raw_attachments)
+    except AIArtifactValidationError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
 
     backend_selection_payload = None
     selector_runtime_config = None
@@ -14377,6 +14629,7 @@ def ai_chat_route():
             messages=(TextMessage(role="user", content=str(user_message)),),
             require_tools=_coerce_bool(requirements_cfg.get("require_tools"), True),
             require_json_mode=_coerce_bool(requirements_cfg.get("require_json_mode"), True),
+            require_vision=bool(chat_attachments) or _coerce_bool(requirements_cfg.get("require_vision"), False),
             require_streaming=_coerce_bool(requirements_cfg.get("require_streaming"), False),
             min_context_tokens=_coerce_optional_int(requirements_cfg.get("min_context_tokens")),
         )
@@ -14384,6 +14637,7 @@ def ai_chat_route():
         requirements_payload = {
             "require_tools": text_request.require_tools,
             "require_json_mode": text_request.require_json_mode,
+            "require_vision": text_request.require_vision,
             "require_streaming": text_request.require_streaming,
             "min_context_tokens": text_request.min_context_tokens,
         }
@@ -14446,6 +14700,13 @@ def ai_chat_route():
         is_gemini = model_id.startswith("models/")
 
     chat_extra_payload = {"backend_selection": backend_selection_payload} if backend_selection_payload else None
+    attachment_error = _validate_ai_chat_attachment_backend_support(
+        chat_attachments,
+        is_gemini=is_gemini,
+        use_local_text_adapter=use_local_text_adapter,
+    )
+    if attachment_error:
+        return jsonify({"success": False, "error": attachment_error}), 400
 
     # Initialize chat history if empty
     if not pm.chat_history:
@@ -14462,7 +14723,10 @@ def ai_chat_route():
             ]
     
     context_summary = pm.get_summarized_context()
-    formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nUser Message: {user_message}"
+    attachment_notice = _build_ai_chat_attachment_notice(chat_attachments)
+    attachment_metadata = _public_ai_chat_attachment_metadata(chat_attachments)
+    formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nUser Message: {user_message}{attachment_notice}"
+    artifact_store = _get_ai_artifact_store_for_session(pm) if attachment_metadata else None
 
     if use_local_text_adapter:
         pm.chat_history.append({
@@ -14472,6 +14736,7 @@ def ai_chat_route():
                 "model_id": model_id,
                 "original_message": user_message,
                 "resolved_backend_id": selected_backend_id,
+                "ai_attachments": attachment_metadata,
             },
         })
 
@@ -14486,7 +14751,7 @@ def ai_chat_route():
             # Mirror the working local flow from feature/llama-lmstudio-ui:
             # keep full sanitized history (assistant tool_calls + tool tool_call_id)
             # so llama.cpp can continue native function-calling turns reliably.
-            local_messages = _build_local_adapter_message_history(pm.chat_history)
+            local_messages = _build_local_adapter_message_history(pm.chat_history, artifact_store)
             if not local_messages:
                 local_messages = [
                     TextMessage(role="system", content=load_system_prompt()),
@@ -14513,6 +14778,7 @@ def ai_chat_route():
                     messages=tuple(local_messages),
                     require_tools=effective_require_tools,
                     require_json_mode=require_json_mode,
+                    require_vision=bool(attachment_metadata),
                     require_streaming=require_streaming,
                     min_context_tokens=min_context_tokens,
                     tool_schemas=openai_tool_schemas if effective_require_tools else None,
@@ -14676,7 +14942,11 @@ def ai_chat_route():
         pm.chat_history.append({
             "role": "user", 
             "parts": [{"text": formatted_user_msg}],
-            "metadata": {"model_id": model_id, "original_message": user_message} # Store original message for UI
+            "metadata": {
+                "model_id": model_id,
+                "original_message": user_message,
+                "ai_attachments": attachment_metadata,
+            } # Store original message for UI
         })
 
         # --- OPTIMIZATION: Start Transaction ---
@@ -14684,7 +14954,7 @@ def ai_chat_route():
 
         try:
             # Sanitize history for Gemini API (remove our custom metadata)
-            sanitized_history = _build_gemini_sdk_history(pm.chat_history)
+            sanitized_history = _build_gemini_sdk_history(pm.chat_history, artifact_store)
 
             job_id = None
             version_id = None
@@ -14828,7 +15098,11 @@ def ai_chat_route():
         pm.chat_history.append({
             "role": "user", 
             "content": formatted_user_msg,
-            "metadata": {"model_id": model_id, "original_message": user_message} # Store original message for UI
+            "metadata": {
+                "model_id": model_id,
+                "original_message": user_message,
+                "ai_attachments": attachment_metadata,
+            } # Store original message for UI
         })
 
         pm.begin_transaction()

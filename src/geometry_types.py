@@ -3456,6 +3456,33 @@ class GeometryState:
         self.skin_surfaces[surf_obj.name] = surf_obj
     def add_border_surface(self, surf_obj):
         self.border_surfaces[surf_obj.name] = surf_obj
+
+    def _find_pv_by_id(self, pv_id):
+        """Helper to find a PV object by its UUID across the entire geometry."""
+        for lv in self.logical_volumes.values():
+            if lv.content_type == 'physvol':
+                for pv in lv.content:
+                    if pv.id == pv_id:
+                        return pv
+        for asm in self.assemblies.values():
+            for pv in asm.placements:
+                if pv.id == pv_id:
+                    return pv
+        return None
+
+    def _find_pv_by_name(self, pv_name):
+        """Helper to find a PV object by its name across the entire geometry."""
+        for lv in self.logical_volumes.values():
+            if lv.content_type == 'physvol':
+                for pv in lv.content:
+                    if pv.name == pv_name:
+                        return pv
+        for asm in self.assemblies.values():
+            for pv in asm.placements:
+                if pv.name == pv_name:
+                    return pv
+        return None
+
     def add_source(self, source_obj):
         self.sources[source_obj.name] = source_obj
     

@@ -1009,3 +1009,125 @@ def test_gdml_material_properties_round_trip():
     assert imported_state2.materials["PlainSi"].properties == {}
 
 
+def test_gdml_optical_surface_round_trip():
+    """OpticalSurface must survive GDML export and re-import."""
+    from src.geometry_types import Solid, OpticalSurface
+
+    state = GeometryState()
+    state.add_solid(Solid("world_solid", "box", {"x": "100", "y": "100", "z": "100"}))
+    state.add_material(Material("G4_Galactic", mat_type="nist"))
+
+    surf = OpticalSurface(
+        name="MirrorSurf",
+        model="glisur",
+        finish="polished",
+        surf_type="dielectric_metal",
+        value="1.0",
+    )
+    surf.properties["REFLECTIVITY"] = "ref_mat"
+    state.add_optical_surface(surf)
+
+    lv_world = LogicalVolume("world_lv", "world_solid", "G4_Galactic")
+    state.add_logical_volume(lv_world)
+    state.world_volume_ref = "world_lv"
+
+    writer = GDMLWriter(state)
+    gdml_str = writer.get_gdml_string()
+
+    # Verify opticalsurface tag with attributes and nested property
+    assert '<opticalsurface name="MirrorSurf"' in gdml_str
+    assert 'model="glisur"' in gdml_str
+    assert 'finish="polished"' in gdml_str
+    assert 'type="dielectric_metal"' in gdml_str
+    assert 'value="1.0"' in gdml_str
+    assert '<property name="REFLECTIVITY" ref="ref_mat"/>' in gdml_str
+
+    parser = GDMLParser()
+    imported_state = parser.parse_gdml_string(gdml_str)
+
+    imported_surf = imported_state.optical_surfaces["MirrorSurf"]
+    assert imported_surf.model == "glisur"
+    assert imported_surf.finish == "polished"
+    assert imported_surf.type == "dielectric_metal"
+    assert imported_surf.value == "1.0"
+    assert imported_surf.properties == {"REFLECTIVITY": "ref_mat"}
+
+
+def test_gdml_skin_surface_round_trip():
+    """SkinSurface must survive GDML export and re-import."""
+    from src.geometry_types import Solid, OpticalSurface, SkinSurface
+
+    state = GeometryState()
+    state.add_solid(Solid("world_solid", "box", {"x": "100", "y": "100", "z": "100"}))
+    state.add_material(Material("G4_Galactic", mat_type="nist"))
+
+    surf = OpticalSurface(name="SkinOptSurf", model="glisur", finish="ground", surf_type="dielectric_dielectric", value="0.5")
+    state.add_optical_surface(surf)
+
+    lv_world = LogicalVolume("world_lv", "world_solid", "G4_Galactic")
+    state.add_logical_volume(lv_world)
+    state.world_volume_ref = "world_lv"
+
+    skin = SkinSurface(name="Skin1", volume_ref="world_lv", surfaceproperty_ref="SkinOptSurf")
+    state.add_skin_surface(skin)
+
+    writer = GDMLWriter(state)
+    gdml_str = writer.get_gdml_string()
+
+    assert '<skinsurface name="Skin1" surfaceproperty="SkinOptSurf">' in gdml_str
+    assert '<volumeref ref="world_lv"/>' in gdml_str
+
+    parser = GDMLParser()
+    imported_state = parser.parse_gdml_string(gdml_str)
+
+    imported_skin = imported_state.skin_surfaces["Skin1"]
+    assert imported_skin.volume_ref == "world_lv"
+    assert imported_skin.surfaceproperty_ref == "SkinOptSurf"
+
+
+def test_gdml_border_surface_round_trip():
+    """BorderSurface must survive GDML export and re-import."""
+    from src.geometry_types import Solid, OpticalSurface, BorderSurface
+
+    state = GeometryState()
+    state.add_solid(Solid("world_solid", "box", {"x": "100", "y": "100", "z": "100"}))
+    state.add_solid(Solid("box_solid", "box", {"x": "10", "y": "10", "z": "10"}))
+    state.add_material(Material("G4_Galactic", mat_type="nist"))
+    state.add_material(Material("G4_Si", mat_type="nist"))
+
+    surf = OpticalSurface(name="BorderOptSurf", model="glisur", finish="polished", surf_type="dielectric_dielectric", value="0.8")
+    state.add_optical_surface(surf)
+
+    lv_world = LogicalVolume("world_lv", "world_solid", "G4_Galactic")
+    lv_box = LogicalVolume("box_lv", "box_solid", "G4_Si")
+    state.add_logical_volume(lv_world)
+    state.add_logical_volume(lv_box)
+    state.world_volume_ref = "world_lv"
+
+    pv_box = PhysicalVolumePlacement("box_pv", "box_lv")
+    lv_world.add_child(pv_box)
+
+    border = BorderSurface(
+        name="Border1",
+        physvol1_ref=pv_box.id,
+        physvol2_ref=pv_box.id,
+        surfaceproperty_ref="BorderOptSurf",
+    )
+    state.add_border_surface(border)
+
+    writer = GDMLWriter(state)
+    gdml_str = writer.get_gdml_string()
+
+    assert '<bordersurface name="Border1" surfaceproperty="BorderOptSurf">' in gdml_str
+    assert gdml_str.count('<physvolref ref="box_pv"/>') == 2
+
+    parser = GDMLParser()
+    imported_state = parser.parse_gdml_string(gdml_str)
+
+    imported_border = imported_state.border_surfaces["Border1"]
+    assert imported_border.surfaceproperty_ref == "BorderOptSurf"
+    # The writer emits PV names; the parser should resolve them back to PV IDs
+    assert imported_border.physvol1_ref == pv_box.id
+    assert imported_border.physvol2_ref == pv_box.id
+
+

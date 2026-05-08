@@ -21,6 +21,15 @@ def pm():
     return pm
 
 
+def _write_current_version_json(pm, version_dir):
+    version_path = Path(version_dir)
+    version_path.mkdir(parents=True, exist_ok=True)
+    (version_path / "version.json").write_text(
+        pm.save_project_to_json_string(),
+        encoding="utf-8",
+    )
+
+
 def _build_multi_cycle_lv_triangle(pm):
     loop_a, err = pm.add_logical_volume('ai_trunc_cycle_a_lv', 'box_solid', 'G4_Galactic')
     assert err is None
@@ -1280,6 +1289,15 @@ def test_ai_tool_manage_detector_feature_generator_supports_channel_cut_arrays(p
         "ai_channel_lv",
         "ai_channel_block",
         "G4_Galactic",
+    )
+    assert error is None
+    _, error = pm.add_physical_volume(
+        "World",
+        "ai_channel_pv",
+        "ai_channel_lv",
+        {"x": "0", "y": "0", "z": "0"},
+        {"x": "0", "y": "0", "z": "0"},
+        {"x": "1", "y": "1", "z": "1"},
     )
     assert error is None
 
@@ -5834,6 +5852,7 @@ def test_run_g4_simulation_writes_scoring_artifact_bundle_when_scoring_mesh_is_c
          patch("app.get_geant4_env", return_value={"G4PHYSICSLIST": "FTFP_BERT"}), \
          patch("app.subprocess.Popen", return_value=proc):
         run_g4_simulation("job-scoring-artifact", str(run_dir), "/fake/geant4", sim_params)
+        status = SIMULATION_STATUS["job-scoring-artifact"]
 
     scoring_bundle = json.loads((run_dir / "scoring_artifacts.json").read_text(encoding="utf-8"))
     updated_metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
@@ -5841,8 +5860,8 @@ def test_run_g4_simulation_writes_scoring_artifact_bundle_when_scoring_mesh_is_c
     assert scoring_bundle["summary"]["generated_artifact_count"] == 1
     assert scoring_bundle["summary"]["total_value"] == 4.0
     assert updated_metadata["scoring_artifacts"]["artifact_bundle_path"] == "scoring_artifacts.json"
-    assert SIMULATION_STATUS["job-scoring-artifact"]["status"] == "Completed"
-    assert "Scoring artifacts written to scoring_artifacts.json." in SIMULATION_STATUS["job-scoring-artifact"]["stdout"]
+    assert status["status"] == "Completed"
+    assert "Scoring artifacts written to scoring_artifacts.json." in status["stdout"]
 
 
 def test_ai_and_http_run_simulation_share_advanced_option_payload(pm, tmp_path):
@@ -6300,6 +6319,7 @@ def test_ai_tool_get_simulation_status_includes_log_summary_without_logs(pm):
         "stdout_lines": 2,
         "stderr_lines": 1,
         "has_errors": True,
+        "has_warnings": False,
         "latest_stdout": "step-1",
         "latest_stderr": "warn-1",
     }
@@ -6547,7 +6567,6 @@ def test_ai_tool_manage_particle_source_ion_params(pm):
         "gps_commands": {"particle": "gamma"},
     })
     assert upd_res['success'], upd_res
-    print("SOURCES KEYS:", list(pm.current_geometry_state.sources.keys()))
     updated_source = pm.current_geometry_state.sources["IonAI"]
     assert updated_source.type == "gps"
     assert updated_source.ion_params == {}
@@ -6680,8 +6699,7 @@ def test_configure_incident_beam_macro_uses_gps_direction(pm, tmp_path):
     assert res["success"], res
 
     version_dir = tmp_path / "version"
-    version_dir.mkdir()
-    (version_dir / "version.json").write_text("{}", encoding="utf-8")
+    _write_current_version_json(pm, version_dir)
     macro_path = pm.generate_macro_file("beam-job", {"events": 1}, str(tmp_path), str(tmp_path), str(version_dir))
     macro_text = Path(macro_path).read_text(encoding="utf-8")
 
@@ -6704,8 +6722,7 @@ def test_directed_source_zero_vector_falls_back_to_positive_z_in_macro(pm, tmp_p
     assert create_res["source_id"] in pm.current_geometry_state.active_source_ids
 
     version_dir = tmp_path / "version_zero_dir"
-    version_dir.mkdir()
-    (version_dir / "version.json").write_text("{}", encoding="utf-8")
+    _write_current_version_json(pm, version_dir)
     macro_path = pm.generate_macro_file("beam-job-zero", {"events": 1}, str(tmp_path), str(tmp_path), str(version_dir))
     macro_text = Path(macro_path).read_text(encoding="utf-8")
 
@@ -6796,8 +6813,7 @@ def test_generate_macro_places_sensitive_detector_commands_after_geometry_load(p
     assert lv is not None
 
     version_dir = tmp_path / "version_sd_order"
-    version_dir.mkdir()
-    (version_dir / "version.json").write_text("{}", encoding="utf-8")
+    _write_current_version_json(pm, version_dir)
 
     macro_path = pm.generate_macro_file("sd-order", {"events": 1}, str(tmp_path), str(tmp_path), str(version_dir))
     macro_text = Path(macro_path).read_text(encoding="utf-8")
@@ -7198,6 +7214,15 @@ def _seed_scoring_summary_route_ai_fixture(pm, tmp_path):
                 "track_length",
                 "volume_flux",
             ],
+            "artifact_request_count": 2,
+            "skipped_tally_count": 0,
+            "requires_hits": True,
+        },
+    }
+    scoring_bundle = {
+        "schema_version": 1,
+        "job_id": job_id,
+        "summary": {
             "hit_count_total": 2,
             "enabled_mesh_count": 1,
             "enabled_tally_count": 2,
@@ -7220,6 +7245,12 @@ def _seed_scoring_summary_route_ai_fixture(pm, tmp_path):
         },
         "artifacts": [],
         "skipped_tallies": [],
+    }
+    metadata["scoring_artifacts"] = {
+        "artifact_bundle_path": "scoring_artifacts.json",
+        "generated_artifact_count": 2,
+        "skipped_tally_count": 0,
+        "summary": scoring_bundle["summary"],
     }
     (run_dir / "scoring_artifacts.json").write_text(
         json.dumps(scoring_bundle),

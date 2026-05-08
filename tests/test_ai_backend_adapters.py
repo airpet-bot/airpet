@@ -194,6 +194,31 @@ def test_select_backend_routes_to_llama_cpp_for_tool_requests_when_enabled():
     assert selection.tried[0]["missing_capabilities"] == []
 
 
+def test_select_text_backend_enforces_vision_requirement():
+    runtime_config = {
+        "backends": {
+            "llama_cpp": {
+                "enabled": True,
+            }
+        }
+    }
+    request = TextGenerationRequest(
+        messages=(TextMessage(role="user", content="Describe this detector image."),),
+        require_json_mode=True,
+        require_vision=True,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        select_backend_for_text_request(
+            request=request,
+            runtime_config=runtime_config,
+            preferred_backend_id="llama_cpp",
+            allow_fallback=False,
+        )
+
+    assert "vision" in str(exc_info.value)
+
+
 def test_select_text_backend_routes_to_llama_cpp_when_enabled_and_capable():
     runtime_config = {
         "backends": {
@@ -444,6 +469,34 @@ def test_text_message_serializes_tool_fields_for_openai_history():
         "content": '{"success": true}',
         "tool_call_id": "call_123",
         "name": "manage_define",
+    }
+
+
+def test_text_message_serializes_image_parts_for_openai_vision_content():
+    msg = TextMessage(
+        role="user",
+        content="Build this detector.",
+        image_parts=(
+            {
+                "mime_type": "image/png",
+                "data_base64": "aW1hZ2UtYnl0ZXM=",
+                "detail": "high",
+            },
+        ),
+    )
+
+    assert msg.as_openai_message() == {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Build this detector."},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,aW1hZ2UtYnl0ZXM=",
+                    "detail": "high",
+                },
+            },
+        ],
     }
 
 

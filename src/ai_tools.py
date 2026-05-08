@@ -1609,6 +1609,17 @@ AI_GEOMETRY_TOOLS = [
                 "action": {"type": "string", "enum": ["create", "update", "update_transform"]},
                 "source_id": {"type": "string", "description": "Required for update/update_transform."},
                 "name": {"type": "string"},
+                "source_type": {"type": "string", "enum": ["gps", "ion"], "description": "Use 'ion' for Geant4 GPS ion sources configured with ion_params; defaults to 'gps'."},
+                "ion_params": {
+                    "type": "object",
+                    "description": "Ion source settings used when source_type='ion'. Z and A are required for a physical ion; Q and excitation_energy_keV are optional.",
+                    "properties": {
+                        "Z": {"type": "integer", "description": "Atomic number."},
+                        "A": {"type": "integer", "description": "Mass number."},
+                        "Q": {"type": "number", "description": "Ion charge state."},
+                        "excitation_energy_keV": {"type": "number", "description": "Excitation energy in keV."}
+                    }
+                },
                 "gps_commands": {"type": "object", "description": "GPS commands as key-value pairs. ALL values must be strings. Use energy format '100*keV' or '1*GeV'. Examples: {'particle': 'e-', 'energy': '10*keV', 'pos/type': 'Point', 'ang/type': 'beam1d', 'ang/dir1': '0 0 1'}. Common particles: gamma, e-, e+, proton. Use ang/type='beam1d' for directed beams and ang/type='iso' for isotropic emission. Friendly aliases like distribution/direction/electron are normalized."},
                 "position": {"type": "object"},
                 "rotation": {"type": "object"},
