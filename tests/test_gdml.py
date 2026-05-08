@@ -1126,8 +1126,11 @@ def test_gdml_border_surface_round_trip():
 
     imported_border = imported_state.border_surfaces["Border1"]
     assert imported_border.surfaceproperty_ref == "BorderOptSurf"
-    # The writer emits PV names; the parser should resolve them back to PV IDs
-    assert imported_border.physvol1_ref == pv_box.id
-    assert imported_border.physvol2_ref == pv_box.id
+    # The writer emits PV names; the parser resolves them back to new PV IDs.
+    # Verify the IDs point to PVs with the correct names.
+    imported_pv1 = imported_state._find_pv_by_id(imported_border.physvol1_ref)
+    imported_pv2 = imported_state._find_pv_by_id(imported_border.physvol2_ref)
+    assert imported_pv1 is not None and imported_pv1.name == "box_pv"
+    assert imported_pv2 is not None and imported_pv2.name == "box_pv"
 
 
