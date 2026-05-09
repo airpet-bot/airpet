@@ -9917,6 +9917,51 @@ class ProjectManager:
             macro_content.append("# No material optical properties defined.")
         macro_content.append("")
 
+        # --- Optical Surfaces ---
+        macro_content.append("# --- Optical Surfaces ---")
+        if temp_state.optical_surfaces:
+            for name, surf in temp_state.optical_surfaces.items():
+                macro_content.append(
+                    f"/g4pet/detector/addOpticalSurface "
+                    f"{name}|{surf.model}|{surf.finish}|{surf.type}|{surf.value}"
+                )
+        else:
+            macro_content.append("# No optical surfaces defined.")
+        macro_content.append("")
+
+        # --- Skin Surfaces ---
+        macro_content.append("# --- Skin Surfaces ---")
+        if temp_state.skin_surfaces:
+            for name, skin in temp_state.skin_surfaces.items():
+                macro_content.append(
+                    f"/g4pet/detector/addSkinSurface "
+                    f"{name}|{skin.volume_ref}|{skin.surfaceproperty_ref}"
+                )
+        else:
+            macro_content.append("# No skin surfaces defined.")
+        macro_content.append("")
+
+        # --- Border Surfaces ---
+        macro_content.append("# --- Border Surfaces ---")
+        if temp_state.border_surfaces:
+            for name, border in temp_state.border_surfaces.items():
+                pv1 = temp_state._find_pv_by_id(border.physvol1_ref)
+                pv2 = temp_state._find_pv_by_id(border.physvol2_ref)
+                pv1_name = pv1.name if pv1 else ""
+                pv2_name = pv2.name if pv2 else ""
+                if pv1_name and pv2_name:
+                    macro_content.append(
+                        f"/g4pet/detector/addBorderSurface "
+                        f"{name}|{pv1_name}|{pv2_name}|{border.surfaceproperty_ref}"
+                    )
+                else:
+                    macro_content.append(
+                        f"# Border surface '{name}' skipped: unresolved physical volume reference"
+                    )
+        else:
+            macro_content.append("# No border surfaces defined.")
+        macro_content.append("")
+
         # --- Initialize ---
         macro_content.append("/run/initialize")
         macro_content.append("")

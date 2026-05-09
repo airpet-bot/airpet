@@ -7,8 +7,11 @@
 #include "G4GeometryManager.hh"
 #include "G4LogicalVolume.hh"
 #include "G4LogicalVolumeStore.hh"
+#include "G4LogicalBorderSurface.hh"
+#include "G4LogicalSkinSurface.hh"
 #include "G4Material.hh"
 #include "G4MaterialPropertiesTable.hh"
+#include "G4OpticalSurface.hh"
 #include "G4ProductionCuts.hh"
 #include "G4Region.hh"
 #include "G4RegionStore.hh"
@@ -16,6 +19,7 @@
 #include "G4SDManager.hh"
 #include "G4PhysicalVolumeStore.hh"
 #include "G4SolidStore.hh"
+#include "G4SurfaceProperty.hh"
 #include "G4UIcmdWith3VectorAndUnit.hh"
 #include "G4UIdirectory.hh"
 #include "G4UImessenger.hh"
@@ -265,6 +269,73 @@ void ConfigureElectroMagneticFieldParameters(G4FieldParameters* fieldParameters)
   fieldParameters->SetStepperType(kClassicalRK4);
 }
 
+G4SurfaceType ParseSurfaceType(const G4String& typeStr)
+{
+  if (typeStr == "dielectric_metal") return dielectric_metal;
+  if (typeStr == "dielectric_dielectric") return dielectric_dielectric;
+  if (typeStr == "dielectric_LUT") return dielectric_LUT;
+  if (typeStr == "dielectric_LUTDAVIS") return dielectric_LUTDAVIS;
+  if (typeStr == "dielectric_dichroic") return dielectric_dichroic;
+  if (typeStr == "firsov") return firsov;
+  if (typeStr == "x_ray") return x_ray;
+  if (typeStr == "coated") return coated;
+  return dielectric_dielectric;
+}
+
+G4OpticalSurfaceModel ParseSurfaceModel(const G4String& modelStr)
+{
+  if (modelStr == "glisur") return glisur;
+  if (modelStr == "unified") return unified;
+  if (modelStr == "LUT") return LUT;
+  if (modelStr == "DAVIS") return DAVIS;
+  if (modelStr == "dichroic") return dichroic;
+  return glisur;
+}
+
+G4OpticalSurfaceFinish ParseSurfaceFinish(const G4String& finishStr)
+{
+  if (finishStr == "polished") return polished;
+  if (finishStr == "polishedfrontpainted") return polishedfrontpainted;
+  if (finishStr == "polishedbackpainted") return polishedbackpainted;
+  if (finishStr == "ground") return ground;
+  if (finishStr == "groundfrontpainted") return groundfrontpainted;
+  if (finishStr == "groundbackpainted") return groundbackpainted;
+  if (finishStr == "polishedlumirrorair") return polishedlumirrorair;
+  if (finishStr == "polishedlumirrorglue") return polishedlumirrorglue;
+  if (finishStr == "polishedair") return polishedair;
+  if (finishStr == "polishedteflonair") return polishedteflonair;
+  if (finishStr == "polishedtioair") return polishedtioair;
+  if (finishStr == "polishedtyvekair") return polishedtyvekair;
+  if (finishStr == "polishedvm2000air") return polishedvm2000air;
+  if (finishStr == "polishedvm2000glue") return polishedvm2000glue;
+  if (finishStr == "etchedlumirrorair") return etchedlumirrorair;
+  if (finishStr == "etchedlumirrorglue") return etchedlumirrorglue;
+  if (finishStr == "etchedair") return etchedair;
+  if (finishStr == "etchedteflonair") return etchedteflonair;
+  if (finishStr == "etchedtioair") return etchedtioair;
+  if (finishStr == "etchedtyvekair") return etchedtyvekair;
+  if (finishStr == "etchedvm2000air") return etchedvm2000air;
+  if (finishStr == "etchedvm2000glue") return etchedvm2000glue;
+  if (finishStr == "groundlumirrorair") return groundlumirrorair;
+  if (finishStr == "groundlumirrorglue") return groundlumirrorglue;
+  if (finishStr == "groundair") return groundair;
+  if (finishStr == "groundteflonair") return groundteflonair;
+  if (finishStr == "groundtioair") return groundtioair;
+  if (finishStr == "groundtyvekair") return groundtyvekair;
+  if (finishStr == "groundvm2000air") return groundvm2000air;
+  if (finishStr == "groundvm2000glue") return groundvm2000glue;
+  if (finishStr == "Rough_LUT") return Rough_LUT;
+  if (finishStr == "RoughTeflon_LUT") return RoughTeflon_LUT;
+  if (finishStr == "RoughESR_LUT") return RoughESR_LUT;
+  if (finishStr == "RoughESRGrease_LUT") return RoughESRGrease_LUT;
+  if (finishStr == "Polished_LUT") return Polished_LUT;
+  if (finishStr == "PolishedTeflon_LUT") return PolishedTeflon_LUT;
+  if (finishStr == "PolishedESR_LUT") return PolishedESR_LUT;
+  if (finishStr == "PolishedESRGrease_LUT") return PolishedESRGrease_LUT;
+  if (finishStr == "Detector_LUT") return Detector_LUT;
+  return polished;
+}
+
 }  // namespace
 
 DetectorConstruction::DetectorConstruction()
@@ -337,6 +408,27 @@ void DetectorConstruction::DefineCommands()
   fMessenger->DeclareMethod("addMaterialProperty", &DetectorConstruction::SetMaterialPropertyVector)
     .SetGuidance("Assign an energy-dependent optical property vector to a material.")
     .SetGuidance("Usage: /g4pet/detector/addMaterialProperty <MaterialName>|<PropertyName>|<nPairs>|<e1>|<v1>|<e2>|<v2>|...")
+    .SetParameterName("Assignment", false)
+    .SetStates(G4State_PreInit, G4State_Idle)
+    .SetToBeBroadcasted(false);
+
+  fMessenger->DeclareMethod("addOpticalSurface", &DetectorConstruction::SetOpticalSurface)
+    .SetGuidance("Define an optical surface property set.")
+    .SetGuidance("Usage: /g4pet/detector/addOpticalSurface <Name>|<Model>|<Finish>|<Type>|<Value>")
+    .SetParameterName("Assignment", false)
+    .SetStates(G4State_PreInit, G4State_Idle)
+    .SetToBeBroadcasted(false);
+
+  fMessenger->DeclareMethod("addSkinSurface", &DetectorConstruction::SetSkinSurface)
+    .SetGuidance("Attach an optical surface to a logical volume (skin surface).")
+    .SetGuidance("Usage: /g4pet/detector/addSkinSurface <Name>|<LogicalVolumeName>|<OpticalSurfaceName>")
+    .SetParameterName("Assignment", false)
+    .SetStates(G4State_PreInit, G4State_Idle)
+    .SetToBeBroadcasted(false);
+
+  fMessenger->DeclareMethod("addBorderSurface", &DetectorConstruction::SetBorderSurface)
+    .SetGuidance("Attach an optical surface between two physical volumes (border surface).")
+    .SetGuidance("Usage: /g4pet/detector/addBorderSurface <Name>|<PhysVol1Name>|<PhysVol2Name>|<OpticalSurfaceName>")
     .SetParameterName("Assignment", false)
     .SetStates(G4State_PreInit, G4State_Idle)
     .SetToBeBroadcasted(false);
@@ -517,6 +609,91 @@ void DetectorConstruction::SetMaterialPropertyVector(G4String assignmentPayload)
     G4cerr << "--> WARNING: Invalid numeric value in material property vector payload '"
            << assignmentPayload << "'." << G4endl;
   }
+}
+
+void DetectorConstruction::SetOpticalSurface(G4String assignmentPayload)
+{
+  std::stringstream stream(assignmentPayload);
+  std::string nameText;
+  std::string modelText;
+  std::string finishText;
+  std::string typeText;
+  std::string valueText;
+
+  if (!std::getline(stream, nameText, '|') ||
+      !std::getline(stream, modelText, '|') ||
+      !std::getline(stream, finishText, '|') ||
+      !std::getline(stream, typeText, '|') ||
+      !std::getline(stream, valueText, '|')) {
+    G4cerr << "--> WARNING: Invalid optical surface payload '" << assignmentPayload
+           << "'. Expected <Name>|<Model>|<Finish>|<Type>|<Value>." << G4endl;
+    return;
+  }
+
+  try {
+    const G4String name = TrimWhitespace(nameText).c_str();
+    OpticalSurfaceConfig config;
+    config.model = TrimWhitespace(modelText).c_str();
+    config.finish = TrimWhitespace(finishText).c_str();
+    config.surfType = TrimWhitespace(typeText).c_str();
+    config.value = std::stod(TrimWhitespace(valueText));
+    fOpticalSurfaceAssignments[name] = config;
+    G4cout << "--> Requested optical surface '" << name << "' model=" << config.model
+           << " finish=" << config.finish << " type=" << config.surfType
+           << " value=" << config.value << G4endl;
+  } catch (const std::exception&) {
+    G4cerr << "--> WARNING: Invalid numeric value in optical surface payload '"
+           << assignmentPayload << "'." << G4endl;
+  }
+}
+
+void DetectorConstruction::SetSkinSurface(G4String assignmentPayload)
+{
+  std::stringstream stream(assignmentPayload);
+  std::string nameText;
+  std::string lvText;
+  std::string surfText;
+
+  if (!std::getline(stream, nameText, '|') ||
+      !std::getline(stream, lvText, '|') ||
+      !std::getline(stream, surfText, '|')) {
+    G4cerr << "--> WARNING: Invalid skin surface payload '" << assignmentPayload
+           << "'. Expected <Name>|<LogicalVolumeName>|<OpticalSurfaceName>." << G4endl;
+    return;
+  }
+
+  const G4String name = TrimWhitespace(nameText).c_str();
+  const G4String lvName = TrimWhitespace(lvText).c_str();
+  const G4String surfName = TrimWhitespace(surfText).c_str();
+  fSkinSurfaceAssignments[name] = {lvName, surfName};
+  G4cout << "--> Requested skin surface '" << name << "' on LV '" << lvName
+         << "' with optical surface '" << surfName << "'" << G4endl;
+}
+
+void DetectorConstruction::SetBorderSurface(G4String assignmentPayload)
+{
+  std::stringstream stream(assignmentPayload);
+  std::string nameText;
+  std::string pv1Text;
+  std::string pv2Text;
+  std::string surfText;
+
+  if (!std::getline(stream, nameText, '|') ||
+      !std::getline(stream, pv1Text, '|') ||
+      !std::getline(stream, pv2Text, '|') ||
+      !std::getline(stream, surfText, '|')) {
+    G4cerr << "--> WARNING: Invalid border surface payload '" << assignmentPayload
+           << "'. Expected <Name>|<PhysVol1Name>|<PhysVol2Name>|<OpticalSurfaceName>." << G4endl;
+    return;
+  }
+
+  const G4String name = TrimWhitespace(nameText).c_str();
+  const G4String pv1Name = TrimWhitespace(pv1Text).c_str();
+  const G4String pv2Name = TrimWhitespace(pv2Text).c_str();
+  const G4String surfName = TrimWhitespace(surfText).c_str();
+  fBorderSurfaceAssignments[name] = std::make_tuple(pv1Name, pv2Name, surfName);
+  G4cout << "--> Requested border surface '" << name << "' between PV '" << pv1Name
+         << "' and PV '" << pv2Name << "' with optical surface '" << surfName << "'" << G4endl;
 }
 
 void DetectorConstruction::SetGDMLFile(G4String filename)
@@ -808,6 +985,84 @@ void DetectorConstruction::ConstructSDandField()
       G4cout << "--> Attached property vector '" << propName << "' with " << pairs.size()
              << " pairs to material '" << materialName << "'" << G4endl;
     }
+  }
+
+  // Create optical surfaces
+  std::map<G4String, G4OpticalSurface*> createdOpticalSurfaces;
+  for (const auto& pair : fOpticalSurfaceAssignments) {
+    const G4String& surfName = pair.first;
+    const OpticalSurfaceConfig& config = pair.second;
+
+    G4OpticalSurface* opSurf = new G4OpticalSurface(
+      surfName,
+      ParseSurfaceModel(config.model),
+      ParseSurfaceFinish(config.finish),
+      ParseSurfaceType(config.surfType),
+      config.value);
+    createdOpticalSurfaces[surfName] = opSurf;
+    G4cout << "--> Created optical surface '" << surfName << "'" << G4endl;
+  }
+
+  // Create skin surfaces
+  for (const auto& pair : fSkinSurfaceAssignments) {
+    const G4String& skinName = pair.first;
+    const G4String& lvName = pair.second.first;
+    const G4String& surfName = pair.second.second;
+
+    G4LogicalVolume* logicalVolume = lvStore->GetVolume(lvName);
+    if (!logicalVolume) {
+      G4cerr << "--> WARNING: Logical Volume '" << lvName
+             << "' not found in geometry. Cannot attach skin surface '" << skinName << "'."
+             << G4endl;
+      continue;
+    }
+
+    auto surfIt = createdOpticalSurfaces.find(surfName);
+    if (surfIt == createdOpticalSurfaces.end()) {
+      G4cerr << "--> WARNING: Optical surface '" << surfName
+             << "' not defined. Cannot attach skin surface '" << skinName << "'." << G4endl;
+      continue;
+    }
+
+    new G4LogicalSkinSurface(skinName, logicalVolume, surfIt->second);
+    G4cout << "--> Created skin surface '" << skinName << "' on LV '" << lvName << "'"
+           << G4endl;
+  }
+
+  // Create border surfaces
+  G4PhysicalVolumeStore* pvStore = G4PhysicalVolumeStore::GetInstance();
+  for (const auto& pair : fBorderSurfaceAssignments) {
+    const G4String& borderName = pair.first;
+    const G4String& pv1Name = std::get<0>(pair.second);
+    const G4String& pv2Name = std::get<1>(pair.second);
+    const G4String& surfName = std::get<2>(pair.second);
+
+    G4VPhysicalVolume* pv1 = pvStore->GetVolume(pv1Name, false);
+    G4VPhysicalVolume* pv2 = pvStore->GetVolume(pv2Name, false);
+
+    if (!pv1) {
+      G4cerr << "--> WARNING: Physical Volume '" << pv1Name
+             << "' not found in geometry. Cannot attach border surface '" << borderName
+             << "'." << G4endl;
+      continue;
+    }
+    if (!pv2) {
+      G4cerr << "--> WARNING: Physical Volume '" << pv2Name
+             << "' not found in geometry. Cannot attach border surface '" << borderName
+             << "'." << G4endl;
+      continue;
+    }
+
+    auto surfIt = createdOpticalSurfaces.find(surfName);
+    if (surfIt == createdOpticalSurfaces.end()) {
+      G4cerr << "--> WARNING: Optical surface '" << surfName
+             << "' not defined. Cannot attach border surface '" << borderName << "'." << G4endl;
+      continue;
+    }
+
+    new G4LogicalBorderSurface(borderName, pv1, pv2, surfIt->second);
+    G4cout << "--> Created border surface '" << borderName << "' between PV '" << pv1Name
+           << "' and PV '" << pv2Name << "'" << G4endl;
   }
 
   if (fieldBuilder) {

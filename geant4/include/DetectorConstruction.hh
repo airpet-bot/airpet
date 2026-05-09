@@ -40,6 +40,9 @@ public:
   void SetRegionCutsAndLimits(G4String assignmentPayload);
   void SetMaterialPropertyConst(G4String assignmentPayload);
   void SetMaterialPropertyVector(G4String assignmentPayload);
+  void SetOpticalSurface(G4String assignmentPayload);
+  void SetSkinSurface(G4String assignmentPayload);
+  void SetBorderSurface(G4String assignmentPayload);
 
 private:
   struct RegionControlConfig
@@ -51,6 +54,14 @@ private:
     G4double maxTimeNs = 0.;
     G4double minKineticEnergyMeV = 0.;
     G4double minRangeMm = 0.;
+  };
+
+  struct OpticalSurfaceConfig
+  {
+    G4String model;
+    G4String finish;
+    G4String surfType;
+    G4double value = 1.0;
   };
 
   void DefineCommands();
@@ -70,6 +81,10 @@ private:
   std::map<G4String, G4String> fSensitiveDetectorsMap;
   std::map<G4String, std::map<G4String, G4double>> fMaterialPropertyAssignments;
   std::map<G4String, std::map<G4String, std::vector<std::pair<G4double, G4double>>>> fMaterialPropertyVectorAssignments;
+
+  std::map<G4String, OpticalSurfaceConfig> fOpticalSurfaceAssignments;
+  std::map<G4String, std::pair<G4String, G4String>> fSkinSurfaceAssignments;
+  std::map<G4String, std::tuple<G4String, G4String, G4String>> fBorderSurfaceAssignments;
 };
 
 #endif
