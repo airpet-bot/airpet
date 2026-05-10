@@ -69,6 +69,24 @@ class GDMLWriter:
                             "coldim": "2",
                             "values": flat
                         }
+        for surf in self.geometry_state.optical_surfaces.values():
+            if not getattr(surf, 'properties', None):
+                continue
+            for prop_name, prop_value in surf.properties.items():
+                if isinstance(prop_value, list) and prop_value:
+                    matrix_name = f"{surf.name}_{prop_name}_surfprop_vec"
+                    flat = []
+                    for pair in prop_value:
+                        if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                            flat.extend([str(pair[0]), str(pair[1])])
+                        else:
+                            print(f"Warning: Optical surface '{surf.name}' property '{prop_name}' "
+                                  f"contains invalid pair '{pair}'. Skipping.")
+                    if flat:
+                        self._synthetic_defines[matrix_name] = {
+                            "coldim": "2",
+                            "values": flat
+                        }
 
     def _add_defines(self):
         if not self.geometry_state.defines and not self._synthetic_defines:
@@ -218,8 +236,17 @@ class GDMLWriter:
             "value": str(surf_obj.value)
         }
         surf_el = ET.SubElement(solids_el, "opticalsurface", attrs)
-        for key, ref in surf_obj.properties.items():
-            ET.SubElement(surf_el, "property", {"name": key, "ref": ref})
+        for prop_name, prop_value in (getattr(surf_obj, 'properties', None) or {}).items():
+            if isinstance(prop_value, str):
+                if prop_value in self.geometry_state.defines:
+                    ET.SubElement(surf_el, "property", {"name": prop_name, "ref": prop_value})
+                else:
+                    print(f"Warning: Optical surface '{surf_obj.name}' property '{prop_name}' references "
+                          f"undefined matrix '{prop_value}'. Skipping property emission.")
+            elif isinstance(prop_value, list) and prop_value:
+                matrix_name = f"{surf_obj.name}_{prop_name}_surfprop_vec"
+                ET.SubElement(surf_el, "property", {"name": prop_name, "ref": matrix_name})
+            # Numeric values are skipped; they are handled by macro commands at runtime.
         self.written_optical_surfaces.add(surf_obj.name)
 
     def _write_solid_recursive(self, solid_obj, solids_el, written_solids):

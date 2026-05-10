@@ -419,6 +419,20 @@ void DetectorConstruction::DefineCommands()
     .SetStates(G4State_PreInit, G4State_Idle)
     .SetToBeBroadcasted(false);
 
+  fMessenger->DeclareMethod("addOpticalSurfacePropertyConst", &DetectorConstruction::SetOpticalSurfacePropertyConst)
+    .SetGuidance("Assign a constant optical property to an optical surface.")
+    .SetGuidance("Usage: /g4pet/detector/addOpticalSurfacePropertyConst <SurfaceName>|<PropertyName>|<Value>")
+    .SetParameterName("Assignment", false)
+    .SetStates(G4State_PreInit, G4State_Idle)
+    .SetToBeBroadcasted(false);
+
+  fMessenger->DeclareMethod("addOpticalSurfaceProperty", &DetectorConstruction::SetOpticalSurfacePropertyVector)
+    .SetGuidance("Assign an energy-dependent optical property vector to an optical surface.")
+    .SetGuidance("Usage: /g4pet/detector/addOpticalSurfaceProperty <SurfaceName>|<PropertyName>|<nPairs>|<e1>|<v1>|<e2>|<v2>|...")
+    .SetParameterName("Assignment", false)
+    .SetStates(G4State_PreInit, G4State_Idle)
+    .SetToBeBroadcasted(false);
+
   fMessenger->DeclareMethod("addSkinSurface", &DetectorConstruction::SetSkinSurface)
     .SetGuidance("Attach an optical surface to a logical volume (skin surface).")
     .SetGuidance("Usage: /g4pet/detector/addSkinSurface <Name>|<LogicalVolumeName>|<OpticalSurfaceName>")
@@ -643,6 +657,82 @@ void DetectorConstruction::SetOpticalSurface(G4String assignmentPayload)
            << " value=" << config.value << G4endl;
   } catch (const std::exception&) {
     G4cerr << "--> WARNING: Invalid numeric value in optical surface payload '"
+           << assignmentPayload << "'." << G4endl;
+  }
+}
+
+void DetectorConstruction::SetOpticalSurfacePropertyConst(G4String assignmentPayload)
+{
+  std::stringstream stream(assignmentPayload);
+  std::string surfaceNameText;
+  std::string propertyNameText;
+  std::string valueText;
+
+  if (!std::getline(stream, surfaceNameText, '|') ||
+      !std::getline(stream, propertyNameText, '|') ||
+      !std::getline(stream, valueText, '|')) {
+    G4cerr << "--> WARNING: Invalid optical surface const property payload '"
+           << assignmentPayload << "'. Expected <SurfaceName>|<PropertyName>|<Value>."
+           << G4endl;
+    return;
+  }
+
+  try {
+    const G4double value = std::stod(TrimWhitespace(valueText));
+    const G4String surfaceName = TrimWhitespace(surfaceNameText).c_str();
+    const G4String propertyName = TrimWhitespace(propertyNameText).c_str();
+
+    fOpticalSurfaceConstProperties[surfaceName][propertyName] = value;
+    G4cout << "--> Requested optical surface const property '" << propertyName << "' = " << value
+           << " for surface '" << surfaceName << "'" << G4endl;
+  } catch (const std::exception&) {
+    G4cerr << "--> WARNING: Invalid numeric value in optical surface const property payload '"
+           << assignmentPayload << "'. Expected <SurfaceName>|<PropertyName>|<Value>."
+           << G4endl;
+  }
+}
+
+void DetectorConstruction::SetOpticalSurfacePropertyVector(G4String assignmentPayload)
+{
+  std::stringstream stream(assignmentPayload);
+  std::string surfaceNameText;
+  std::string propertyNameText;
+  std::string nPairsText;
+
+  if (!std::getline(stream, surfaceNameText, '|') ||
+      !std::getline(stream, propertyNameText, '|') ||
+      !std::getline(stream, nPairsText, '|')) {
+    G4cerr << "--> WARNING: Invalid optical surface property vector payload '"
+           << assignmentPayload << "'. Expected <SurfaceName>|<PropertyName>|<nPairs>|..."
+           << G4endl;
+    return;
+  }
+
+  try {
+    const std::size_t nPairs = std::stoul(TrimWhitespace(nPairsText));
+    const G4String surfaceName = TrimWhitespace(surfaceNameText).c_str();
+    const G4String propertyName = TrimWhitespace(propertyNameText).c_str();
+    std::vector<std::pair<G4double, G4double>> pairs;
+    pairs.reserve(nPairs);
+
+    for (std::size_t i = 0; i < nPairs; ++i) {
+      std::string energyText;
+      std::string valueText;
+      if (!std::getline(stream, energyText, '|') || !std::getline(stream, valueText, '|')) {
+        G4cerr << "--> WARNING: Incomplete optical surface property vector payload '"
+               << assignmentPayload << "' at pair " << i << "." << G4endl;
+        return;
+      }
+      const G4double energy = std::stod(TrimWhitespace(energyText));
+      const G4double value = std::stod(TrimWhitespace(valueText));
+      pairs.emplace_back(energy, value);
+    }
+
+    fOpticalSurfaceVectorProperties[surfaceName][propertyName] = std::move(pairs);
+    G4cout << "--> Requested optical surface property vector '" << propertyName << "' with " << nPairs
+           << " pairs for surface '" << surfaceName << "'" << G4endl;
+  } catch (const std::exception&) {
+    G4cerr << "--> WARNING: Invalid numeric value in optical surface property vector payload '"
            << assignmentPayload << "'." << G4endl;
   }
 }
@@ -999,6 +1089,47 @@ void DetectorConstruction::ConstructSDandField()
       ParseSurfaceFinish(config.finish),
       ParseSurfaceType(config.surfType),
       config.value);
+
+    G4MaterialPropertiesTable* surfPropTable = nullptr;
+
+    const auto constIt = fOpticalSurfaceConstProperties.find(surfName);
+    if (constIt != fOpticalSurfaceConstProperties.end()) {
+      for (const auto& propPair : constIt->second) {
+        if (!surfPropTable) {
+          surfPropTable = new G4MaterialPropertiesTable();
+        }
+        surfPropTable->AddConstProperty(propPair.first, propPair.second, true);
+        G4cout << "--> Attached const property '" << propPair.first << "' = " << propPair.second
+               << " to optical surface '" << surfName << "'" << G4endl;
+      }
+    }
+
+    const auto vecIt = fOpticalSurfaceVectorProperties.find(surfName);
+    if (vecIt != fOpticalSurfaceVectorProperties.end()) {
+      for (const auto& propPair : vecIt->second) {
+        if (!surfPropTable) {
+          surfPropTable = new G4MaterialPropertiesTable();
+        }
+        const G4String& propName = propPair.first;
+        const auto& pairs = propPair.second;
+        std::vector<G4double> energies;
+        std::vector<G4double> values;
+        energies.reserve(pairs.size());
+        values.reserve(pairs.size());
+        for (const auto& p : pairs) {
+          energies.push_back(p.first * MeV);
+          values.push_back(p.second);
+        }
+        surfPropTable->AddProperty(propName, energies.data(), values.data(), energies.size());
+        G4cout << "--> Attached property vector '" << propName << "' with " << pairs.size()
+               << " pairs to optical surface '" << surfName << "'" << G4endl;
+      }
+    }
+
+    if (surfPropTable) {
+      opSurf->SetMaterialPropertiesTable(surfPropTable);
+    }
+
     createdOpticalSurfaces[surfName] = opSurf;
     G4cout << "--> Created optical surface '" << surfName << "'" << G4endl;
   }

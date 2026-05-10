@@ -1027,6 +1027,9 @@ def test_gdml_optical_surface_round_trip():
     surf.properties["REFLECTIVITY"] = "ref_mat"
     state.add_optical_surface(surf)
 
+    from src.geometry_types import Define
+    state.defines["ref_mat"] = Define("ref_mat", "matrix", {"coldim": "2", "values": ["1.0", "0.5"]})
+
     lv_world = LogicalVolume("world_lv", "world_solid", "G4_Galactic")
     state.add_logical_volume(lv_world)
     state.world_volume_ref = "world_lv"

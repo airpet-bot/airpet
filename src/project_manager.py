@@ -9919,13 +9919,76 @@ class ProjectManager:
 
         # --- Optical Surfaces ---
         macro_content.append("# --- Optical Surfaces ---")
+        emitted_any_surface = False
         if temp_state.optical_surfaces:
             for name, surf in temp_state.optical_surfaces.items():
                 macro_content.append(
                     f"/g4pet/detector/addOpticalSurface "
                     f"{name}|{surf.model}|{surf.finish}|{surf.type}|{surf.value}"
                 )
-        else:
+                emitted_any_surface = True
+                # Emit const and vector properties for this optical surface
+                for prop_name, prop_value in (getattr(surf, 'properties', None) or {}).items():
+                    numeric_value = None
+                    if isinstance(prop_value, (int, float)):
+                        numeric_value = float(prop_value)
+                    elif isinstance(prop_value, str):
+                        try:
+                            numeric_value = float(prop_value)
+                        except ValueError:
+                            pass
+                    if numeric_value is not None:
+                        macro_content.append(
+                            f"/g4pet/detector/addOpticalSurfacePropertyConst "
+                            f"{name}|{prop_name}|{numeric_value}"
+                        )
+                        continue
+                    if isinstance(prop_value, list) and prop_value:
+                        parts = [f"{name}|{prop_name}", str(len(prop_value))]
+                        for pair in prop_value:
+                            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                                continue
+                            energy_raw = pair[0]
+                            val_raw = pair[1]
+                            try:
+                                if isinstance(energy_raw, str):
+                                    energy_val = float(self.expression_evaluator.evaluate(energy_raw)[1])
+                                else:
+                                    energy_val = float(energy_raw)
+                                if isinstance(val_raw, str):
+                                    val = float(self.expression_evaluator.evaluate(val_raw)[1])
+                                else:
+                                    val = float(val_raw)
+                            except Exception:
+                                continue
+                            energy_mev = energy_val * 0.001
+                            parts.append(f"{energy_mev:.12g}")
+                            parts.append(f"{val:.12g}")
+                        if len(parts) > 2:
+                            macro_content.append("/g4pet/detector/addOpticalSurfaceProperty " + "|".join(parts))
+                        continue
+                    # String ref: try to resolve from defines as a matrix
+                    if isinstance(prop_value, str) and prop_value in temp_state.defines:
+                        define_obj = temp_state.defines[prop_value]
+                        if define_obj.type == 'matrix':
+                            raw_expr = define_obj.raw_expression
+                            if isinstance(raw_expr, dict) and str(raw_expr.get('coldim')) == '2':
+                                values = raw_expr.get('values', [])
+                                n_pairs = len(values) // 2
+                                if n_pairs > 0:
+                                    parts = [f"{name}|{prop_name}", str(n_pairs)]
+                                    for i in range(n_pairs):
+                                        try:
+                                            energy_val = float(values[2 * i])
+                                            val = float(values[2 * i + 1])
+                                        except Exception:
+                                            continue
+                                        energy_mev = energy_val * 0.001
+                                        parts.append(f"{energy_mev:.12g}")
+                                        parts.append(f"{val:.12g}")
+                                    if len(parts) > 2:
+                                        macro_content.append("/g4pet/detector/addOpticalSurfaceProperty " + "|".join(parts))
+        if not emitted_any_surface:
             macro_content.append("# No optical surfaces defined.")
         macro_content.append("")
 

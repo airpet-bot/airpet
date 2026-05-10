@@ -115,3 +115,123 @@ def test_generate_macro_skips_border_surface_with_unresolved_pv(tmp_path):
     macro_text = macro_path.read_text(encoding="utf-8")
 
     assert "BadBorder skipped" in macro_text or "# Border surface 'BadBorder'" in macro_text
+
+
+def test_generate_macro_emits_optical_surface_const_property(tmp_path):
+    """Verify that generate_macro_file emits optical surface const property commands."""
+    pm = ProjectManager(ExpressionEvaluator())
+
+    state = GeometryState()
+    state.add_material(Material("G4_Galactic", mat_type="nist"))
+    state.add_solid(Solid("world_solid", "box", {"x": "100", "y": "100", "z": "100"}))
+    lv_world = LogicalVolume("world_lv", "world_solid", "G4_Galactic")
+    state.add_logical_volume(lv_world)
+    state.world_volume_ref = "world_lv"
+
+    surf = OpticalSurface(
+        name="MirrorSurf",
+        model="glisur",
+        finish="polished",
+        surf_type="dielectric_dielectric",
+        value="0.95",
+    )
+    surf.properties["REFLECTIVITY"] = 0.98
+    state.add_optical_surface(surf)
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(json.dumps(state.to_dict()), encoding="utf-8")
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "optical-surface-const-job",
+            {"events": 1},
+            str(tmp_path),
+            str(tmp_path),
+            str(version_dir),
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    assert "/g4pet/detector/addOpticalSurfacePropertyConst MirrorSurf|REFLECTIVITY|0.98" in macro_text
+
+
+def test_generate_macro_emits_optical_surface_vector_property(tmp_path):
+    """Verify that generate_macro_file emits optical surface vector property commands."""
+    pm = ProjectManager(ExpressionEvaluator())
+
+    state = GeometryState()
+    state.add_material(Material("G4_Galactic", mat_type="nist"))
+    state.add_solid(Solid("world_solid", "box", {"x": "100", "y": "100", "z": "100"}))
+    lv_world = LogicalVolume("world_lv", "world_solid", "G4_Galactic")
+    state.add_logical_volume(lv_world)
+    state.world_volume_ref = "world_lv"
+
+    surf = OpticalSurface(
+        name="MirrorSurf",
+        model="glisur",
+        finish="polished",
+        surf_type="dielectric_dielectric",
+        value="0.95",
+    )
+    surf.properties["EFFICIENCY"] = [[1.0, 0.5], [2.0, 0.8]]
+    state.add_optical_surface(surf)
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(json.dumps(state.to_dict()), encoding="utf-8")
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "optical-surface-vector-job",
+            {"events": 1},
+            str(tmp_path),
+            str(tmp_path),
+            str(version_dir),
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    assert "/g4pet/detector/addOpticalSurfaceProperty MirrorSurf|EFFICIENCY|2|" in macro_text
+
+
+def test_generate_macro_resolves_optical_surface_matrix_define(tmp_path):
+    """Verify that generate_macro_file resolves matrix defines for optical surface properties."""
+    pm = ProjectManager(ExpressionEvaluator())
+
+    state = GeometryState()
+    state.add_material(Material("G4_Galactic", mat_type="nist"))
+    state.add_solid(Solid("world_solid", "box", {"x": "100", "y": "100", "z": "100"}))
+    lv_world = LogicalVolume("world_lv", "world_solid", "G4_Galactic")
+    state.add_logical_volume(lv_world)
+    state.world_volume_ref = "world_lv"
+
+    from src.geometry_types import Define
+    state.defines["eff_matrix"] = Define("eff_matrix", "matrix", {"coldim": "2", "values": ["1.0", "0.5", "2.0", "0.8"]})
+
+    surf = OpticalSurface(
+        name="MirrorSurf",
+        model="glisur",
+        finish="polished",
+        surf_type="dielectric_dielectric",
+        value="0.95",
+    )
+    surf.properties["EFFICIENCY"] = "eff_matrix"
+    state.add_optical_surface(surf)
+
+    version_dir = tmp_path / "version"
+    version_dir.mkdir()
+    (version_dir / "version.json").write_text(json.dumps(state.to_dict()), encoding="utf-8")
+
+    macro_path = Path(
+        pm.generate_macro_file(
+            "optical-surface-resolve-job",
+            {"events": 1},
+            str(tmp_path),
+            str(tmp_path),
+            str(version_dir),
+        )
+    )
+    macro_text = macro_path.read_text(encoding="utf-8")
+
+    assert "/g4pet/detector/addOpticalSurfaceProperty MirrorSurf|EFFICIENCY|2|" in macro_text
