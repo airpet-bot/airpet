@@ -218,6 +218,19 @@ def _normalize_non_empty_string_with_default(value, default, field_name):
     return normalized
 
 
+def _normalize_process_inactivation_entry(raw_entry):
+    if not isinstance(raw_entry, dict):
+        raise ValueError("Each process_inactivation entry must be an object.")
+    process_name = _normalize_non_empty_string(raw_entry.get("process_name"))
+    if not process_name:
+        raise ValueError("process_inactivation entry must have a non-empty process_name.")
+    normalized = {"process_name": process_name}
+    particle = _normalize_non_empty_string(raw_entry.get("particle"))
+    if particle:
+        normalized["particle"] = particle
+    return normalized
+
+
 def _normalize_detector_feature_object_ref(raw_ref, field_name, required=False):
     if raw_ref is None:
         if required:
@@ -2919,9 +2932,17 @@ class EnvironmentState:
         region_cuts_and_limits=None,
         optical_physics=False,
         optical_boundary_invoke_sd=False,
+        process_inactivation=None,
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
+        if process_inactivation is None:
+            self.process_inactivation = []
+        else:
+            self.process_inactivation = [
+                _normalize_process_inactivation_entry(entry)
+                for entry in process_inactivation
+            ]
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3017,6 +3038,16 @@ class EnvironmentState:
         if 'optical_boundary_invoke_sd' in data and not isinstance(data['optical_boundary_invoke_sd'], bool):
             return False, f"{field_name}.optical_boundary_invoke_sd must be a boolean."
 
+        if 'process_inactivation' in data:
+            proc_list = data['process_inactivation']
+            if not isinstance(proc_list, list):
+                return False, f"{field_name}.process_inactivation must be an array."
+            for idx, entry in enumerate(proc_list):
+                if not isinstance(entry, dict):
+                    return False, f"{field_name}.process_inactivation[{idx}] must be an object."
+                if not _normalize_non_empty_string(entry.get('process_name')):
+                    return False, f"{field_name}.process_inactivation[{idx}].process_name must be a non-empty string."
+
         return True, None
 
     def to_dict(self):
@@ -3028,6 +3059,7 @@ class EnvironmentState:
             "region_cuts_and_limits": self.region_cuts_and_limits.to_dict(),
             "optical_physics": self.optical_physics,
             "optical_boundary_invoke_sd": self.optical_boundary_invoke_sd,
+            "process_inactivation": list(self.process_inactivation),
         }
 
     def to_summary_dict(self):
@@ -3149,6 +3181,14 @@ class EnvironmentState:
         if isinstance(optical_boundary_invoke_sd, str):
             optical_boundary_invoke_sd = optical_boundary_invoke_sd.strip().lower() in {'true', '1', 'yes', 'on'}
 
+        raw_process_inactivation = data.get('process_inactivation')
+        if raw_process_inactivation is None:
+            process_inactivation = []
+        elif isinstance(raw_process_inactivation, list):
+            process_inactivation = raw_process_inactivation
+        else:
+            process_inactivation = []
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3179,7 +3219,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation)
 
 
 class ScoringState:
