@@ -45,6 +45,8 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "optical_physics": False,
         "optical_boundary_invoke_sd": False,
         "process_inactivation": [],
+        "em_apply_cuts": False,
+        "eloss_fluct": True,
     }
 
     state = GeometryState()

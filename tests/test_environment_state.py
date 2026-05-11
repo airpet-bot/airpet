@@ -67,6 +67,8 @@ def test_environment_state_defaults_and_roundtrip():
         "optical_physics": False,
         "optical_boundary_invoke_sd": False,
         "process_inactivation": [],
+        "em_apply_cuts": False,
+        "eloss_fluct": True,
     }
 
     assert state.environment.to_summary_dict() == {
@@ -114,6 +116,8 @@ def test_environment_state_validation_and_project_roundtrip():
         "optical_physics": False,
         "optical_boundary_invoke_sd": False,
         "process_inactivation": [],
+        "em_apply_cuts": False,
+        "eloss_fluct": True,
     }
 
     ok, err = EnvironmentState.validate(valid_payload)

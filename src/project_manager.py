@@ -10052,6 +10052,17 @@ class ProjectManager:
             )
             macro_content.append("")
 
+        # --- EM Process Parameters ---
+        em_apply_cuts = temp_state.environment.em_apply_cuts
+        eloss_fluct = temp_state.environment.eloss_fluct
+        if em_apply_cuts or not eloss_fluct:
+            macro_content.append("# --- EM Process Parameters ---")
+            if em_apply_cuts:
+                macro_content.append("/process/em/applyCuts true")
+            if not eloss_fluct:
+                macro_content.append("/process/eLoss/fluct false")
+            macro_content.append("")
+
         # --- Scoring Meshes ---
         macro_content.append("# --- Scoring Meshes ---")
         enabled_scoring_meshes = [

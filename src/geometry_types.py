@@ -2933,6 +2933,8 @@ class EnvironmentState:
         optical_physics=False,
         optical_boundary_invoke_sd=False,
         process_inactivation=None,
+        em_apply_cuts=False,
+        eloss_fluct=True,
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
@@ -2943,6 +2945,8 @@ class EnvironmentState:
                 _normalize_process_inactivation_entry(entry)
                 for entry in process_inactivation
             ]
+        self.em_apply_cuts = bool(em_apply_cuts)
+        self.eloss_fluct = bool(eloss_fluct)
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3048,6 +3052,12 @@ class EnvironmentState:
                 if not _normalize_non_empty_string(entry.get('process_name')):
                     return False, f"{field_name}.process_inactivation[{idx}].process_name must be a non-empty string."
 
+        if 'em_apply_cuts' in data and not isinstance(data['em_apply_cuts'], bool):
+            return False, f"{field_name}.em_apply_cuts must be a boolean."
+
+        if 'eloss_fluct' in data and not isinstance(data['eloss_fluct'], bool):
+            return False, f"{field_name}.eloss_fluct must be a boolean."
+
         return True, None
 
     def to_dict(self):
@@ -3060,6 +3070,8 @@ class EnvironmentState:
             "optical_physics": self.optical_physics,
             "optical_boundary_invoke_sd": self.optical_boundary_invoke_sd,
             "process_inactivation": list(self.process_inactivation),
+            "em_apply_cuts": self.em_apply_cuts,
+            "eloss_fluct": self.eloss_fluct,
         }
 
     def to_summary_dict(self):
@@ -3189,6 +3201,14 @@ class EnvironmentState:
         else:
             process_inactivation = []
 
+        em_apply_cuts = data.get('em_apply_cuts', False)
+        if isinstance(em_apply_cuts, str):
+            em_apply_cuts = em_apply_cuts.strip().lower() in {'true', '1', 'yes', 'on'}
+
+        eloss_fluct = data.get('eloss_fluct', True)
+        if isinstance(eloss_fluct, str):
+            eloss_fluct = eloss_fluct.strip().lower() in {'true', '1', 'yes', 'on'}
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3219,7 +3239,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct)
 
 
 class ScoringState:
