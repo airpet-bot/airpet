@@ -2918,8 +2918,10 @@ class EnvironmentState:
         local_uniform_electric_field=None,
         region_cuts_and_limits=None,
         optical_physics=False,
+        optical_boundary_invoke_sd=False,
     ):
         self.optical_physics = bool(optical_physics)
+        self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3012,6 +3014,9 @@ class EnvironmentState:
         if 'optical_physics' in data and not isinstance(data['optical_physics'], bool):
             return False, f"{field_name}.optical_physics must be a boolean."
 
+        if 'optical_boundary_invoke_sd' in data and not isinstance(data['optical_boundary_invoke_sd'], bool):
+            return False, f"{field_name}.optical_boundary_invoke_sd must be a boolean."
+
         return True, None
 
     def to_dict(self):
@@ -3022,6 +3027,7 @@ class EnvironmentState:
             "local_uniform_electric_field": self.local_uniform_electric_field.to_dict(),
             "region_cuts_and_limits": self.region_cuts_and_limits.to_dict(),
             "optical_physics": self.optical_physics,
+            "optical_boundary_invoke_sd": self.optical_boundary_invoke_sd,
         }
 
     def to_summary_dict(self):
@@ -3139,6 +3145,10 @@ class EnvironmentState:
         if isinstance(optical_physics, str):
             optical_physics = optical_physics.strip().lower() in {'true', '1', 'yes', 'on'}
 
+        optical_boundary_invoke_sd = data.get('optical_boundary_invoke_sd', False)
+        if isinstance(optical_boundary_invoke_sd, str):
+            optical_boundary_invoke_sd = optical_boundary_invoke_sd.strip().lower() in {'true', '1', 'yes', 'on'}
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3169,7 +3179,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd)
 
 
 class ScoringState:

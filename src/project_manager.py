@@ -10029,6 +10029,15 @@ class ProjectManager:
         macro_content.append("/run/initialize")
         macro_content.append("")
 
+        # --- Optical Process Parameters ---
+        if temp_state.environment.optical_physics:
+            invoke_sd = temp_state.environment.optical_boundary_invoke_sd
+            macro_content.append("# --- Optical Process Parameters ---")
+            macro_content.append(
+                f"/process/optical/boundary/setInvokeSD {str(invoke_sd).lower()}"
+            )
+            macro_content.append("")
+
         # --- Scoring Meshes ---
         macro_content.append("# --- Scoring Meshes ---")
         enabled_scoring_meshes = [

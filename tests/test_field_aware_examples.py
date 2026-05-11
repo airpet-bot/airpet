@@ -52,6 +52,8 @@ def test_field_aware_silicon_starter_saves_explicit_fields():
             "min_kinetic_energy_mev": 0.0,
             "min_range_mm": 0.0,
         },
+        "optical_physics": False,
+        "optical_boundary_invoke_sd": False,
     }
 
     assert pm.current_geometry_state.param_studies["si_first_run"]["parameters"] == ["si_thickness", "src_z"]
