@@ -2935,6 +2935,8 @@ class EnvironmentState:
         process_inactivation=None,
         em_apply_cuts=False,
         eloss_fluct=True,
+        field_stepper_type="",
+        field_minimum_step_mm=0.0,
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
@@ -2947,6 +2949,8 @@ class EnvironmentState:
             ]
         self.em_apply_cuts = bool(em_apply_cuts)
         self.eloss_fluct = bool(eloss_fluct)
+        self.field_stepper_type = str(field_stepper_type) if field_stepper_type else ""
+        self.field_minimum_step_mm = float(field_minimum_step_mm) if field_minimum_step_mm is not None else 0.0
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3058,6 +3062,15 @@ class EnvironmentState:
         if 'eloss_fluct' in data and not isinstance(data['eloss_fluct'], bool):
             return False, f"{field_name}.eloss_fluct must be a boolean."
 
+        if 'field_stepper_type' in data and not isinstance(data['field_stepper_type'], str):
+            return False, f"{field_name}.field_stepper_type must be a string."
+
+        if 'field_minimum_step_mm' in data:
+            try:
+                float(data['field_minimum_step_mm'])
+            except (TypeError, ValueError):
+                return False, f"{field_name}.field_minimum_step_mm must be a number."
+
         return True, None
 
     def to_dict(self):
@@ -3072,6 +3085,8 @@ class EnvironmentState:
             "process_inactivation": list(self.process_inactivation),
             "em_apply_cuts": self.em_apply_cuts,
             "eloss_fluct": self.eloss_fluct,
+            "field_stepper_type": self.field_stepper_type,
+            "field_minimum_step_mm": self.field_minimum_step_mm,
         }
 
     def to_summary_dict(self):
@@ -3149,6 +3164,22 @@ class EnvironmentState:
                 {"enabled": True},
             )
 
+        if self.field_stepper_type:
+            add_control(
+                "field_stepper_type",
+                "Field stepper type",
+                f"Field stepper type: {self.field_stepper_type}",
+                {"field_stepper_type": self.field_stepper_type},
+            )
+
+        if self.field_minimum_step_mm > 0.0:
+            add_control(
+                "field_minimum_step_mm",
+                "Field minimum step",
+                f"Field minimum step: {self._summary_number(self.field_minimum_step_mm)} mm",
+                {"field_minimum_step_mm": self.field_minimum_step_mm},
+            )
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3209,6 +3240,16 @@ class EnvironmentState:
         if isinstance(eloss_fluct, str):
             eloss_fluct = eloss_fluct.strip().lower() in {'true', '1', 'yes', 'on'}
 
+        field_stepper_type = data.get('field_stepper_type', '')
+        if not isinstance(field_stepper_type, str):
+            field_stepper_type = ''
+
+        field_minimum_step_mm = data.get('field_minimum_step_mm', 0.0)
+        try:
+            field_minimum_step_mm = float(field_minimum_step_mm)
+        except (TypeError, ValueError):
+            field_minimum_step_mm = 0.0
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3239,7 +3280,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm)
 
 
 class ScoringState:

@@ -69,6 +69,8 @@ def test_environment_state_defaults_and_roundtrip():
         "process_inactivation": [],
         "em_apply_cuts": False,
         "eloss_fluct": True,
+        "field_stepper_type": "",
+        "field_minimum_step_mm": 0.0,
     }
 
     assert state.environment.to_summary_dict() == {
@@ -118,6 +120,8 @@ def test_environment_state_validation_and_project_roundtrip():
         "process_inactivation": [],
         "em_apply_cuts": False,
         "eloss_fluct": True,
+        "field_stepper_type": "",
+        "field_minimum_step_mm": 0.0,
     }
 
     ok, err = EnvironmentState.validate(valid_payload)

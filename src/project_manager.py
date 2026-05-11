@@ -9829,6 +9829,17 @@ class ProjectManager:
             macro_content.append("# No local electric field assignments defined.")
         macro_content.append("")
 
+        # --- Field Propagation Parameters ---
+        field_stepper_type = temp_state.environment.field_stepper_type
+        field_minimum_step_mm = temp_state.environment.field_minimum_step_mm
+        if field_stepper_type or field_minimum_step_mm > 0.0:
+            macro_content.append("# --- Field Propagation Parameters ---")
+            if field_stepper_type:
+                macro_content.append(f"/field/stepperType {field_stepper_type}")
+            if field_minimum_step_mm > 0.0:
+                macro_content.append(f"/field/setMinimumStep {field_minimum_step_mm:.12g} mm")
+            macro_content.append("")
+
         region_controls = temp_state.environment.region_cuts_and_limits
         macro_content.append("# --- Region Cuts And Limits ---")
         if region_controls.enabled and region_controls.target_volume_names:

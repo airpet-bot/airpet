@@ -47,6 +47,8 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "process_inactivation": [],
         "em_apply_cuts": False,
         "eloss_fluct": True,
+        "field_stepper_type": "",
+        "field_minimum_step_mm": 0.0,
     }
 
     state = GeometryState()

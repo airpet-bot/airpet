@@ -57,6 +57,8 @@ def test_field_aware_silicon_starter_saves_explicit_fields():
         "process_inactivation": [],
         "em_apply_cuts": False,
         "eloss_fluct": True,
+        "field_stepper_type": "",
+        "field_minimum_step_mm": 0.0,
     }
 
     assert pm.current_geometry_state.param_studies["si_first_run"]["parameters"] == ["si_thickness", "src_z"]
