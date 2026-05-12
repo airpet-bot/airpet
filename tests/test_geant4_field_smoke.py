@@ -327,3 +327,84 @@ def test_local_field_assignment_changes_track_inside_target_volume(tmp_path):
 
     assert off_max_x < 0.05
     assert on_max_x > off_max_x + 0.1
+
+
+def _run_field_stepper_case(pm, tmp_path):
+    run_root = tmp_path / "field_stepper"
+    version_dir = run_root / "version"
+    run_dir = run_root / "run"
+    version_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True)
+
+    pm.current_geometry_state.environment.global_uniform_magnetic_field.enabled = True
+    pm.current_geometry_state.environment.global_uniform_magnetic_field.field_vector_tesla = {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0,
+    }
+    pm.current_geometry_state.environment.field_stepper_type = "DormandPrince745"
+    pm.current_geometry_state.environment.field_minimum_step_mm = 10.0
+    (version_dir / "version.json").write_text(pm.save_project_to_json_string(), encoding="utf-8")
+
+    pm.generate_macro_file(
+        "field-stepper",
+        {
+            "events": 1,
+            "threads": 1,
+            "seed1": 12345,
+            "seed2": 67890,
+            "save_hits": False,
+            "save_particles": False,
+            "save_hit_metadata": False,
+            "save_tracks_range": "0-0",
+        },
+        str(GEANT4_BUILD_DIR),
+        str(run_dir),
+        str(version_dir),
+    )
+
+    env = os.environ.copy()
+    env["G4PHYSICSLIST"] = "FTFP_BERT"
+    env.pop("G4OPTICALPHYSICS", None)
+
+    result = subprocess.run(
+        [str(GEANT4_EXECUTABLE), "run.mac"],
+        cwd=run_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, (
+        f"Geant4 run failed with field stepper params\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "COMMAND NOT FOUND </field/stepperType" not in result.stderr, (
+        f"/field/stepperType command was not recognised\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "COMMAND NOT FOUND </field/setMinimumStep" not in result.stderr, (
+        f"/field/setMinimumStep command was not recognised\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "DormandPrince745" in result.stdout or "DormandPrince745" in result.stderr, (
+        "Stepper type not reflected in output"
+    )
+
+    track_path = run_dir / "tracks" / "event_0000_tracks.txt"
+    assert track_path.exists(), (
+        f"Missing track output\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    return track_path
+
+
+@pytest.mark.skipif(not GEANT4_EXECUTABLE.exists(), reason="Geant4 smoke binary is not built")
+def test_field_stepper_type_and_minimum_step_accepted_at_runtime(tmp_path):
+    pm = _build_field_smoke_project()
+    track_path = _run_field_stepper_case(pm, tmp_path)
+    points = _read_primary_track_points(track_path)
+    assert points, "No trajectory points found"

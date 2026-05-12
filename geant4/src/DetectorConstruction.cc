@@ -266,7 +266,9 @@ void ConfigureElectroMagneticFieldParameters(G4FieldParameters* fieldParameters)
 
   fieldParameters->SetFieldType(kElectroMagnetic);
   fieldParameters->SetEquationType(kEqElectroMagnetic);
-  fieldParameters->SetStepperType(kClassicalRK4);
+  // Do not override the stepper type here; respect any user setting from
+  // /field/stepperType (e.g. DormandPrince745). The Geant4 default is
+  // kDormandPrince745, which is a good general-purpose integrator.
 }
 
 G4SurfaceType ParseSurfaceType(const G4String& typeStr)
@@ -349,6 +351,14 @@ DetectorConstruction::DetectorConstruction()
 {
   fParser.SetOverlapCheck(true);
   DefineCommands();
+
+  // Create G4FieldBuilder early so that /field/stepperType and
+  // /field/setMinimumStep commands are available before /run/initialize.
+  auto fieldBuilder = G4FieldBuilder::Instance();
+  if (auto* globalParameters = fieldBuilder->GetFieldParameters()) {
+    ConfigureElectroMagneticFieldParameters(globalParameters);
+    globalParameters->SetMinimumStep(0.25 * mm);
+  }
 }
 
 DetectorConstruction::~DetectorConstruction()
@@ -851,20 +861,14 @@ void DetectorConstruction::ConstructSDandField()
     }
   }
 
-  G4FieldBuilder* fieldBuilder = nullptr;
-  if (hasGlobalField || hasLocalField) {
-    fieldBuilder = G4FieldBuilder::Instance();
-    fieldBuilder->SetFieldType(kElectroMagnetic);
-    if (auto* globalParameters = fieldBuilder->GetFieldParameters()) {
-      ConfigureElectroMagneticFieldParameters(globalParameters);
-      globalParameters->SetMinimumStep(0.25 * mm);
-    }
-
-    if (hasGlobalField) {
-      auto* globalField =
-        new AirPetUniformElectroMagneticField(fGlobalMagneticField, fGlobalElectricField);
-      fieldBuilder->SetGlobalField(globalField);
-    }
+  // G4FieldBuilder was already instantiated in the constructor so that
+  // /field/stepperType and /field/setMinimumStep commands are available
+  // before /run/initialize. Global parameters were also configured there.
+  auto fieldBuilder = G4FieldBuilder::Instance();
+  if (hasGlobalField) {
+    auto* globalField =
+      new AirPetUniformElectroMagneticField(fGlobalMagneticField, fGlobalElectricField);
+    fieldBuilder->SetGlobalField(globalField);
   }
 
   for (const auto& pair : fSensitiveDetectorsMap) {
@@ -1196,7 +1200,5 @@ void DetectorConstruction::ConstructSDandField()
            << "' and PV '" << pv2Name << "'" << G4endl;
   }
 
-  if (fieldBuilder) {
-    fieldBuilder->ConstructFieldSetup();
-  }
+  fieldBuilder->ConstructFieldSetup();
 }
