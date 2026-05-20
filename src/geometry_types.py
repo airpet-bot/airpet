@@ -298,6 +298,8 @@ def _default_scoring_run_manifest_defaults():
         "save_particles": False,
         "production_cut": "1.0 mm",
         "hit_energy_threshold": "1 eV",
+        "tracking_verbose": 0,
+        "hits_verbose": 0,
     }
 
 
@@ -869,6 +871,16 @@ def _normalize_scoring_run_manifest_defaults(raw_defaults):
             raw_defaults.get("hit_energy_threshold"),
             defaults["hit_energy_threshold"],
             "scoring.run_manifest_defaults.hit_energy_threshold",
+        ),
+        "tracking_verbose": _normalize_non_negative_int(
+            raw_defaults.get("tracking_verbose", defaults["tracking_verbose"]),
+            defaults["tracking_verbose"],
+            "scoring.run_manifest_defaults.tracking_verbose",
+        ),
+        "hits_verbose": _normalize_non_negative_int(
+            raw_defaults.get("hits_verbose", defaults["hits_verbose"]),
+            defaults["hits_verbose"],
+            "scoring.run_manifest_defaults.hits_verbose",
         ),
     }
 

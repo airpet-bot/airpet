@@ -80,6 +80,8 @@ test('saved scoring run controls normalize cleanly and drive resolved simulation
         save_particles: true,
         production_cut: '0.25 mm',
         hit_energy_threshold: '7 eV',
+        tracking_verbose: 0,
+        hits_verbose: 0,
     });
 
     const described = describeScoringRunControls(projectState.scoring);
@@ -109,6 +111,8 @@ test('saved scoring run controls normalize cleanly and drive resolved simulation
         save_particles: true,
         production_cut: '0.25 mm',
         hit_energy_threshold: '7 eV',
+        tracking_verbose: 0,
+        hits_verbose: 0,
         save_tracks_range: '12-18',
         physics_list: 'QGSP_BERT',
         optical_physics: true,

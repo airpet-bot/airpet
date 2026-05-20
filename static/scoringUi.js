@@ -34,6 +34,8 @@ export const SCORING_SAVED_RUN_CONTROL_KEYS = [
     'save_particles',
     'production_cut',
     'hit_energy_threshold',
+    'tracking_verbose',
+    'hits_verbose',
 ];
 
 const DEFAULT_RUN_MANIFEST_DEFAULTS = {
@@ -47,6 +49,8 @@ const DEFAULT_RUN_MANIFEST_DEFAULTS = {
     save_particles: false,
     production_cut: '1.0 mm',
     hit_energy_threshold: '1 eV',
+    tracking_verbose: 0,
+    hits_verbose: 0,
 };
 
 const DEFAULT_TRANSIENT_SIMULATION_OPTIONS = {
@@ -196,6 +200,14 @@ function normalizeRunManifestDefaults(rawDefaults) {
         hit_energy_threshold: normalizeString(
             defaults.hit_energy_threshold,
             DEFAULT_RUN_MANIFEST_DEFAULTS.hit_energy_threshold,
+        ),
+        tracking_verbose: normalizeNonNegativeInt(
+            defaults.tracking_verbose,
+            DEFAULT_RUN_MANIFEST_DEFAULTS.tracking_verbose,
+        ),
+        hits_verbose: normalizeNonNegativeInt(
+            defaults.hits_verbose,
+            DEFAULT_RUN_MANIFEST_DEFAULTS.hits_verbose,
         ),
     };
 }

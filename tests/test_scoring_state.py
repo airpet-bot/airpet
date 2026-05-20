@@ -91,6 +91,8 @@ def test_scoring_state_defaults_and_roundtrip():
             "save_particles": False,
             "production_cut": "1.0 mm",
             "hit_energy_threshold": "1 eV",
+            "tracking_verbose": 0,
+            "hits_verbose": 0,
         },
     }
     assert state.to_dict()["scoring"] == state.scoring.to_dict()
@@ -127,6 +129,8 @@ def test_scoring_state_defaults_and_roundtrip():
             "save_particles": True,
             "production_cut": "0.25 mm",
             "hit_energy_threshold": "5 eV",
+            "tracking_verbose": 0,
+            "hits_verbose": 0,
         },
     }
 
@@ -167,6 +171,8 @@ def test_scoring_state_defaults_and_roundtrip():
         "save_particles": True,
         "production_cut": "0.25 mm",
         "hit_energy_threshold": "5 eV",
+        "tracking_verbose": 0,
+        "hits_verbose": 0,
     }
     assert loaded.scoring.to_summary_dict() == {
         "has_configured_scoring": True,
@@ -332,6 +338,8 @@ def test_update_object_property_replaces_saved_scoring_state_and_syncs_tallies()
             "save_particles": False,
             "production_cut": "1.0 mm",
             "hit_energy_threshold": "1 eV",
+            "tracking_verbose": 0,
+            "hits_verbose": 0,
         },
     }
 
@@ -391,6 +399,8 @@ def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest
             "save_particles": True,
             "production_cut": "0.25 mm",
             "hit_energy_threshold": "7 eV",
+            "tracking_verbose": 0,
+            "hits_verbose": 0,
         },
     }
 
@@ -436,6 +446,8 @@ def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest
         "save_particles": True,
         "production_cut": "0.25 mm",
         "hit_energy_threshold": "7 eV",
+        "tracking_verbose": 0,
+        "hits_verbose": 0,
     }
     assert metadata["scoring"] == state.scoring.to_dict()
     assert metadata["scoring_summary"] == state.scoring.to_summary_dict()

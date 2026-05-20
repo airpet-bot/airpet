@@ -10276,8 +10276,12 @@ class ProjectManager:
 
         # --- ADD VERBOSITY FOR DEBUGGING ---
         macro_content.append("# --- Verbosity Settings ---")
-        #macro_content.append("/tracking/verbose 1") # Print a message for every new track
-        #macro_content.append("/hits/verbose 2")     # Print every single hit as it's processed
+        tracking_verbose = resolved_run_manifest.get('tracking_verbose', 0)
+        if tracking_verbose > 0:
+            macro_content.append(f"/tracking/verbose {tracking_verbose}")
+        hits_verbose = resolved_run_manifest.get('hits_verbose', 0)
+        if hits_verbose > 0:
+            macro_content.append(f"/hits/verbose {hits_verbose}")
         macro_content.append("")
 
         # --- Configure Source (using GPS) ---
