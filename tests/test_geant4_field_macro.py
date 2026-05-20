@@ -49,6 +49,7 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "eloss_fluct": True,
         "field_stepper_type": "",
         "field_minimum_step_mm": 0.0,
+        "cerenkov_max_photons": 0,
     }
 
     state = GeometryState()

@@ -10057,10 +10057,15 @@ class ProjectManager:
         # --- Optical Process Parameters ---
         if temp_state.environment.optical_physics:
             invoke_sd = temp_state.environment.optical_boundary_invoke_sd
+            cerenkov_max = temp_state.environment.cerenkov_max_photons
             macro_content.append("# --- Optical Process Parameters ---")
             macro_content.append(
                 f"/process/optical/boundary/setInvokeSD {str(invoke_sd).lower()}"
             )
+            if cerenkov_max > 0:
+                macro_content.append(
+                    f"/process/optical/cerenkov/setMaxPhotons {cerenkov_max}"
+                )
             macro_content.append("")
 
         # --- EM Process Parameters ---

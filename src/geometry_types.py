@@ -2937,6 +2937,7 @@ class EnvironmentState:
         eloss_fluct=True,
         field_stepper_type="",
         field_minimum_step_mm=0.0,
+        cerenkov_max_photons=0,
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
@@ -2951,6 +2952,7 @@ class EnvironmentState:
         self.eloss_fluct = bool(eloss_fluct)
         self.field_stepper_type = str(field_stepper_type) if field_stepper_type else ""
         self.field_minimum_step_mm = float(field_minimum_step_mm) if field_minimum_step_mm is not None else 0.0
+        self.cerenkov_max_photons = int(cerenkov_max_photons) if cerenkov_max_photons is not None else 0
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3071,6 +3073,12 @@ class EnvironmentState:
             except (TypeError, ValueError):
                 return False, f"{field_name}.field_minimum_step_mm must be a number."
 
+        if 'cerenkov_max_photons' in data:
+            try:
+                int(data['cerenkov_max_photons'])
+            except (TypeError, ValueError):
+                return False, f"{field_name}.cerenkov_max_photons must be an integer."
+
         return True, None
 
     def to_dict(self):
@@ -3087,6 +3095,7 @@ class EnvironmentState:
             "eloss_fluct": self.eloss_fluct,
             "field_stepper_type": self.field_stepper_type,
             "field_minimum_step_mm": self.field_minimum_step_mm,
+            "cerenkov_max_photons": self.cerenkov_max_photons,
         }
 
     def to_summary_dict(self):
@@ -3180,6 +3189,14 @@ class EnvironmentState:
                 {"field_minimum_step_mm": self.field_minimum_step_mm},
             )
 
+        if self.optical_physics and self.cerenkov_max_photons > 0:
+            add_control(
+                "cerenkov_max_photons",
+                "Cerenkov max photons",
+                f"Cerenkov max photons per step: {self.cerenkov_max_photons}",
+                {"cerenkov_max_photons": self.cerenkov_max_photons},
+            )
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3250,6 +3267,12 @@ class EnvironmentState:
         except (TypeError, ValueError):
             field_minimum_step_mm = 0.0
 
+        cerenkov_max_photons = data.get('cerenkov_max_photons', 0)
+        try:
+            cerenkov_max_photons = int(cerenkov_max_photons)
+        except (TypeError, ValueError):
+            cerenkov_max_photons = 0
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3280,7 +3303,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons)
 
 
 class ScoringState:
