@@ -2958,6 +2958,8 @@ class EnvironmentState:
         pixe=False,
         deexcitation_ignore_cut=False,
         em_integral=False,
+        cerenkov_track_secondaries_first=False,
+        scintillation_track_secondaries_first=False,
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
@@ -2981,6 +2983,8 @@ class EnvironmentState:
         self.pixe = bool(pixe)
         self.deexcitation_ignore_cut = bool(deexcitation_ignore_cut)
         self.em_integral = bool(em_integral)
+        self.cerenkov_track_secondaries_first = bool(cerenkov_track_secondaries_first)
+        self.scintillation_track_secondaries_first = bool(scintillation_track_secondaries_first)
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3131,6 +3135,12 @@ class EnvironmentState:
         if 'em_integral' in data and not isinstance(data['em_integral'], bool):
             return False, f"{field_name}.em_integral must be a boolean."
 
+        if 'cerenkov_track_secondaries_first' in data and not isinstance(data['cerenkov_track_secondaries_first'], bool):
+            return False, f"{field_name}.cerenkov_track_secondaries_first must be a boolean."
+
+        if 'scintillation_track_secondaries_first' in data and not isinstance(data['scintillation_track_secondaries_first'], bool):
+            return False, f"{field_name}.scintillation_track_secondaries_first must be a boolean."
+
         return True, None
 
     def to_dict(self):
@@ -3156,6 +3166,8 @@ class EnvironmentState:
             "pixe": self.pixe,
             "deexcitation_ignore_cut": self.deexcitation_ignore_cut,
             "em_integral": self.em_integral,
+            "cerenkov_track_secondaries_first": self.cerenkov_track_secondaries_first,
+            "scintillation_track_secondaries_first": self.scintillation_track_secondaries_first,
         }
 
     def to_summary_dict(self):
@@ -3321,6 +3333,22 @@ class EnvironmentState:
                 {"em_integral": True},
             )
 
+        if self.optical_physics and self.cerenkov_track_secondaries_first:
+            add_control(
+                "cerenkov_track_secondaries_first",
+                "Cerenkov track secondaries first",
+                "Cerenkov track secondaries first: enabled",
+                {"cerenkov_track_secondaries_first": True},
+            )
+
+        if self.optical_physics and self.scintillation_track_secondaries_first:
+            add_control(
+                "scintillation_track_secondaries_first",
+                "Scintillation track secondaries first",
+                "Scintillation track secondaries first: enabled",
+                {"scintillation_track_secondaries_first": True},
+            )
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3429,6 +3457,14 @@ class EnvironmentState:
         if isinstance(em_integral, str):
             em_integral = em_integral.strip().lower() in {'true', '1', 'yes', 'on'}
 
+        cerenkov_track_secondaries_first = data.get('cerenkov_track_secondaries_first', False)
+        if isinstance(cerenkov_track_secondaries_first, str):
+            cerenkov_track_secondaries_first = cerenkov_track_secondaries_first.strip().lower() in {'true', '1', 'yes', 'on'}
+
+        scintillation_track_secondaries_first = data.get('scintillation_track_secondaries_first', False)
+        if isinstance(scintillation_track_secondaries_first, str):
+            scintillation_track_secondaries_first = scintillation_track_secondaries_first.strip().lower() in {'true', '1', 'yes', 'on'}
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3459,7 +3495,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, cerenkov_track_secondaries_first, scintillation_track_secondaries_first)
 
 
 class ScoringState:

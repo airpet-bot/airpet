@@ -80,6 +80,8 @@ def test_environment_state_defaults_and_roundtrip():
         "pixe": False,
         "deexcitation_ignore_cut": False,
         "em_integral": False,
+        "cerenkov_track_secondaries_first": False,
+        "scintillation_track_secondaries_first": False,
     }
 
     assert state.environment.to_summary_dict() == {
@@ -140,6 +142,8 @@ def test_environment_state_validation_and_project_roundtrip():
         "pixe": False,
         "deexcitation_ignore_cut": False,
         "em_integral": False,
+        "cerenkov_track_secondaries_first": False,
+        "scintillation_track_secondaries_first": False,
     }
 
     ok, err = EnvironmentState.validate(valid_payload)
