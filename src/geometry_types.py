@@ -2957,6 +2957,7 @@ class EnvironmentState:
         auger_cascade=False,
         pixe=False,
         deexcitation_ignore_cut=False,
+        em_integral=False,
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
@@ -2979,6 +2980,7 @@ class EnvironmentState:
         self.auger_cascade = bool(auger_cascade)
         self.pixe = bool(pixe)
         self.deexcitation_ignore_cut = bool(deexcitation_ignore_cut)
+        self.em_integral = bool(em_integral)
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3126,6 +3128,9 @@ class EnvironmentState:
         if 'deexcitation_ignore_cut' in data and not isinstance(data['deexcitation_ignore_cut'], bool):
             return False, f"{field_name}.deexcitation_ignore_cut must be a boolean."
 
+        if 'em_integral' in data and not isinstance(data['em_integral'], bool):
+            return False, f"{field_name}.em_integral must be a boolean."
+
         return True, None
 
     def to_dict(self):
@@ -3150,6 +3155,7 @@ class EnvironmentState:
             "auger_cascade": self.auger_cascade,
             "pixe": self.pixe,
             "deexcitation_ignore_cut": self.deexcitation_ignore_cut,
+            "em_integral": self.em_integral,
         }
 
     def to_summary_dict(self):
@@ -3307,6 +3313,14 @@ class EnvironmentState:
                 {"deexcitation_ignore_cut": True},
             )
 
+        if self.em_integral:
+            add_control(
+                "em_integral",
+                "EM integral",
+                "EM integral: enabled",
+                {"em_integral": True},
+            )
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3411,6 +3425,10 @@ class EnvironmentState:
         if isinstance(deexcitation_ignore_cut, str):
             deexcitation_ignore_cut = deexcitation_ignore_cut.strip().lower() in {'true', '1', 'yes', 'on'}
 
+        em_integral = data.get('em_integral', False)
+        if isinstance(em_integral, str):
+            em_integral = em_integral.strip().lower() in {'true', '1', 'yes', 'on'}
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3441,7 +3459,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral)
 
 
 class ScoringState:

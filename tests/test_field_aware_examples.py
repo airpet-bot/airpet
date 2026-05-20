@@ -67,6 +67,7 @@ def test_field_aware_silicon_starter_saves_explicit_fields():
         "auger_cascade": False,
         "pixe": False,
         "deexcitation_ignore_cut": False,
+        "em_integral": False,
     }
 
     assert pm.current_geometry_state.param_studies["si_first_run"]["parameters"] == ["si_thickness", "src_z"]

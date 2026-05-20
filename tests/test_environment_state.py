@@ -79,6 +79,7 @@ def test_environment_state_defaults_and_roundtrip():
         "auger_cascade": False,
         "pixe": False,
         "deexcitation_ignore_cut": False,
+        "em_integral": False,
     }
 
     assert state.environment.to_summary_dict() == {
@@ -138,6 +139,7 @@ def test_environment_state_validation_and_project_roundtrip():
         "auger_cascade": False,
         "pixe": False,
         "deexcitation_ignore_cut": False,
+        "em_integral": False,
     }
 
     ok, err = EnvironmentState.validate(valid_payload)
