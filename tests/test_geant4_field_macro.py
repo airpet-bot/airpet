@@ -58,6 +58,7 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "pixe": False,
         "deexcitation_ignore_cut": False,
         "em_integral": False,
+        "em_use_saturation": False,
         "cerenkov_track_secondaries_first": False,
         "scintillation_track_secondaries_first": False,
     }
