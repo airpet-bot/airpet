@@ -2938,6 +2938,8 @@ class EnvironmentState:
         field_stepper_type="",
         field_minimum_step_mm=0.0,
         cerenkov_max_photons=0,
+        scintillation_by_particle_type=False,
+        scintillation_finite_rise_time=False,
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
@@ -2953,6 +2955,8 @@ class EnvironmentState:
         self.field_stepper_type = str(field_stepper_type) if field_stepper_type else ""
         self.field_minimum_step_mm = float(field_minimum_step_mm) if field_minimum_step_mm is not None else 0.0
         self.cerenkov_max_photons = int(cerenkov_max_photons) if cerenkov_max_photons is not None else 0
+        self.scintillation_by_particle_type = bool(scintillation_by_particle_type)
+        self.scintillation_finite_rise_time = bool(scintillation_finite_rise_time)
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3079,6 +3083,12 @@ class EnvironmentState:
             except (TypeError, ValueError):
                 return False, f"{field_name}.cerenkov_max_photons must be an integer."
 
+        if 'scintillation_by_particle_type' in data and not isinstance(data['scintillation_by_particle_type'], bool):
+            return False, f"{field_name}.scintillation_by_particle_type must be a boolean."
+
+        if 'scintillation_finite_rise_time' in data and not isinstance(data['scintillation_finite_rise_time'], bool):
+            return False, f"{field_name}.scintillation_finite_rise_time must be a boolean."
+
         return True, None
 
     def to_dict(self):
@@ -3096,6 +3106,8 @@ class EnvironmentState:
             "field_stepper_type": self.field_stepper_type,
             "field_minimum_step_mm": self.field_minimum_step_mm,
             "cerenkov_max_photons": self.cerenkov_max_photons,
+            "scintillation_by_particle_type": self.scintillation_by_particle_type,
+            "scintillation_finite_rise_time": self.scintillation_finite_rise_time,
         }
 
     def to_summary_dict(self):
@@ -3197,6 +3209,22 @@ class EnvironmentState:
                 {"cerenkov_max_photons": self.cerenkov_max_photons},
             )
 
+        if self.optical_physics and self.scintillation_by_particle_type:
+            add_control(
+                "scintillation_by_particle_type",
+                "Scintillation by particle type",
+                "Scintillation by particle type: enabled",
+                {"scintillation_by_particle_type": True},
+            )
+
+        if self.optical_physics and self.scintillation_finite_rise_time:
+            add_control(
+                "scintillation_finite_rise_time",
+                "Scintillation finite rise time",
+                "Scintillation finite rise time: enabled",
+                {"scintillation_finite_rise_time": True},
+            )
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3273,6 +3301,14 @@ class EnvironmentState:
         except (TypeError, ValueError):
             cerenkov_max_photons = 0
 
+        scintillation_by_particle_type = data.get('scintillation_by_particle_type', False)
+        if isinstance(scintillation_by_particle_type, str):
+            scintillation_by_particle_type = scintillation_by_particle_type.strip().lower() in {'true', '1', 'yes', 'on'}
+
+        scintillation_finite_rise_time = data.get('scintillation_finite_rise_time', False)
+        if isinstance(scintillation_finite_rise_time, str):
+            scintillation_finite_rise_time = scintillation_finite_rise_time.strip().lower() in {'true', '1', 'yes', 'on'}
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3303,7 +3339,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time)
 
 
 class ScoringState:

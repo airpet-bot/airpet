@@ -10058,6 +10058,8 @@ class ProjectManager:
         if temp_state.environment.optical_physics:
             invoke_sd = temp_state.environment.optical_boundary_invoke_sd
             cerenkov_max = temp_state.environment.cerenkov_max_photons
+            scint_by_particle = temp_state.environment.scintillation_by_particle_type
+            scint_finite_rise = temp_state.environment.scintillation_finite_rise_time
             macro_content.append("# --- Optical Process Parameters ---")
             macro_content.append(
                 f"/process/optical/boundary/setInvokeSD {str(invoke_sd).lower()}"
@@ -10065,6 +10067,14 @@ class ProjectManager:
             if cerenkov_max > 0:
                 macro_content.append(
                     f"/process/optical/cerenkov/setMaxPhotons {cerenkov_max}"
+                )
+            if scint_by_particle:
+                macro_content.append(
+                    "/process/optical/scintillation/setByParticleType true"
+                )
+            if scint_finite_rise:
+                macro_content.append(
+                    "/process/optical/scintillation/setFiniteRiseTime true"
                 )
             macro_content.append("")
 

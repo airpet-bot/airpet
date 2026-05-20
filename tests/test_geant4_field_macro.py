@@ -50,6 +50,8 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "field_stepper_type": "",
         "field_minimum_step_mm": 0.0,
         "cerenkov_max_photons": 0,
+        "scintillation_by_particle_type": False,
+        "scintillation_finite_rise_time": False,
     }
 
     state = GeometryState()

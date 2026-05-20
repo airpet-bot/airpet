@@ -72,6 +72,8 @@ def test_environment_state_defaults_and_roundtrip():
         "field_stepper_type": "",
         "field_minimum_step_mm": 0.0,
         "cerenkov_max_photons": 0,
+        "scintillation_by_particle_type": False,
+        "scintillation_finite_rise_time": False,
     }
 
     assert state.environment.to_summary_dict() == {
@@ -124,6 +126,8 @@ def test_environment_state_validation_and_project_roundtrip():
         "field_stepper_type": "",
         "field_minimum_step_mm": 0.0,
         "cerenkov_max_photons": 0,
+        "scintillation_by_particle_type": False,
+        "scintillation_finite_rise_time": False,
     }
 
     ok, err = EnvironmentState.validate(valid_payload)
