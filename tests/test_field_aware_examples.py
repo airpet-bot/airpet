@@ -62,6 +62,8 @@ def test_field_aware_silicon_starter_saves_explicit_fields():
         "cerenkov_max_photons": 0,
         "scintillation_by_particle_type": False,
         "scintillation_finite_rise_time": False,
+        "fluo": False,
+        "auger": False,
     }
 
     assert pm.current_geometry_state.param_studies["si_first_run"]["parameters"] == ["si_thickness", "src_z"]

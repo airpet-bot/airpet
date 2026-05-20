@@ -52,6 +52,8 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "cerenkov_max_photons": 0,
         "scintillation_by_particle_type": False,
         "scintillation_finite_rise_time": False,
+        "fluo": False,
+        "auger": False,
     }
 
     state = GeometryState()

@@ -662,6 +662,8 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
         "cerenkov_max_photons": 0,
         "scintillation_by_particle_type": False,
         "scintillation_finite_rise_time": False,
+        "fluo": False,
+        "auger": False,
     }
 
     res = dispatch_ai_tool(pm, "update_property", {

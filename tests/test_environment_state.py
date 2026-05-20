@@ -74,6 +74,8 @@ def test_environment_state_defaults_and_roundtrip():
         "cerenkov_max_photons": 0,
         "scintillation_by_particle_type": False,
         "scintillation_finite_rise_time": False,
+        "fluo": False,
+        "auger": False,
     }
 
     assert state.environment.to_summary_dict() == {
@@ -128,6 +130,8 @@ def test_environment_state_validation_and_project_roundtrip():
         "cerenkov_max_photons": 0,
         "scintillation_by_particle_type": False,
         "scintillation_finite_rise_time": False,
+        "fluo": False,
+        "auger": False,
     }
 
     ok, err = EnvironmentState.validate(valid_payload)

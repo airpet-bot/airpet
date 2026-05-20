@@ -2952,6 +2952,8 @@ class EnvironmentState:
         cerenkov_max_photons=0,
         scintillation_by_particle_type=False,
         scintillation_finite_rise_time=False,
+        fluo=False,
+        auger=False,
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
@@ -2969,6 +2971,8 @@ class EnvironmentState:
         self.cerenkov_max_photons = int(cerenkov_max_photons) if cerenkov_max_photons is not None else 0
         self.scintillation_by_particle_type = bool(scintillation_by_particle_type)
         self.scintillation_finite_rise_time = bool(scintillation_finite_rise_time)
+        self.fluo = bool(fluo)
+        self.auger = bool(auger)
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3101,6 +3105,12 @@ class EnvironmentState:
         if 'scintillation_finite_rise_time' in data and not isinstance(data['scintillation_finite_rise_time'], bool):
             return False, f"{field_name}.scintillation_finite_rise_time must be a boolean."
 
+        if 'fluo' in data and not isinstance(data['fluo'], bool):
+            return False, f"{field_name}.fluo must be a boolean."
+
+        if 'auger' in data and not isinstance(data['auger'], bool):
+            return False, f"{field_name}.auger must be a boolean."
+
         return True, None
 
     def to_dict(self):
@@ -3120,6 +3130,8 @@ class EnvironmentState:
             "cerenkov_max_photons": self.cerenkov_max_photons,
             "scintillation_by_particle_type": self.scintillation_by_particle_type,
             "scintillation_finite_rise_time": self.scintillation_finite_rise_time,
+            "fluo": self.fluo,
+            "auger": self.auger,
         }
 
     def to_summary_dict(self):
@@ -3237,6 +3249,22 @@ class EnvironmentState:
                 {"scintillation_finite_rise_time": True},
             )
 
+        if self.fluo:
+            add_control(
+                "fluo",
+                "Fluorescence",
+                "Fluorescence: enabled",
+                {"fluo": True},
+            )
+
+        if self.auger:
+            add_control(
+                "auger",
+                "Auger electron production",
+                "Auger electron production: enabled",
+                {"auger": True},
+            )
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3321,6 +3349,14 @@ class EnvironmentState:
         if isinstance(scintillation_finite_rise_time, str):
             scintillation_finite_rise_time = scintillation_finite_rise_time.strip().lower() in {'true', '1', 'yes', 'on'}
 
+        fluo = data.get('fluo', False)
+        if isinstance(fluo, str):
+            fluo = fluo.strip().lower() in {'true', '1', 'yes', 'on'}
+
+        auger = data.get('auger', False)
+        if isinstance(auger, str):
+            auger = auger.strip().lower() in {'true', '1', 'yes', 'on'}
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3351,7 +3387,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger)
 
 
 class ScoringState:
