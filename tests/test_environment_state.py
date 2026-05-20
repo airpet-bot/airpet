@@ -76,6 +76,9 @@ def test_environment_state_defaults_and_roundtrip():
         "scintillation_finite_rise_time": False,
         "fluo": False,
         "auger": False,
+        "auger_cascade": False,
+        "pixe": False,
+        "deexcitation_ignore_cut": False,
     }
 
     assert state.environment.to_summary_dict() == {
@@ -132,6 +135,9 @@ def test_environment_state_validation_and_project_roundtrip():
         "scintillation_finite_rise_time": False,
         "fluo": False,
         "auger": False,
+        "auger_cascade": False,
+        "pixe": False,
+        "deexcitation_ignore_cut": False,
     }
 
     ok, err = EnvironmentState.validate(valid_payload)

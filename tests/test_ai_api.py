@@ -664,6 +664,9 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
         "scintillation_finite_rise_time": False,
         "fluo": False,
         "auger": False,
+        "auger_cascade": False,
+        "pixe": False,
+        "deexcitation_ignore_cut": False,
     }
 
     res = dispatch_ai_tool(pm, "update_property", {

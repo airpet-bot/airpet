@@ -10083,7 +10083,10 @@ class ProjectManager:
         eloss_fluct = temp_state.environment.eloss_fluct
         fluo = temp_state.environment.fluo
         auger = temp_state.environment.auger
-        if em_apply_cuts or not eloss_fluct or fluo or auger:
+        auger_cascade = temp_state.environment.auger_cascade
+        pixe = temp_state.environment.pixe
+        deexcitation_ignore_cut = temp_state.environment.deexcitation_ignore_cut
+        if em_apply_cuts or not eloss_fluct or fluo or auger or auger_cascade or pixe or deexcitation_ignore_cut:
             macro_content.append("# --- EM Process Parameters ---")
             if em_apply_cuts:
                 macro_content.append("/process/em/applyCuts true")
@@ -10093,6 +10096,12 @@ class ProjectManager:
                 macro_content.append("/process/em/fluo true")
             if auger:
                 macro_content.append("/process/em/auger true")
+            if auger_cascade:
+                macro_content.append("/process/em/augerCascade true")
+            if pixe:
+                macro_content.append("/process/em/pixe true")
+            if deexcitation_ignore_cut:
+                macro_content.append("/process/em/deexcitationIgnoreCut true")
             macro_content.append("")
 
         # --- Scoring Meshes ---

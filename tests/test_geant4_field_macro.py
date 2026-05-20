@@ -54,6 +54,9 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "scintillation_finite_rise_time": False,
         "fluo": False,
         "auger": False,
+        "auger_cascade": False,
+        "pixe": False,
+        "deexcitation_ignore_cut": False,
     }
 
     state = GeometryState()
