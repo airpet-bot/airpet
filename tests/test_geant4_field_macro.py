@@ -69,6 +69,7 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "scintillation_track_info": False,
         "wls_time_profile": "",
         "wls2_time_profile": "",
+        "lpm": True,
     }
 
     state = GeometryState()
