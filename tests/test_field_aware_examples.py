@@ -69,6 +69,7 @@ def test_field_aware_silicon_starter_saves_explicit_fields():
         "deexcitation_ignore_cut": False,
         "em_integral": False,
         "em_use_saturation": False,
+        "em_polarisation": False,
         "cerenkov_track_secondaries_first": False,
         "scintillation_track_secondaries_first": False,
     }

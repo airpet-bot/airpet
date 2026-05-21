@@ -2959,6 +2959,7 @@ class EnvironmentState:
         deexcitation_ignore_cut=False,
         em_integral=False,
         em_use_saturation=False,
+        em_polarisation=False,
         cerenkov_track_secondaries_first=False,
         scintillation_track_secondaries_first=False,
     ):
@@ -2985,6 +2986,7 @@ class EnvironmentState:
         self.deexcitation_ignore_cut = bool(deexcitation_ignore_cut)
         self.em_integral = bool(em_integral)
         self.em_use_saturation = bool(em_use_saturation)
+        self.em_polarisation = bool(em_polarisation)
         self.cerenkov_track_secondaries_first = bool(cerenkov_track_secondaries_first)
         self.scintillation_track_secondaries_first = bool(scintillation_track_secondaries_first)
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
@@ -3140,6 +3142,9 @@ class EnvironmentState:
         if 'em_use_saturation' in data and not isinstance(data['em_use_saturation'], bool):
             return False, f"{field_name}.em_use_saturation must be a boolean."
 
+        if 'em_polarisation' in data and not isinstance(data['em_polarisation'], bool):
+            return False, f"{field_name}.em_polarisation must be a boolean."
+
         if 'cerenkov_track_secondaries_first' in data and not isinstance(data['cerenkov_track_secondaries_first'], bool):
             return False, f"{field_name}.cerenkov_track_secondaries_first must be a boolean."
 
@@ -3172,6 +3177,7 @@ class EnvironmentState:
             "deexcitation_ignore_cut": self.deexcitation_ignore_cut,
             "em_integral": self.em_integral,
             "em_use_saturation": self.em_use_saturation,
+            "em_polarisation": self.em_polarisation,
             "cerenkov_track_secondaries_first": self.cerenkov_track_secondaries_first,
             "scintillation_track_secondaries_first": self.scintillation_track_secondaries_first,
         }
@@ -3347,6 +3353,14 @@ class EnvironmentState:
                 {"em_use_saturation": True},
             )
 
+        if self.em_polarisation:
+            add_control(
+                "em_polarisation",
+                "EM polarisation",
+                "EM polarisation: enabled",
+                {"em_polarisation": True},
+            )
+
         if self.optical_physics and self.cerenkov_track_secondaries_first:
             add_control(
                 "cerenkov_track_secondaries_first",
@@ -3475,6 +3489,10 @@ class EnvironmentState:
         if isinstance(em_use_saturation, str):
             em_use_saturation = em_use_saturation.strip().lower() in {'true', '1', 'yes', 'on'}
 
+        em_polarisation = data.get('em_polarisation', False)
+        if isinstance(em_polarisation, str):
+            em_polarisation = em_polarisation.strip().lower() in {'true', '1', 'yes', 'on'}
+
         cerenkov_track_secondaries_first = data.get('cerenkov_track_secondaries_first', False)
         if isinstance(cerenkov_track_secondaries_first, str):
             cerenkov_track_secondaries_first = cerenkov_track_secondaries_first.strip().lower() in {'true', '1', 'yes', 'on'}
@@ -3513,7 +3531,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, cerenkov_track_secondaries_first, scintillation_track_secondaries_first)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, cerenkov_track_secondaries_first, scintillation_track_secondaries_first)
 
 
 class ScoringState:

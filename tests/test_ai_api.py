@@ -669,6 +669,7 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
         "deexcitation_ignore_cut": False,
         "em_integral": False,
         "em_use_saturation": False,
+        "em_polarisation": False,
         "cerenkov_track_secondaries_first": False,
         "scintillation_track_secondaries_first": False,
     }
