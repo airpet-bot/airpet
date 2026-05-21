@@ -10066,6 +10066,8 @@ class ProjectManager:
             scint_stack = temp_state.environment.scintillation_stack_photons
             cerenkov_max_beta_change = temp_state.environment.cerenkov_max_beta_change
             scint_track_info = temp_state.environment.scintillation_track_info
+            wls_time_profile = temp_state.environment.wls_time_profile
+            wls2_time_profile = temp_state.environment.wls2_time_profile
             macro_content.append("# --- Optical Process Parameters ---")
             macro_content.append(
                 f"/process/optical/boundary/setInvokeSD {str(invoke_sd).lower()}"
@@ -10105,6 +10107,14 @@ class ProjectManager:
             if scint_track_info:
                 macro_content.append(
                     "/process/optical/scintillation/setTrackInfo true"
+                )
+            if wls_time_profile:
+                macro_content.append(
+                    f"/process/optical/wls/setTimeProfile {wls_time_profile}"
+                )
+            if wls2_time_profile:
+                macro_content.append(
+                    f"/process/optical/wls2/setTimeProfile {wls2_time_profile}"
                 )
             macro_content.append("")
 

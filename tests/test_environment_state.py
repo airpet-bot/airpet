@@ -89,6 +89,8 @@ def test_environment_state_defaults_and_roundtrip():
         "scintillation_stack_photons": True,
         "cerenkov_max_beta_change": 0.0,
         "scintillation_track_info": False,
+        "wls_time_profile": "",
+        "wls2_time_profile": "",
     }
 
     assert state.environment.to_summary_dict() == {
@@ -158,6 +160,8 @@ def test_environment_state_validation_and_project_roundtrip():
         "scintillation_stack_photons": True,
         "cerenkov_max_beta_change": 0.0,
         "scintillation_track_info": False,
+        "wls_time_profile": "",
+        "wls2_time_profile": "",
     }
 
     ok, err = EnvironmentState.validate(valid_payload)
