@@ -84,6 +84,8 @@ def test_environment_state_defaults_and_roundtrip():
         "em_polarisation": False,
         "cerenkov_track_secondaries_first": False,
         "scintillation_track_secondaries_first": False,
+        "cerenkov_stack_photons": True,
+        "scintillation_stack_photons": True,
     }
 
     assert state.environment.to_summary_dict() == {
@@ -148,6 +150,8 @@ def test_environment_state_validation_and_project_roundtrip():
         "em_polarisation": False,
         "cerenkov_track_secondaries_first": False,
         "scintillation_track_secondaries_first": False,
+        "cerenkov_stack_photons": True,
+        "scintillation_stack_photons": True,
     }
 
     ok, err = EnvironmentState.validate(valid_payload)

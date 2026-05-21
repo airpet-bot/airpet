@@ -2962,6 +2962,8 @@ class EnvironmentState:
         em_polarisation=False,
         cerenkov_track_secondaries_first=False,
         scintillation_track_secondaries_first=False,
+        cerenkov_stack_photons=True,
+        scintillation_stack_photons=True,
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
@@ -2989,6 +2991,8 @@ class EnvironmentState:
         self.em_polarisation = bool(em_polarisation)
         self.cerenkov_track_secondaries_first = bool(cerenkov_track_secondaries_first)
         self.scintillation_track_secondaries_first = bool(scintillation_track_secondaries_first)
+        self.cerenkov_stack_photons = bool(cerenkov_stack_photons)
+        self.scintillation_stack_photons = bool(scintillation_stack_photons)
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3151,6 +3155,12 @@ class EnvironmentState:
         if 'scintillation_track_secondaries_first' in data and not isinstance(data['scintillation_track_secondaries_first'], bool):
             return False, f"{field_name}.scintillation_track_secondaries_first must be a boolean."
 
+        if 'cerenkov_stack_photons' in data and not isinstance(data['cerenkov_stack_photons'], bool):
+            return False, f"{field_name}.cerenkov_stack_photons must be a boolean."
+
+        if 'scintillation_stack_photons' in data and not isinstance(data['scintillation_stack_photons'], bool):
+            return False, f"{field_name}.scintillation_stack_photons must be a boolean."
+
         return True, None
 
     def to_dict(self):
@@ -3180,6 +3190,8 @@ class EnvironmentState:
             "em_polarisation": self.em_polarisation,
             "cerenkov_track_secondaries_first": self.cerenkov_track_secondaries_first,
             "scintillation_track_secondaries_first": self.scintillation_track_secondaries_first,
+            "cerenkov_stack_photons": self.cerenkov_stack_photons,
+            "scintillation_stack_photons": self.scintillation_stack_photons,
         }
 
     def to_summary_dict(self):
@@ -3377,6 +3389,22 @@ class EnvironmentState:
                 {"scintillation_track_secondaries_first": True},
             )
 
+        if self.optical_physics and not self.cerenkov_stack_photons:
+            add_control(
+                "cerenkov_stack_photons",
+                "Cerenkov stack photons",
+                "Cerenkov stack photons: disabled",
+                {"cerenkov_stack_photons": False},
+            )
+
+        if self.optical_physics and not self.scintillation_stack_photons:
+            add_control(
+                "scintillation_stack_photons",
+                "Scintillation stack photons",
+                "Scintillation stack photons: disabled",
+                {"scintillation_stack_photons": False},
+            )
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3501,6 +3529,14 @@ class EnvironmentState:
         if isinstance(scintillation_track_secondaries_first, str):
             scintillation_track_secondaries_first = scintillation_track_secondaries_first.strip().lower() in {'true', '1', 'yes', 'on'}
 
+        cerenkov_stack_photons = data.get('cerenkov_stack_photons', True)
+        if isinstance(cerenkov_stack_photons, str):
+            cerenkov_stack_photons = cerenkov_stack_photons.strip().lower() in {'true', '1', 'yes', 'on'}
+
+        scintillation_stack_photons = data.get('scintillation_stack_photons', True)
+        if isinstance(scintillation_stack_photons, str):
+            scintillation_stack_photons = scintillation_stack_photons.strip().lower() in {'true', '1', 'yes', 'on'}
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3531,7 +3567,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, cerenkov_track_secondaries_first, scintillation_track_secondaries_first)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, cerenkov_track_secondaries_first, scintillation_track_secondaries_first, cerenkov_stack_photons, scintillation_stack_photons)
 
 
 class ScoringState:
