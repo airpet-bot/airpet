@@ -36,6 +36,8 @@ export const SCORING_SAVED_RUN_CONTROL_KEYS = [
     'hit_energy_threshold',
     'tracking_verbose',
     'hits_verbose',
+    'run_verbose',
+    'event_verbose',
 ];
 
 const DEFAULT_RUN_MANIFEST_DEFAULTS = {
@@ -51,6 +53,8 @@ const DEFAULT_RUN_MANIFEST_DEFAULTS = {
     hit_energy_threshold: '1 eV',
     tracking_verbose: 0,
     hits_verbose: 0,
+    run_verbose: 0,
+    event_verbose: 0,
 };
 
 const DEFAULT_TRANSIENT_SIMULATION_OPTIONS = {
@@ -208,6 +212,14 @@ function normalizeRunManifestDefaults(rawDefaults) {
         hits_verbose: normalizeNonNegativeInt(
             defaults.hits_verbose,
             DEFAULT_RUN_MANIFEST_DEFAULTS.hits_verbose,
+        ),
+        run_verbose: normalizeNonNegativeInt(
+            defaults.run_verbose,
+            DEFAULT_RUN_MANIFEST_DEFAULTS.run_verbose,
+        ),
+        event_verbose: normalizeNonNegativeInt(
+            defaults.event_verbose,
+            DEFAULT_RUN_MANIFEST_DEFAULTS.event_verbose,
         ),
     };
 }

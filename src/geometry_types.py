@@ -300,6 +300,8 @@ def _default_scoring_run_manifest_defaults():
         "hit_energy_threshold": "1 eV",
         "tracking_verbose": 0,
         "hits_verbose": 0,
+        "run_verbose": 0,
+        "event_verbose": 0,
     }
 
 
@@ -881,6 +883,16 @@ def _normalize_scoring_run_manifest_defaults(raw_defaults):
             raw_defaults.get("hits_verbose", defaults["hits_verbose"]),
             defaults["hits_verbose"],
             "scoring.run_manifest_defaults.hits_verbose",
+        ),
+        "run_verbose": _normalize_non_negative_int(
+            raw_defaults.get("run_verbose", defaults["run_verbose"]),
+            defaults["run_verbose"],
+            "scoring.run_manifest_defaults.run_verbose",
+        ),
+        "event_verbose": _normalize_non_negative_int(
+            raw_defaults.get("event_verbose", defaults["event_verbose"]),
+            defaults["event_verbose"],
+            "scoring.run_manifest_defaults.event_verbose",
         ),
     }
 

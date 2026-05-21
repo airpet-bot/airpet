@@ -10326,6 +10326,12 @@ class ProjectManager:
         hits_verbose = resolved_run_manifest.get('hits_verbose', 0)
         if hits_verbose > 0:
             macro_content.append(f"/hits/verbose {hits_verbose}")
+        run_verbose = resolved_run_manifest.get('run_verbose', 0)
+        if run_verbose > 0:
+            macro_content.append(f"/run/verbose {run_verbose}")
+        event_verbose = resolved_run_manifest.get('event_verbose', 0)
+        if event_verbose > 0:
+            macro_content.append(f"/event/verbose {event_verbose}")
         macro_content.append("")
 
         # --- Configure Source (using GPS) ---
