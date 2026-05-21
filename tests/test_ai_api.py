@@ -675,6 +675,7 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
         "scintillation_track_secondaries_first": False,
         "cerenkov_stack_photons": True,
         "scintillation_stack_photons": True,
+        "cerenkov_max_beta_change": 0.0,
     }
 
     res = dispatch_ai_tool(pm, "update_property", {

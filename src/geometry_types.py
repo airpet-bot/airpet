@@ -2977,6 +2977,7 @@ class EnvironmentState:
         scintillation_track_secondaries_first=False,
         cerenkov_stack_photons=True,
         scintillation_stack_photons=True,
+        cerenkov_max_beta_change=0.0,
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
@@ -3007,6 +3008,7 @@ class EnvironmentState:
         self.scintillation_track_secondaries_first = bool(scintillation_track_secondaries_first)
         self.cerenkov_stack_photons = bool(cerenkov_stack_photons)
         self.scintillation_stack_photons = bool(scintillation_stack_photons)
+        self.cerenkov_max_beta_change = float(cerenkov_max_beta_change) if cerenkov_max_beta_change is not None else 0.0
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3181,6 +3183,12 @@ class EnvironmentState:
         if 'scintillation_stack_photons' in data and not isinstance(data['scintillation_stack_photons'], bool):
             return False, f"{field_name}.scintillation_stack_photons must be a boolean."
 
+        if 'cerenkov_max_beta_change' in data:
+            try:
+                float(data['cerenkov_max_beta_change'])
+            except (TypeError, ValueError):
+                return False, f"{field_name}.cerenkov_max_beta_change must be a number."
+
         return True, None
 
     def to_dict(self):
@@ -3213,6 +3221,7 @@ class EnvironmentState:
             "scintillation_track_secondaries_first": self.scintillation_track_secondaries_first,
             "cerenkov_stack_photons": self.cerenkov_stack_photons,
             "scintillation_stack_photons": self.scintillation_stack_photons,
+            "cerenkov_max_beta_change": self.cerenkov_max_beta_change,
         }
 
     def to_summary_dict(self):
@@ -3434,6 +3443,14 @@ class EnvironmentState:
                 {"scintillation_stack_photons": False},
             )
 
+        if self.optical_physics and self.cerenkov_max_beta_change > 0.0:
+            add_control(
+                "cerenkov_max_beta_change",
+                "Cerenkov max beta change",
+                f"Cerenkov max beta change: {self._summary_number(self.cerenkov_max_beta_change)}",
+                {"cerenkov_max_beta_change": self.cerenkov_max_beta_change},
+            )
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3572,6 +3589,12 @@ class EnvironmentState:
         if isinstance(scintillation_stack_photons, str):
             scintillation_stack_photons = scintillation_stack_photons.strip().lower() in {'true', '1', 'yes', 'on'}
 
+        cerenkov_max_beta_change = data.get('cerenkov_max_beta_change', 0.0)
+        try:
+            cerenkov_max_beta_change = float(cerenkov_max_beta_change)
+        except (TypeError, ValueError):
+            cerenkov_max_beta_change = 0.0
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3602,7 +3625,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, em_verbose, cerenkov_track_secondaries_first, scintillation_track_secondaries_first, cerenkov_stack_photons, scintillation_stack_photons)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, em_verbose, cerenkov_track_secondaries_first, scintillation_track_secondaries_first, cerenkov_stack_photons, scintillation_stack_photons, cerenkov_max_beta_change)
 
 
 class ScoringState:

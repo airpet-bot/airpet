@@ -75,6 +75,7 @@ def test_field_aware_silicon_starter_saves_explicit_fields():
         "scintillation_track_secondaries_first": False,
         "cerenkov_stack_photons": True,
         "scintillation_stack_photons": True,
+        "cerenkov_max_beta_change": 0.0,
     }
 
     assert pm.current_geometry_state.param_studies["si_first_run"]["parameters"] == ["si_thickness", "src_z"]
