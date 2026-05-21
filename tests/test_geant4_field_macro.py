@@ -60,6 +60,7 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "em_integral": False,
         "em_use_saturation": False,
         "em_polarisation": False,
+        "em_verbose": 0,
         "cerenkov_track_secondaries_first": False,
         "scintillation_track_secondaries_first": False,
         "cerenkov_stack_photons": True,

@@ -10109,7 +10109,8 @@ class ProjectManager:
         em_integral = temp_state.environment.em_integral
         em_use_saturation = temp_state.environment.em_use_saturation
         em_polarisation = temp_state.environment.em_polarisation
-        if em_apply_cuts or not eloss_fluct or fluo or auger or auger_cascade or pixe or deexcitation_ignore_cut or em_integral or em_use_saturation or em_polarisation:
+        em_verbose = temp_state.environment.em_verbose
+        if em_apply_cuts or not eloss_fluct or fluo or auger or auger_cascade or pixe or deexcitation_ignore_cut or em_integral or em_use_saturation or em_polarisation or em_verbose > 0:
             macro_content.append("# --- EM Process Parameters ---")
             if em_apply_cuts:
                 macro_content.append("/process/em/applyCuts true")
@@ -10131,6 +10132,8 @@ class ProjectManager:
                 macro_content.append("/process/em/UseG4EmSaturation true")
             if em_polarisation:
                 macro_content.append("/process/em/Polarisation true")
+            if em_verbose > 0:
+                macro_content.append(f"/process/em/verbose {em_verbose}")
             macro_content.append("")
 
         # --- Scoring Meshes ---

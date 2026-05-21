@@ -70,6 +70,7 @@ def test_field_aware_silicon_starter_saves_explicit_fields():
         "em_integral": False,
         "em_use_saturation": False,
         "em_polarisation": False,
+        "em_verbose": 0,
         "cerenkov_track_secondaries_first": False,
         "scintillation_track_secondaries_first": False,
         "cerenkov_stack_photons": True,

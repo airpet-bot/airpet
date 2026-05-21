@@ -2972,6 +2972,7 @@ class EnvironmentState:
         em_integral=False,
         em_use_saturation=False,
         em_polarisation=False,
+        em_verbose=0,
         cerenkov_track_secondaries_first=False,
         scintillation_track_secondaries_first=False,
         cerenkov_stack_photons=True,
@@ -3001,6 +3002,7 @@ class EnvironmentState:
         self.em_integral = bool(em_integral)
         self.em_use_saturation = bool(em_use_saturation)
         self.em_polarisation = bool(em_polarisation)
+        self.em_verbose = int(em_verbose) if em_verbose is not None else 0
         self.cerenkov_track_secondaries_first = bool(cerenkov_track_secondaries_first)
         self.scintillation_track_secondaries_first = bool(scintillation_track_secondaries_first)
         self.cerenkov_stack_photons = bool(cerenkov_stack_photons)
@@ -3161,6 +3163,12 @@ class EnvironmentState:
         if 'em_polarisation' in data and not isinstance(data['em_polarisation'], bool):
             return False, f"{field_name}.em_polarisation must be a boolean."
 
+        if 'em_verbose' in data:
+            try:
+                int(data['em_verbose'])
+            except (TypeError, ValueError):
+                return False, f"{field_name}.em_verbose must be an integer."
+
         if 'cerenkov_track_secondaries_first' in data and not isinstance(data['cerenkov_track_secondaries_first'], bool):
             return False, f"{field_name}.cerenkov_track_secondaries_first must be a boolean."
 
@@ -3200,6 +3208,7 @@ class EnvironmentState:
             "em_integral": self.em_integral,
             "em_use_saturation": self.em_use_saturation,
             "em_polarisation": self.em_polarisation,
+            "em_verbose": self.em_verbose,
             "cerenkov_track_secondaries_first": self.cerenkov_track_secondaries_first,
             "scintillation_track_secondaries_first": self.scintillation_track_secondaries_first,
             "cerenkov_stack_photons": self.cerenkov_stack_photons,
@@ -3385,6 +3394,14 @@ class EnvironmentState:
                 {"em_polarisation": True},
             )
 
+        if self.em_verbose > 0:
+            add_control(
+                "em_verbose",
+                "EM verbose",
+                f"EM verbose: {self.em_verbose}",
+                {"em_verbose": self.em_verbose},
+            )
+
         if self.optical_physics and self.cerenkov_track_secondaries_first:
             add_control(
                 "cerenkov_track_secondaries_first",
@@ -3533,6 +3550,12 @@ class EnvironmentState:
         if isinstance(em_polarisation, str):
             em_polarisation = em_polarisation.strip().lower() in {'true', '1', 'yes', 'on'}
 
+        em_verbose = data.get('em_verbose', 0)
+        try:
+            em_verbose = int(em_verbose)
+        except (TypeError, ValueError):
+            em_verbose = 0
+
         cerenkov_track_secondaries_first = data.get('cerenkov_track_secondaries_first', False)
         if isinstance(cerenkov_track_secondaries_first, str):
             cerenkov_track_secondaries_first = cerenkov_track_secondaries_first.strip().lower() in {'true', '1', 'yes', 'on'}
@@ -3579,7 +3602,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, cerenkov_track_secondaries_first, scintillation_track_secondaries_first, cerenkov_stack_photons, scintillation_stack_photons)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, em_verbose, cerenkov_track_secondaries_first, scintillation_track_secondaries_first, cerenkov_stack_photons, scintillation_stack_photons)
 
 
 class ScoringState:

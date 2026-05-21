@@ -670,6 +670,7 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
         "em_integral": False,
         "em_use_saturation": False,
         "em_polarisation": False,
+        "em_verbose": 0,
         "cerenkov_track_secondaries_first": False,
         "scintillation_track_secondaries_first": False,
         "cerenkov_stack_photons": True,
