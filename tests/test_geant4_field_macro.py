@@ -66,6 +66,7 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "cerenkov_stack_photons": True,
         "scintillation_stack_photons": True,
         "cerenkov_max_beta_change": 0.0,
+        "scintillation_track_info": False,
     }
 
     state = GeometryState()

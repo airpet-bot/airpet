@@ -2978,6 +2978,7 @@ class EnvironmentState:
         cerenkov_stack_photons=True,
         scintillation_stack_photons=True,
         cerenkov_max_beta_change=0.0,
+        scintillation_track_info=False,
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
@@ -3009,6 +3010,7 @@ class EnvironmentState:
         self.cerenkov_stack_photons = bool(cerenkov_stack_photons)
         self.scintillation_stack_photons = bool(scintillation_stack_photons)
         self.cerenkov_max_beta_change = float(cerenkov_max_beta_change) if cerenkov_max_beta_change is not None else 0.0
+        self.scintillation_track_info = bool(scintillation_track_info)
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3189,6 +3191,9 @@ class EnvironmentState:
             except (TypeError, ValueError):
                 return False, f"{field_name}.cerenkov_max_beta_change must be a number."
 
+        if 'scintillation_track_info' in data and not isinstance(data['scintillation_track_info'], bool):
+            return False, f"{field_name}.scintillation_track_info must be a boolean."
+
         return True, None
 
     def to_dict(self):
@@ -3222,6 +3227,7 @@ class EnvironmentState:
             "cerenkov_stack_photons": self.cerenkov_stack_photons,
             "scintillation_stack_photons": self.scintillation_stack_photons,
             "cerenkov_max_beta_change": self.cerenkov_max_beta_change,
+            "scintillation_track_info": self.scintillation_track_info,
         }
 
     def to_summary_dict(self):
@@ -3451,6 +3457,14 @@ class EnvironmentState:
                 {"cerenkov_max_beta_change": self.cerenkov_max_beta_change},
             )
 
+        if self.optical_physics and self.scintillation_track_info:
+            add_control(
+                "scintillation_track_info",
+                "Scintillation track info",
+                "Scintillation track info: enabled",
+                {"scintillation_track_info": True},
+            )
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3595,6 +3609,10 @@ class EnvironmentState:
         except (TypeError, ValueError):
             cerenkov_max_beta_change = 0.0
 
+        scintillation_track_info = data.get('scintillation_track_info', False)
+        if isinstance(scintillation_track_info, str):
+            scintillation_track_info = scintillation_track_info.strip().lower() in {'true', '1', 'yes', 'on'}
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3625,7 +3643,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, em_verbose, cerenkov_track_secondaries_first, scintillation_track_secondaries_first, cerenkov_stack_photons, scintillation_stack_photons, cerenkov_max_beta_change)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, em_verbose, cerenkov_track_secondaries_first, scintillation_track_secondaries_first, cerenkov_stack_photons, scintillation_stack_photons, cerenkov_max_beta_change, scintillation_track_info)
 
 
 class ScoringState:

@@ -10065,6 +10065,7 @@ class ProjectManager:
             cerenkov_stack = temp_state.environment.cerenkov_stack_photons
             scint_stack = temp_state.environment.scintillation_stack_photons
             cerenkov_max_beta_change = temp_state.environment.cerenkov_max_beta_change
+            scint_track_info = temp_state.environment.scintillation_track_info
             macro_content.append("# --- Optical Process Parameters ---")
             macro_content.append(
                 f"/process/optical/boundary/setInvokeSD {str(invoke_sd).lower()}"
@@ -10100,6 +10101,10 @@ class ProjectManager:
             if cerenkov_max_beta_change > 0.0:
                 macro_content.append(
                     f"/process/optical/cerenkov/setMaxBetaChange {cerenkov_max_beta_change:.12g}"
+                )
+            if scint_track_info:
+                macro_content.append(
+                    "/process/optical/scintillation/setTrackInfo true"
                 )
             macro_content.append("")
 
