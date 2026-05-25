@@ -10036,25 +10036,9 @@ class ProjectManager:
             macro_content.append("# No border surfaces defined.")
         macro_content.append("")
 
-        # --- Initialize ---
-        macro_content.append("/run/initialize")
-        macro_content.append("")
-
-        # --- Process Inactivation ---
-        process_inactivation = temp_state.environment.process_inactivation
-        if process_inactivation:
-            macro_content.append("# --- Process Inactivation ---")
-            for entry in process_inactivation:
-                process_name = entry.get("process_name")
-                particle = entry.get("particle")
-                if process_name:
-                    if particle:
-                        macro_content.append(f"/process/inactivate {process_name} {particle}")
-                    else:
-                        macro_content.append(f"/process/inactivate {process_name}")
-            macro_content.append("")
-
         # --- Optical Process Parameters ---
+        # Emit process-parameter commands before /run/initialize so PreInit-only
+        # Geant4 commands are accepted and affect physics construction.
         if temp_state.environment.optical_physics:
             invoke_sd = temp_state.environment.optical_boundary_invoke_sd
             cerenkov_max = temp_state.environment.cerenkov_max_photons
@@ -10157,6 +10141,24 @@ class ProjectManager:
                 macro_content.append(f"/process/em/verbose {em_verbose}")
             if not lpm:
                 macro_content.append("/process/eLoss/LPM false")
+            macro_content.append("")
+
+        # --- Initialize ---
+        macro_content.append("/run/initialize")
+        macro_content.append("")
+
+        # --- Process Inactivation ---
+        process_inactivation = temp_state.environment.process_inactivation
+        if process_inactivation:
+            macro_content.append("# --- Process Inactivation ---")
+            for entry in process_inactivation:
+                process_name = entry.get("process_name")
+                particle = entry.get("particle")
+                if process_name:
+                    if particle:
+                        macro_content.append(f"/process/inactivate {process_name} {particle}")
+                    else:
+                        macro_content.append(f"/process/inactivate {process_name}")
             macro_content.append("")
 
         # --- Scoring Meshes ---

@@ -74,7 +74,7 @@ def test_generate_macro_emits_em_apply_cuts_when_true(tmp_path):
     assert "/run/initialize" in macro_text
     init_index = macro_text.index("/run/initialize")
     em_index = macro_text.index("# --- EM Process Parameters ---")
-    assert em_index > init_index
+    assert em_index < init_index
     assert "/process/em/applyCuts true" in macro_text
     assert "/process/eLoss/fluct false" not in macro_text
 
@@ -103,7 +103,7 @@ def test_generate_macro_emits_eloss_fluct_when_false(tmp_path):
     assert "/run/initialize" in macro_text
     init_index = macro_text.index("/run/initialize")
     em_index = macro_text.index("# --- EM Process Parameters ---")
-    assert em_index > init_index
+    assert em_index < init_index
     assert "/process/eLoss/fluct false" in macro_text
     assert "/process/em/applyCuts true" not in macro_text
 

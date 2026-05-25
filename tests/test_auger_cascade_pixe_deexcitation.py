@@ -86,7 +86,7 @@ def test_generate_macro_emits_auger_cascade_when_true(tmp_path):
     assert "/run/initialize" in macro_text
     init_index = macro_text.index("/run/initialize")
     em_index = macro_text.index("# --- EM Process Parameters ---")
-    assert em_index > init_index
+    assert em_index < init_index
     assert "/process/em/augerCascade true" in macro_text
     assert "/process/em/pixe true" not in macro_text
     assert "/process/em/deexcitationIgnoreCut true" not in macro_text
@@ -117,7 +117,7 @@ def test_generate_macro_emits_pixe_when_true(tmp_path):
     assert "/run/initialize" in macro_text
     init_index = macro_text.index("/run/initialize")
     em_index = macro_text.index("# --- EM Process Parameters ---")
-    assert em_index > init_index
+    assert em_index < init_index
     assert "/process/em/pixe true" in macro_text
     assert "/process/em/augerCascade true" not in macro_text
     assert "/process/em/deexcitationIgnoreCut true" not in macro_text
@@ -148,7 +148,7 @@ def test_generate_macro_emits_deexcitation_ignore_cut_when_true(tmp_path):
     assert "/run/initialize" in macro_text
     init_index = macro_text.index("/run/initialize")
     em_index = macro_text.index("# --- EM Process Parameters ---")
-    assert em_index > init_index
+    assert em_index < init_index
     assert "/process/em/deexcitationIgnoreCut true" in macro_text
     assert "/process/em/augerCascade true" not in macro_text
     assert "/process/em/pixe true" not in macro_text

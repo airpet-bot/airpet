@@ -66,7 +66,7 @@ def test_generate_macro_emits_em_verbose_when_positive(tmp_path):
     assert "/run/initialize" in macro_text
     init_index = macro_text.index("/run/initialize")
     em_index = macro_text.index("# --- EM Process Parameters ---")
-    assert em_index > init_index
+    assert em_index < init_index
     assert "/process/em/verbose 2" in macro_text
 
 

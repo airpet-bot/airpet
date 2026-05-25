@@ -74,7 +74,7 @@ def test_generate_macro_emits_fluo_when_true(tmp_path):
     assert "/run/initialize" in macro_text
     init_index = macro_text.index("/run/initialize")
     em_index = macro_text.index("# --- EM Process Parameters ---")
-    assert em_index > init_index
+    assert em_index < init_index
     assert "/process/em/fluo true" in macro_text
     assert "/process/em/auger true" not in macro_text
 
@@ -103,7 +103,7 @@ def test_generate_macro_emits_auger_when_true(tmp_path):
     assert "/run/initialize" in macro_text
     init_index = macro_text.index("/run/initialize")
     em_index = macro_text.index("# --- EM Process Parameters ---")
-    assert em_index > init_index
+    assert em_index < init_index
     assert "/process/em/auger true" in macro_text
     assert "/process/em/fluo true" not in macro_text
 
