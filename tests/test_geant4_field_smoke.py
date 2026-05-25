@@ -1,12 +1,11 @@
 import os
 import subprocess
-import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
-sys.modules["src.step_parser"] = MagicMock()
+# ProjectManager imports src.step_parser at module import time.
+pytest.importorskip("OCC.Core.STEPControl")
 
 from src.expression_evaluator import ExpressionEvaluator
 from src.geometry_types import Material

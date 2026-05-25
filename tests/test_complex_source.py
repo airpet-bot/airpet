@@ -1,29 +1,28 @@
 import unittest
 import os
 import sys
-import json
 import tempfile
-from io import BytesIO
+
+import pytest
 
 # Add root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Mock src.step_parser to avoid OCC dependency
-from unittest.mock import MagicMock
-sys.modules['src.step_parser'] = MagicMock()
+# ProjectManager imports src.step_parser at module import time.
+pytest.importorskip("OCC.Core.STEPControl")
 
 from src.project_manager import ProjectManager, GeometryState, ParticleSource
+from src.expression_evaluator import ExpressionEvaluator
 
 class TestComplexSource(unittest.TestCase):
     def setUp(self):
-        mock_evaluator = MagicMock()
-        self.pm = ProjectManager(mock_evaluator)
+        self.pm = ProjectManager(ExpressionEvaluator())
         self.pm.create_empty_project()
         
     def test_multiple_sources_macro(self):
         # Create two sources
-        source1 = ParticleSource("Source1", gps_commands={"particle": "gamma", "energy": "511 keV"}, intensity=1.0)
-        source2 = ParticleSource("Source2", gps_commands={"particle": "e+", "energy": "1 MeV"}, intensity=0.5)
+        source1 = ParticleSource("Source1", gps_commands={"particle": "gamma", "energy": "511 keV"}, activity=1.0)
+        source2 = ParticleSource("Source2", gps_commands={"particle": "e+", "energy": "1 MeV"}, activity=0.5)
         
         self.pm.current_geometry_state.add_source(source1)
         self.pm.current_geometry_state.add_source(source2)
@@ -34,9 +33,9 @@ class TestComplexSource(unittest.TestCase):
         
         # Generate macro
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Create dummy version.json
+            # generate_macro_file reads the saved project snapshot from version.json.
             with open(os.path.join(tmpdir, 'version.json'), 'w') as f:
-                json.dump({"version": "1.0"}, f)
+                f.write(self.pm.save_project_to_json_string())
 
             macro_path = self.pm.generate_macro_file("test_job", {}, tmpdir, tmpdir, tmpdir)
             
@@ -46,8 +45,8 @@ class TestComplexSource(unittest.TestCase):
             print(content)
             
             # Verify content
-            self.assertIn("/gps/source/intensity 1.0", content)
-            self.assertIn("/gps/source/add 0.5", content)
+            self.assertIn("/gps/source/intensity 0.6666666666666666", content)
+            self.assertIn("/gps/source/add 0.3333333333333333", content)
             self.assertIn("# Source: Source1", content)
             self.assertIn("# Source: Source2", content)
             self.assertIn("/gps/particle gamma", content)
@@ -88,7 +87,7 @@ class TestComplexSource(unittest.TestCase):
         for s in state.sources.values():
             if s.name.startswith("PhantomSource1"):
                 source_found = True
-                self.assertEqual(s.intensity, 2.0)
+                self.assertEqual(s.activity, 2.0)
                 # The source should be activated
                 self.assertIn(s.id, state.active_source_ids)
                 break

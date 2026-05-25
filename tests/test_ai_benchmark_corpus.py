@@ -22,14 +22,14 @@ def _ensure_stub(module_name, **attrs):
     return module
 
 
-_ensure_stub(
+_requests_stub = _ensure_stub(
     "requests",
     get=lambda *args, **kwargs: None,
     post=lambda *args, **kwargs: None,
 )
-if "requests" in sys.modules:
+if _requests_stub is not None:
     _requests_exc = type("_RequestsExc", (Exception,), {})
-    sys.modules["requests"].exceptions = types.SimpleNamespace(
+    _requests_stub.exceptions = types.SimpleNamespace(
         RequestException=_requests_exc,
         ConnectTimeout=_requests_exc,
         ReadTimeout=_requests_exc,
