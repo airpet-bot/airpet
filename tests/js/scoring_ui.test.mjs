@@ -84,6 +84,8 @@ test('saved scoring run controls normalize cleanly and drive resolved simulation
         hits_verbose: 0,
         run_verbose: 0,
         event_verbose: 0,
+        event_modulo_n: 0,
+        event_modulo_seed_once: 0,
     });
 
     const described = describeScoringRunControls(projectState.scoring);
@@ -117,6 +119,8 @@ test('saved scoring run controls normalize cleanly and drive resolved simulation
         hits_verbose: 0,
         run_verbose: 0,
         event_verbose: 0,
+        event_modulo_n: 0,
+        event_modulo_seed_once: 0,
         save_tracks_range: '12-18',
         physics_list: 'QGSP_BERT',
         optical_physics: true,

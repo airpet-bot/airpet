@@ -10554,6 +10554,10 @@ class ProjectManager:
         macro_content.append("\n# --- Start Simulation ---")
         if threads > 1:
             macro_content.append(f"/run/numberOfThreads {threads}")
+        event_modulo_n = resolved_run_manifest.get('event_modulo_n', 0)
+        event_modulo_seed_once = resolved_run_manifest.get('event_modulo_seed_once', 0)
+        if event_modulo_n > 0 or event_modulo_seed_once > 0:
+            macro_content.append(f"/run/eventModulo {event_modulo_n} {event_modulo_seed_once}")
         macro_content.append(f"/run/beamOn {num_events}")
 
         # 3. Write the macro file

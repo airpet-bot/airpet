@@ -38,6 +38,8 @@ export const SCORING_SAVED_RUN_CONTROL_KEYS = [
     'hits_verbose',
     'run_verbose',
     'event_verbose',
+    'event_modulo_n',
+    'event_modulo_seed_once',
 ];
 
 const DEFAULT_RUN_MANIFEST_DEFAULTS = {
@@ -55,6 +57,8 @@ const DEFAULT_RUN_MANIFEST_DEFAULTS = {
     hits_verbose: 0,
     run_verbose: 0,
     event_verbose: 0,
+    event_modulo_n: 0,
+    event_modulo_seed_once: 0,
 };
 
 const DEFAULT_TRANSIENT_SIMULATION_OPTIONS = {
@@ -220,6 +224,14 @@ function normalizeRunManifestDefaults(rawDefaults) {
         event_verbose: normalizeNonNegativeInt(
             defaults.event_verbose,
             DEFAULT_RUN_MANIFEST_DEFAULTS.event_verbose,
+        ),
+        event_modulo_n: normalizeNonNegativeInt(
+            defaults.event_modulo_n,
+            DEFAULT_RUN_MANIFEST_DEFAULTS.event_modulo_n,
+        ),
+        event_modulo_seed_once: normalizeNonNegativeInt(
+            defaults.event_modulo_seed_once,
+            DEFAULT_RUN_MANIFEST_DEFAULTS.event_modulo_seed_once,
         ),
     };
 }

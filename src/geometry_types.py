@@ -302,6 +302,8 @@ def _default_scoring_run_manifest_defaults():
         "hits_verbose": 0,
         "run_verbose": 0,
         "event_verbose": 0,
+        "event_modulo_n": 0,
+        "event_modulo_seed_once": 0,
     }
 
 
@@ -893,6 +895,16 @@ def _normalize_scoring_run_manifest_defaults(raw_defaults):
             raw_defaults.get("event_verbose", defaults["event_verbose"]),
             defaults["event_verbose"],
             "scoring.run_manifest_defaults.event_verbose",
+        ),
+        "event_modulo_n": _normalize_non_negative_int(
+            raw_defaults.get("event_modulo_n", defaults["event_modulo_n"]),
+            defaults["event_modulo_n"],
+            "scoring.run_manifest_defaults.event_modulo_n",
+        ),
+        "event_modulo_seed_once": _normalize_non_negative_int(
+            raw_defaults.get("event_modulo_seed_once", defaults["event_modulo_seed_once"]),
+            defaults["event_modulo_seed_once"],
+            "scoring.run_manifest_defaults.event_modulo_seed_once",
         ),
     }
 

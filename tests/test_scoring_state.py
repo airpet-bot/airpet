@@ -95,6 +95,8 @@ def test_scoring_state_defaults_and_roundtrip():
             "hits_verbose": 0,
             "run_verbose": 0,
             "event_verbose": 0,
+            "event_modulo_n": 0,
+            "event_modulo_seed_once": 0,
         },
     }
     assert state.to_dict()["scoring"] == state.scoring.to_dict()
@@ -135,6 +137,8 @@ def test_scoring_state_defaults_and_roundtrip():
             "hits_verbose": 0,
             "run_verbose": 0,
             "event_verbose": 0,
+            "event_modulo_n": 0,
+            "event_modulo_seed_once": 0,
         },
     }
 
@@ -175,11 +179,13 @@ def test_scoring_state_defaults_and_roundtrip():
         "save_particles": True,
         "production_cut": "0.25 mm",
         "hit_energy_threshold": "5 eV",
-        "tracking_verbose": 0,
-        "hits_verbose": 0,
-        "run_verbose": 0,
-        "event_verbose": 0,
-    }
+            "tracking_verbose": 0,
+            "hits_verbose": 0,
+            "run_verbose": 0,
+            "event_verbose": 0,
+            "event_modulo_n": 0,
+            "event_modulo_seed_once": 0,
+        }
     assert loaded.scoring.to_summary_dict() == {
         "has_configured_scoring": True,
         "scoring_mesh_count": 1,
@@ -348,6 +354,8 @@ def test_update_object_property_replaces_saved_scoring_state_and_syncs_tallies()
             "hits_verbose": 0,
             "run_verbose": 0,
             "event_verbose": 0,
+            "event_modulo_n": 0,
+            "event_modulo_seed_once": 0,
         },
     }
 
@@ -411,6 +419,8 @@ def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest
             "hits_verbose": 0,
             "run_verbose": 0,
             "event_verbose": 0,
+            "event_modulo_n": 0,
+            "event_modulo_seed_once": 0,
         },
     }
 
@@ -460,6 +470,8 @@ def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest
         "hits_verbose": 0,
         "run_verbose": 0,
         "event_verbose": 0,
+        "event_modulo_n": 0,
+        "event_modulo_seed_once": 0,
     }
     assert metadata["scoring"] == state.scoring.to_dict()
     assert metadata["scoring_summary"] == state.scoring.to_summary_dict()
