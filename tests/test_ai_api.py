@@ -862,6 +862,9 @@ def test_ai_tool_update_property_and_get_component_details_cover_scoring_state(p
                 "reference_frame": "world",
                 "geometry": {
                     "center_mm": {"x": 1.0, "y": -2.0, "z": 3.5},
+                    "rotate_x_deg": 0.0,
+                    "rotate_y_deg": 0.0,
+                    "rotate_z_deg": 0.0,
                     "size_mm": {"x": 20.0, "y": 10.0, "z": 5.0},
                 },
                 "bins": {"x": 4, "y": 2, "z": 1},

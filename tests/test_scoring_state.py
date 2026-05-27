@@ -162,6 +162,9 @@ def test_scoring_state_defaults_and_roundtrip():
     assert mesh["reference_frame"] == "world"
     assert mesh["geometry"] == {
         "center_mm": {"x": 1.5, "y": -2.0, "z": 0.0},
+        "rotate_x_deg": 0.0,
+        "rotate_y_deg": 0.0,
+        "rotate_z_deg": 0.0,
         "size_mm": {"x": 20.0, "y": 10.0, "z": 5.5},
     }
     assert mesh["bins"] == {"x": 12, "y": 6, "z": 3}
@@ -253,6 +256,9 @@ def test_scoring_state_validation_and_invalid_entries_default_cleanly():
             "reference_frame": "world",
             "geometry": {
                 "center_mm": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "rotate_x_deg": 0.0,
+                "rotate_y_deg": 0.0,
+                "rotate_z_deg": 0.0,
                 "size_mm": {"x": 12.0, "y": 8.0, "z": 4.0},
             },
             "bins": {"x": 4, "y": 4, "z": 2},
@@ -322,6 +328,9 @@ def test_update_object_property_replaces_saved_scoring_state_and_syncs_tallies()
                 "reference_frame": "world",
                 "geometry": {
                     "center_mm": {"x": 1.0, "y": 2.0, "z": 3.0},
+                    "rotate_x_deg": 0.0,
+                    "rotate_y_deg": 0.0,
+                    "rotate_z_deg": 0.0,
                     "size_mm": {"x": 40.0, "y": 20.0, "z": 10.0},
                 },
                 "bins": {"x": 8, "y": 4, "z": 2},

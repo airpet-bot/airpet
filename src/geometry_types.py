@@ -463,6 +463,21 @@ def _normalize_scoring_mesh_entry(raw_entry):
                     "scoring.scoring_meshes[].geometry.center_mm.z",
                 ),
             },
+            "rotate_x_deg": _normalize_float(
+                geometry.get("rotate_x_deg"),
+                0.0,
+                "scoring.scoring_meshes[].geometry.rotate_x_deg",
+            ),
+            "rotate_y_deg": _normalize_float(
+                geometry.get("rotate_y_deg"),
+                0.0,
+                "scoring.scoring_meshes[].geometry.rotate_y_deg",
+            ),
+            "rotate_z_deg": _normalize_float(
+                geometry.get("rotate_z_deg"),
+                0.0,
+                "scoring.scoring_meshes[].geometry.rotate_z_deg",
+            ),
         },
         "bins": {},
     }

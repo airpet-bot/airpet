@@ -144,6 +144,9 @@ function normalizeScoringMesh(rawMesh, index = 0) {
                 y: normalizeFiniteNumber(mesh?.geometry?.center_mm?.y, 0),
                 z: normalizeFiniteNumber(mesh?.geometry?.center_mm?.z, 0),
             },
+            rotate_x_deg: normalizeFiniteNumber(mesh?.geometry?.rotate_x_deg, 0),
+            rotate_y_deg: normalizeFiniteNumber(mesh?.geometry?.rotate_y_deg, 0),
+            rotate_z_deg: normalizeFiniteNumber(mesh?.geometry?.rotate_z_deg, 0),
             size_mm: {
                 x: normalizePositiveNumber(mesh?.geometry?.size_mm?.x, 10),
                 y: normalizePositiveNumber(mesh?.geometry?.size_mm?.y, 10),

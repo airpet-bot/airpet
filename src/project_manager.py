@@ -10277,6 +10277,16 @@ class ProjectManager:
                     )
                     macro_content.append(f"/score/mesh/nBin {nx} {ny} {nz}")
 
+                rx = float(geo.get("rotate_x_deg", 0.0))
+                ry = float(geo.get("rotate_y_deg", 0.0))
+                rz = float(geo.get("rotate_z_deg", 0.0))
+                if rx != 0.0:
+                    macro_content.append(f"/score/mesh/rotate/rotateX {rx:.12g} deg")
+                if ry != 0.0:
+                    macro_content.append(f"/score/mesh/rotate/rotateY {ry:.12g} deg")
+                if rz != 0.0:
+                    macro_content.append(f"/score/mesh/rotate/rotateZ {rz:.12g} deg")
+
                 mesh_tallies = tally_by_mesh.get(mesh.get("mesh_id"), [])
                 if mesh_tallies:
                     for tally in mesh_tallies:
