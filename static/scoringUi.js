@@ -41,6 +41,7 @@ export const SCORING_SAVED_RUN_CONTROL_KEYS = [
     'event_modulo_n',
     'event_modulo_seed_once',
     'use_maximum_logical_cores',
+    'particle_production_cuts',
 ];
 
 const DEFAULT_RUN_MANIFEST_DEFAULTS = {
@@ -61,6 +62,7 @@ const DEFAULT_RUN_MANIFEST_DEFAULTS = {
     event_modulo_n: 0,
     event_modulo_seed_once: 0,
     use_maximum_logical_cores: false,
+    particle_production_cuts: [],
 };
 
 const DEFAULT_TRANSIENT_SIMULATION_OPTIONS = {
@@ -239,6 +241,20 @@ function normalizeRunManifestDefaults(rawDefaults) {
             defaults.use_maximum_logical_cores,
             DEFAULT_RUN_MANIFEST_DEFAULTS.use_maximum_logical_cores,
         ),
+        particle_production_cuts: (() => {
+            const raw = defaults.particle_production_cuts;
+            if (!Array.isArray(raw)) {
+                return [];
+            }
+            return raw
+                .filter((entry) => entry && typeof entry === 'object')
+                .map((entry) => ({
+                    particle_name: normalizeString(entry.particle_name, ''),
+                    cut: normalizeFiniteNumber(entry.cut, 0),
+                    unit: normalizeString(entry.unit, 'mm'),
+                }))
+                .filter((entry) => entry.particle_name !== '');
+        })(),
     };
 }
 
@@ -587,7 +603,15 @@ export function buildSimulationOptionOverrides(projectState, rawOptions = {}) {
     const overrides = {};
 
     SCORING_SAVED_RUN_CONTROL_KEYS.forEach((key) => {
-        if (resolvedOptions[key] !== scoringState.run_manifest_defaults[key]) {
+        const a = resolvedOptions[key];
+        const b = scoringState.run_manifest_defaults[key];
+        let differs = false;
+        if (Array.isArray(a) && Array.isArray(b)) {
+            differs = a.length !== b.length || JSON.stringify(a) !== JSON.stringify(b);
+        } else {
+            differs = a !== b;
+        }
+        if (differs) {
             overrides[key] = resolvedOptions[key];
         }
     });

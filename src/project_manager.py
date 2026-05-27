@@ -10342,6 +10342,16 @@ class ProjectManager:
         macro_content.append("# --- Physics Cuts for Performance ---")
         production_cut = str(resolved_run_manifest.get('production_cut') or '1.0 mm').strip()
         macro_content.append(f"/run/setCut {production_cut}")
+        particle_production_cuts = resolved_run_manifest.get('particle_production_cuts', [])
+        if particle_production_cuts:
+            for cut_entry in particle_production_cuts:
+                particle_name = cut_entry.get('particle_name', '')
+                cut_value = cut_entry.get('cut', 0.0)
+                unit = cut_entry.get('unit', 'mm')
+                if particle_name:
+                    macro_content.append(
+                        f"/run/setCutForAGivenParticle {particle_name} {float(cut_value):.12g} {unit}"
+                    )
         macro_content.append("")
 
         # --- Add commands to control n-tuple saving ---

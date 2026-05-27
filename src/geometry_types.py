@@ -286,6 +286,46 @@ def _normalize_detector_feature_material_ref(value, field_name):
     return normalized
 
 
+def _normalize_particle_production_cuts(raw_cuts):
+    if raw_cuts is None:
+        return []
+    if not isinstance(raw_cuts, list):
+        raise ValueError("scoring.run_manifest_defaults.particle_production_cuts must be an array.")
+
+    normalized_cuts = []
+    for index, raw_entry in enumerate(raw_cuts):
+        if not isinstance(raw_entry, dict):
+            raise ValueError(
+                f"scoring.run_manifest_defaults.particle_production_cuts[{index}] must be an object."
+            )
+        particle_name = _normalize_non_empty_string(raw_entry.get("particle_name"))
+        if not particle_name:
+            raise ValueError(
+                f"scoring.run_manifest_defaults.particle_production_cuts[{index}].particle_name "
+                "must be a non-empty string."
+            )
+        raw_cut = raw_entry.get("cut")
+        try:
+            cut_value = float(raw_cut)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"scoring.run_manifest_defaults.particle_production_cuts[{index}].cut "
+                "must be a numeric value."
+            )
+        if cut_value < 0.0:
+            raise ValueError(
+                f"scoring.run_manifest_defaults.particle_production_cuts[{index}].cut "
+                "must be >= 0.0."
+            )
+        unit = _normalize_non_empty_string(raw_entry.get("unit")) or "mm"
+        normalized_cuts.append({
+            "particle_name": particle_name,
+            "cut": cut_value,
+            "unit": unit,
+        })
+    return normalized_cuts
+
+
 def _default_scoring_run_manifest_defaults():
     return {
         "events": 1000,
@@ -305,6 +345,7 @@ def _default_scoring_run_manifest_defaults():
         "event_modulo_n": 0,
         "event_modulo_seed_once": 0,
         "use_maximum_logical_cores": False,
+        "particle_production_cuts": [],
     }
 
 
@@ -911,6 +952,9 @@ def _normalize_scoring_run_manifest_defaults(raw_defaults):
             raw_defaults.get("use_maximum_logical_cores"),
             defaults["use_maximum_logical_cores"],
             "scoring.run_manifest_defaults.use_maximum_logical_cores",
+        ),
+        "particle_production_cuts": _normalize_particle_production_cuts(
+            raw_defaults.get("particle_production_cuts")
         ),
     }
 
