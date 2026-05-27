@@ -304,6 +304,7 @@ def _default_scoring_run_manifest_defaults():
         "event_verbose": 0,
         "event_modulo_n": 0,
         "event_modulo_seed_once": 0,
+        "use_maximum_logical_cores": False,
     }
 
 
@@ -905,6 +906,11 @@ def _normalize_scoring_run_manifest_defaults(raw_defaults):
             raw_defaults.get("event_modulo_seed_once", defaults["event_modulo_seed_once"]),
             defaults["event_modulo_seed_once"],
             "scoring.run_manifest_defaults.event_modulo_seed_once",
+        ),
+        "use_maximum_logical_cores": _normalize_boolean(
+            raw_defaults.get("use_maximum_logical_cores"),
+            defaults["use_maximum_logical_cores"],
+            "scoring.run_manifest_defaults.use_maximum_logical_cores",
         ),
     }
 

@@ -97,6 +97,7 @@ def test_scoring_state_defaults_and_roundtrip():
             "event_verbose": 0,
             "event_modulo_n": 0,
             "event_modulo_seed_once": 0,
+            "use_maximum_logical_cores": False,
         },
     }
     assert state.to_dict()["scoring"] == state.scoring.to_dict()
@@ -139,6 +140,7 @@ def test_scoring_state_defaults_and_roundtrip():
             "event_verbose": 0,
             "event_modulo_n": 0,
             "event_modulo_seed_once": 0,
+            "use_maximum_logical_cores": False,
         },
     }
 
@@ -185,6 +187,7 @@ def test_scoring_state_defaults_and_roundtrip():
             "event_verbose": 0,
             "event_modulo_n": 0,
             "event_modulo_seed_once": 0,
+            "use_maximum_logical_cores": False,
         }
     assert loaded.scoring.to_summary_dict() == {
         "has_configured_scoring": True,
@@ -356,6 +359,7 @@ def test_update_object_property_replaces_saved_scoring_state_and_syncs_tallies()
             "event_verbose": 0,
             "event_modulo_n": 0,
             "event_modulo_seed_once": 0,
+            "use_maximum_logical_cores": False,
         },
     }
 
@@ -421,6 +425,7 @@ def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest
             "event_verbose": 0,
             "event_modulo_n": 0,
             "event_modulo_seed_once": 0,
+            "use_maximum_logical_cores": False,
         },
     }
 
@@ -472,6 +477,7 @@ def test_generate_macro_records_scoring_contract_and_resolves_saved_run_manifest
         "event_verbose": 0,
         "event_modulo_n": 0,
         "event_modulo_seed_once": 0,
+        "use_maximum_logical_cores": False,
     }
     assert metadata["scoring"] == state.scoring.to_dict()
     assert metadata["scoring_summary"] == state.scoring.to_summary_dict()

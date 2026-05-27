@@ -10558,6 +10558,9 @@ class ProjectManager:
         event_modulo_seed_once = resolved_run_manifest.get('event_modulo_seed_once', 0)
         if event_modulo_n > 0 or event_modulo_seed_once > 0:
             macro_content.append(f"/run/eventModulo {event_modulo_n} {event_modulo_seed_once}")
+        use_maximum_logical_cores = resolved_run_manifest.get('use_maximum_logical_cores', False)
+        if use_maximum_logical_cores:
+            macro_content.append("/run/useMaximumLogicalCores")
         macro_content.append(f"/run/beamOn {num_events}")
 
         # 3. Write the macro file

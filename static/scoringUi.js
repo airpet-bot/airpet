@@ -40,6 +40,7 @@ export const SCORING_SAVED_RUN_CONTROL_KEYS = [
     'event_verbose',
     'event_modulo_n',
     'event_modulo_seed_once',
+    'use_maximum_logical_cores',
 ];
 
 const DEFAULT_RUN_MANIFEST_DEFAULTS = {
@@ -59,6 +60,7 @@ const DEFAULT_RUN_MANIFEST_DEFAULTS = {
     event_verbose: 0,
     event_modulo_n: 0,
     event_modulo_seed_once: 0,
+    use_maximum_logical_cores: false,
 };
 
 const DEFAULT_TRANSIENT_SIMULATION_OPTIONS = {
@@ -232,6 +234,10 @@ function normalizeRunManifestDefaults(rawDefaults) {
         event_modulo_seed_once: normalizeNonNegativeInt(
             defaults.event_modulo_seed_once,
             DEFAULT_RUN_MANIFEST_DEFAULTS.event_modulo_seed_once,
+        ),
+        use_maximum_logical_cores: normalizeBoolean(
+            defaults.use_maximum_logical_cores,
+            DEFAULT_RUN_MANIFEST_DEFAULTS.use_maximum_logical_cores,
         ),
     };
 }
