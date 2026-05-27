@@ -80,6 +80,8 @@ def test_field_aware_silicon_starter_saves_explicit_fields():
         "wls_time_profile": "",
         "wls2_time_profile": "",
         "lpm": True,
+        "msc_lateral_displacement": True,
+        "msc_mu_had_lateral_displacement": True,
     }
 
     assert pm.current_geometry_state.param_studies["si_first_run"]["parameters"] == ["si_thickness", "src_z"]

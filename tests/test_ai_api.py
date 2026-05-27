@@ -680,6 +680,8 @@ def test_ai_tool_update_property_and_get_component_details_cover_environment_fie
         "wls_time_profile": "",
         "wls2_time_profile": "",
         "lpm": True,
+        "msc_lateral_displacement": True,
+        "msc_mu_had_lateral_displacement": True,
     }
 
     res = dispatch_ai_tool(pm, "update_property", {

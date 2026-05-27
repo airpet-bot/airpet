@@ -70,6 +70,8 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "wls_time_profile": "",
         "wls2_time_profile": "",
         "lpm": True,
+        "msc_lateral_displacement": True,
+        "msc_mu_had_lateral_displacement": True,
     }
 
     state = GeometryState()
