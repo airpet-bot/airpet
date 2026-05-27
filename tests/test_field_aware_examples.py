@@ -82,6 +82,8 @@ def test_field_aware_silicon_starter_saves_explicit_fields():
         "lpm": True,
         "msc_lateral_displacement": True,
         "msc_mu_had_lateral_displacement": True,
+        "msc_step_limit": "",
+        "msc_step_limit_mu_had": "",
     }
 
     assert pm.current_geometry_state.param_studies["si_first_run"]["parameters"] == ["si_thickness", "src_z"]

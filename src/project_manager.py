@@ -10117,7 +10117,9 @@ class ProjectManager:
         lpm = temp_state.environment.lpm
         msc_lateral_displacement = temp_state.environment.msc_lateral_displacement
         msc_mu_had_lateral_displacement = temp_state.environment.msc_mu_had_lateral_displacement
-        if em_apply_cuts or not eloss_fluct or fluo or auger or auger_cascade or pixe or deexcitation_ignore_cut or em_integral or em_use_saturation or em_polarisation or em_verbose > 0 or not lpm or not msc_lateral_displacement or not msc_mu_had_lateral_displacement:
+        msc_step_limit = temp_state.environment.msc_step_limit
+        msc_step_limit_mu_had = temp_state.environment.msc_step_limit_mu_had
+        if em_apply_cuts or not eloss_fluct or fluo or auger or auger_cascade or pixe or deexcitation_ignore_cut or em_integral or em_use_saturation or em_polarisation or em_verbose > 0 or not lpm or not msc_lateral_displacement or not msc_mu_had_lateral_displacement or msc_step_limit or msc_step_limit_mu_had:
             macro_content.append("# --- EM Process Parameters ---")
             if em_apply_cuts:
                 macro_content.append("/process/em/applyCuts true")
@@ -10147,6 +10149,10 @@ class ProjectManager:
                 macro_content.append("/process/msc/LateralDisplacement false")
             if not msc_mu_had_lateral_displacement:
                 macro_content.append("/process/msc/MuHadLateralDisplacement false")
+            if msc_step_limit:
+                macro_content.append(f"/process/msc/StepLimit {msc_step_limit}")
+            if msc_step_limit_mu_had:
+                macro_content.append(f"/process/msc/StepLimitMuHad {msc_step_limit_mu_had}")
             macro_content.append("")
 
         # --- Initialize ---

@@ -72,6 +72,8 @@ def test_generate_macro_threads_saved_global_field_into_runtime_initialization(t
         "lpm": True,
         "msc_lateral_displacement": True,
         "msc_mu_had_lateral_displacement": True,
+        "msc_step_limit": "",
+        "msc_step_limit_mu_had": "",
     }
 
     state = GeometryState()

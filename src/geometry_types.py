@@ -2984,6 +2984,8 @@ class EnvironmentState:
         lpm=True,
         msc_lateral_displacement=True,
         msc_mu_had_lateral_displacement=True,
+        msc_step_limit="",
+        msc_step_limit_mu_had="",
     ):
         self.optical_physics = bool(optical_physics)
         self.optical_boundary_invoke_sd = bool(optical_boundary_invoke_sd)
@@ -3021,6 +3023,8 @@ class EnvironmentState:
         self.lpm = bool(lpm)
         self.msc_lateral_displacement = bool(msc_lateral_displacement)
         self.msc_mu_had_lateral_displacement = bool(msc_mu_had_lateral_displacement)
+        self.msc_step_limit = str(msc_step_limit) if msc_step_limit else ""
+        self.msc_step_limit_mu_had = str(msc_step_limit_mu_had) if msc_step_limit_mu_had else ""
         if isinstance(global_uniform_magnetic_field, GlobalUniformMagneticField):
             self.global_uniform_magnetic_field = global_uniform_magnetic_field
         else:
@@ -3219,6 +3223,12 @@ class EnvironmentState:
         if 'msc_mu_had_lateral_displacement' in data and not isinstance(data['msc_mu_had_lateral_displacement'], bool):
             return False, f"{field_name}.msc_mu_had_lateral_displacement must be a boolean."
 
+        if 'msc_step_limit' in data and not isinstance(data['msc_step_limit'], str):
+            return False, f"{field_name}.msc_step_limit must be a string."
+
+        if 'msc_step_limit_mu_had' in data and not isinstance(data['msc_step_limit_mu_had'], str):
+            return False, f"{field_name}.msc_step_limit_mu_had must be a string."
+
         return True, None
 
     def to_dict(self):
@@ -3258,6 +3268,8 @@ class EnvironmentState:
             "lpm": self.lpm,
             "msc_lateral_displacement": self.msc_lateral_displacement,
             "msc_mu_had_lateral_displacement": self.msc_mu_had_lateral_displacement,
+            "msc_step_limit": self.msc_step_limit,
+            "msc_step_limit_mu_had": self.msc_step_limit_mu_had,
         }
 
     def to_summary_dict(self):
@@ -3535,6 +3547,22 @@ class EnvironmentState:
                 {"msc_mu_had_lateral_displacement": False},
             )
 
+        if self.msc_step_limit:
+            add_control(
+                "msc_step_limit",
+                "MSC step limit",
+                f"MSC step limit: {self.msc_step_limit}",
+                {"msc_step_limit": self.msc_step_limit},
+            )
+
+        if self.msc_step_limit_mu_had:
+            add_control(
+                "msc_step_limit_mu_had",
+                "MSC step limit mu/had",
+                f"MSC step limit mu/had: {self.msc_step_limit_mu_had}",
+                {"msc_step_limit_mu_had": self.msc_step_limit_mu_had},
+            )
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3703,6 +3731,14 @@ class EnvironmentState:
         if isinstance(msc_mu_had_lateral_displacement, str):
             msc_mu_had_lateral_displacement = msc_mu_had_lateral_displacement.strip().lower() in {'true', '1', 'yes', 'on'}
 
+        msc_step_limit = data.get('msc_step_limit', '')
+        if not isinstance(msc_step_limit, str):
+            msc_step_limit = ''
+
+        msc_step_limit_mu_had = data.get('msc_step_limit_mu_had', '')
+        if not isinstance(msc_step_limit_mu_had, str):
+            msc_step_limit_mu_had = ''
+
         try:
             field = GlobalUniformMagneticField.from_dict(field_data)
         except ValueError as exc:
@@ -3733,7 +3769,7 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, em_verbose, cerenkov_track_secondaries_first, scintillation_track_secondaries_first, cerenkov_stack_photons, scintillation_stack_photons, cerenkov_max_beta_change, scintillation_track_info, wls_time_profile, wls2_time_profile, lpm, msc_lateral_displacement, msc_mu_had_lateral_displacement)
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, em_verbose, cerenkov_track_secondaries_first, scintillation_track_secondaries_first, cerenkov_stack_photons, scintillation_stack_photons, cerenkov_max_beta_change, scintillation_track_info, wls_time_profile, wls2_time_profile, lpm, msc_lateral_displacement, msc_mu_had_lateral_displacement, msc_step_limit, msc_step_limit_mu_had)
 
 
 class ScoringState:
