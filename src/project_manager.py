@@ -10550,7 +10550,10 @@ class ProjectManager:
 
         # --- Run Beam On ---
         num_events = resolved_run_manifest.get('events', 1)
+        threads = resolved_run_manifest.get('threads', 1)
         macro_content.append("\n# --- Start Simulation ---")
+        if threads > 1:
+            macro_content.append(f"/run/numberOfThreads {threads}")
         macro_content.append(f"/run/beamOn {num_events}")
 
         # 3. Write the macro file
