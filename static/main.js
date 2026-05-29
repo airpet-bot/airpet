@@ -159,6 +159,21 @@ function bindObjectMenuLaunchers() {
         ensureParamStudyEditorInit();
         await handleOpenParamStudies();
     });
+
+    _bindMenuButtonAction('visualVerificationPacketButton', async () => {
+        const packet = await createVisualVerificationPacket({
+            image_width: 1024,
+            image_height: 768,
+        });
+        const safeProjectName = (AppState.currentProjectName || 'airpet')
+            .replace(/[^a-z0-9_-]+/gi, '_')
+            .replace(/^_+|_+$/g, '') || 'airpet';
+        downloadTextFile(
+            `${safeProjectName}_visual_verification_packet.json`,
+            JSON.stringify(packet, null, 2),
+        );
+        UIManager.showTemporaryStatus('Visual verification packet downloaded.', 2500);
+    });
 }
 
 // --- Initialization ---
@@ -324,6 +339,7 @@ async function initializeApp() {
             };
         }
     });
+    installVisualVerificationHook();
 
     // Initialize the new editor
     GpsEditor.initGpsEditor({
@@ -587,8 +603,10 @@ async function initializeApp() {
  * @param {string} text - The content of the file.
  */
 function downloadTextFile(filename, text) {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = window.URL.createObjectURL(blob);
     const element = document.createElement('a');
-    element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
+    element.setAttribute('href', url);
     element.setAttribute('download', filename);
 
     element.style.display = 'none';
@@ -597,6 +615,31 @@ function downloadTextFile(filename, text) {
     element.click();
 
     document.body.removeChild(element);
+    window.URL.revokeObjectURL(url);
+}
+
+async function createVisualVerificationPacket(options = {}) {
+    if (!AppState.currentProjectState || !AppState.currentProjectScene) {
+        throw new Error('No active AIRPET project state is available for visual verification.');
+    }
+
+    return SceneManager.createVisualVerificationPacket({
+        projectName: AppState.currentProjectName,
+        projectState: AppState.currentProjectState,
+        sceneDescription: AppState.currentProjectScene,
+        hiddenPvIds: Array.from(SceneManager.getHiddenPvIds()).sort(),
+        ...options,
+    });
+}
+
+function installVisualVerificationHook() {
+    window.airpetVisualVerification = {
+        createPacket: createVisualVerificationPacket,
+        getMetadata: (options = {}) => createVisualVerificationPacket({
+            ...options,
+            include_images: false,
+        }),
+    };
 }
 /**
  * Gets the context of the currently selected item(s).

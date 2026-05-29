@@ -14,6 +14,10 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { isDirectedGpsAngularType } from './gpsAngularMode.js';
 import { getNormalizedGpsDirectionVector } from './gpsAngularMode.js';
+import {
+    buildVisualVerificationMetadata,
+    resolveVisualVerificationViewSpecs,
+} from './visualVerificationPacket.js';
 
 // We must extend the THREE.js objects with the BVH functionality.
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -99,7 +103,7 @@ export function initScene(callbacks) {
     camera.position.set(200, 200, 500);
 
     // Renderer
-    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(viewerContainer.clientWidth, viewerContainer.clientHeight);
     renderer.autoClear = false; // control clearing manually
@@ -1921,6 +1925,271 @@ export function frameScene() {
     orbitControls.update();
 
     console.log(`[SceneManager] Framed scene. New camera far plane: ${camera.far}`);
+}
+
+function toPlainVector3(vector) {
+    return {
+        x: Number(vector.x.toFixed(6)),
+        y: Number(vector.y.toFixed(6)),
+        z: Number(vector.z.toFixed(6)),
+    };
+}
+
+function toPlainBox3(box) {
+    if (!box || box.isEmpty()) return null;
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+    return {
+        min: toPlainVector3(box.min),
+        max: toPlainVector3(box.max),
+        center: toPlainVector3(center),
+        size: toPlainVector3(size),
+    };
+}
+
+function getRenderableSceneBounds() {
+    const box = new THREE.Box3();
+    let hasRenderableObject = false;
+    geometryGroup.updateMatrixWorld(true);
+
+    geometryGroup.traverse((object) => {
+        if (!object.isMesh || !isObjectGloballyVisible(object)) return;
+        const objectBox = new THREE.Box3().setFromObject(object);
+        if (objectBox.isEmpty()) return;
+        box.union(objectBox);
+        hasRenderableObject = true;
+    });
+
+    if (hasRenderableObject) return box;
+
+    const fallbackBox = new THREE.Box3().setFromObject(geometryGroup);
+    return fallbackBox.isEmpty() ? null : fallbackBox;
+}
+
+function getVisualVerificationCaptureSize(options = {}) {
+    const requestedWidth = Number(options.image_width || options.width);
+    const requestedHeight = Number(options.image_height || options.height);
+    const canvasWidth = renderer?.domElement?.width || viewerContainer?.clientWidth || 1024;
+    const canvasHeight = renderer?.domElement?.height || viewerContainer?.clientHeight || 768;
+    const width = Number.isFinite(requestedWidth) && requestedWidth > 0
+        ? Math.round(requestedWidth)
+        : Math.max(1, Math.round(canvasWidth));
+    const height = Number.isFinite(requestedHeight) && requestedHeight > 0
+        ? Math.round(requestedHeight)
+        : Math.max(1, Math.round(canvasHeight));
+    return { width, height };
+}
+
+function renderSceneWithAxesOverlay(width, height, includeAxes = true) {
+    renderer.clear();
+    renderer.setViewport(0, 0, width, height);
+    renderer.render(scene, camera);
+
+    if (!includeAxes || !sceneAxes || !cameraAxes) return;
+
+    renderer.clearDepth();
+    const viewportSize = Math.min(120, Math.max(60, Math.floor(Math.min(width, height) * 0.2)));
+    renderer.setViewport(10, 10, viewportSize, viewportSize);
+
+    const cameraDirection = new THREE.Vector3();
+    camera.getWorldDirection(cameraDirection);
+    cameraAxes.position.copy(cameraDirection).multiplyScalar(-200);
+    cameraAxes.lookAt(sceneAxes.position);
+
+    sceneAxes.traverse((child) => {
+        if (child.isLine2) {
+            child.material.resolution.set(width, height);
+        }
+    });
+
+    renderer.render(sceneAxes, cameraAxes);
+}
+
+function buildCameraForVisualVerificationView(viewSpec, sceneBox, width, height) {
+    const center = new THREE.Vector3();
+    const size = new THREE.Vector3();
+    sceneBox.getCenter(center);
+    sceneBox.getSize(size);
+
+    const maxDim = Math.max(size.x, size.y, size.z, 1);
+    const aspect = width / height;
+    const verticalFitDistance = (maxDim / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    const horizontalFitDistance = verticalFitDistance / Math.max(aspect, 0.001);
+    const distance = Math.max(verticalFitDistance, horizontalFitDistance) * 1.8;
+
+    const direction = new THREE.Vector3(
+        viewSpec.direction.x,
+        viewSpec.direction.y,
+        viewSpec.direction.z,
+    ).normalize();
+    const up = new THREE.Vector3(viewSpec.up.x, viewSpec.up.y, viewSpec.up.z).normalize();
+
+    camera.aspect = aspect;
+    camera.near = Math.max(0.01, distance / 1000);
+    camera.far = Math.max(10000, distance + maxDim * 6);
+    camera.up.copy(up);
+    camera.position.copy(center).addScaledVector(direction, distance);
+    camera.lookAt(center);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
+
+    if (orbitControls) {
+        orbitControls.target.copy(center);
+        orbitControls.update();
+    }
+
+    return {
+        position: toPlainVector3(camera.position),
+        target: toPlainVector3(center),
+        up: toPlainVector3(camera.up),
+        fov_deg: Number(camera.fov.toFixed(6)),
+        near: Number(camera.near.toFixed(6)),
+        far: Number(camera.far.toFixed(6)),
+        distance: Number(distance.toFixed(6)),
+    };
+}
+
+export function captureVisualVerificationViews(options = {}) {
+    if (!renderer || !camera || !scene || !viewerContainer) {
+        throw new Error('SceneManager is not initialized.');
+    }
+
+    const viewSpecs = resolveVisualVerificationViewSpecs(options.views);
+    if (viewSpecs.length === 0) {
+        throw new Error('No valid visual verification views requested.');
+    }
+
+    const sceneBox = getRenderableSceneBounds() || new THREE.Box3(
+        new THREE.Vector3(-50, -50, -50),
+        new THREE.Vector3(50, 50, 50),
+    );
+    const sceneBounds = toPlainBox3(sceneBox);
+    const { width, height } = getVisualVerificationCaptureSize(options);
+
+    const originalSize = renderer.getSize(new THREE.Vector2());
+    const originalPixelRatio = renderer.getPixelRatio();
+    const originalViewport = renderer.getViewport(new THREE.Vector4());
+    const originalCamera = {
+        position: camera.position.clone(),
+        quaternion: camera.quaternion.clone(),
+        up: camera.up.clone(),
+        near: camera.near,
+        far: camera.far,
+        aspect: camera.aspect,
+        target: orbitControls ? orbitControls.target.clone() : null,
+    };
+    const originalTransformControlsVisible = transformControls ? transformControls.visible : null;
+    const originalGridVisible = gridHelper ? gridHelper.visible : null;
+
+    const includeAxes = options.include_axes !== false;
+    const includeGrid = options.include_grid !== false;
+    const views = [];
+
+    try {
+        if (transformControls) transformControls.visible = false;
+        if (gridHelper) gridHelper.visible = includeGrid && originalGridVisible !== false;
+        renderer.setPixelRatio(1);
+        renderer.setSize(width, height, false);
+
+        viewSpecs.forEach((viewSpec) => {
+            const cameraMetadata = buildCameraForVisualVerificationView(viewSpec, sceneBox, width, height);
+            renderSceneWithAxesOverlay(width, height, includeAxes);
+            views.push({
+                name: viewSpec.name,
+                label: viewSpec.label,
+                description: viewSpec.description,
+                image: {
+                    mime_type: 'image/png',
+                    data_url: renderer.domElement.toDataURL('image/png'),
+                    width,
+                    height,
+                },
+                camera: cameraMetadata,
+                scene_bounds_mm: sceneBounds,
+            });
+        });
+    } finally {
+        renderer.setPixelRatio(originalPixelRatio);
+        renderer.setSize(originalSize.x, originalSize.y, false);
+        renderer.setViewport(originalViewport);
+        camera.position.copy(originalCamera.position);
+        camera.quaternion.copy(originalCamera.quaternion);
+        camera.up.copy(originalCamera.up);
+        camera.near = originalCamera.near;
+        camera.far = originalCamera.far;
+        camera.aspect = originalCamera.aspect;
+        camera.updateProjectionMatrix();
+        camera.updateMatrixWorld(true);
+        if (orbitControls && originalCamera.target) {
+            orbitControls.target.copy(originalCamera.target);
+            orbitControls.update();
+        }
+        if (transformControls && originalTransformControlsVisible !== null) {
+            transformControls.visible = originalTransformControlsVisible;
+        }
+        if (gridHelper && originalGridVisible !== null) {
+            gridHelper.visible = originalGridVisible;
+        }
+    }
+
+    return views;
+}
+
+export async function createVisualVerificationPacket({
+    projectName = 'untitled',
+    projectState = {},
+    sceneDescription = [],
+    hiddenPvIds = [],
+    include_images = true,
+    views = null,
+    image_width = null,
+    image_height = null,
+    include_grid = true,
+    include_axes = true,
+} = {}) {
+    const sceneBounds = toPlainBox3(getRenderableSceneBounds());
+    const captureOptions = {
+        views,
+        include_images,
+        image_width,
+        image_height,
+    };
+    const metadata = buildVisualVerificationMetadata({
+        projectName,
+        projectState,
+        sceneDescription,
+        hiddenPvIds,
+        captureOptions,
+        sceneBounds,
+    });
+
+    const packet = {
+        ...metadata,
+        capture: {
+            ...metadata.capture_request,
+            rendered_view_count: 0,
+            rendered_at: new Date().toISOString(),
+            renderer: 'three.js/webgl',
+            include_grid,
+            include_axes,
+        },
+        views: [],
+    };
+
+    if (include_images !== false) {
+        packet.views = captureVisualVerificationViews({
+            views,
+            image_width,
+            image_height,
+            include_grid,
+            include_axes,
+        });
+        packet.capture.rendered_view_count = packet.views.length;
+    }
+
+    return packet;
 }
 
 
