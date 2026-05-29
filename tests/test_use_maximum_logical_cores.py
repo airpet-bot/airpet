@@ -142,9 +142,12 @@ def test_generate_macro_emits_use_maximum_logical_cores_when_true(tmp_path):
 
     assert "/run/beamOn 1" in macro_text
     assert "/run/useMaximumLogicalCores" in macro_text
-    # Ensure it appears before /run/beamOn
+    assert "/run/initialize" in macro_text
+    # Ensure it appears in PreInit, before /run/initialize.
     cores_pos = macro_text.index("/run/useMaximumLogicalCores")
+    initialize_pos = macro_text.index("/run/initialize")
     beam_on_pos = macro_text.index("/run/beamOn")
+    assert cores_pos < initialize_pos
     assert cores_pos < beam_on_pos
 
 

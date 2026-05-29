@@ -10155,6 +10155,17 @@ class ProjectManager:
                 macro_content.append(f"/process/msc/StepLimitMuHad {msc_step_limit_mu_had}")
             macro_content.append("")
 
+        # Geant4 only accepts thread-count commands in PreInit, before /run/initialize.
+        threads = resolved_run_manifest.get('threads', 1)
+        use_maximum_logical_cores = resolved_run_manifest.get('use_maximum_logical_cores', False)
+        if threads > 1 or use_maximum_logical_cores:
+            macro_content.append("# --- Thread Configuration ---")
+            if threads > 1:
+                macro_content.append(f"/run/numberOfThreads {threads}")
+            if use_maximum_logical_cores:
+                macro_content.append("/run/useMaximumLogicalCores")
+            macro_content.append("")
+
         # --- Initialize ---
         macro_content.append("/run/initialize")
         macro_content.append("")
@@ -10570,17 +10581,11 @@ class ProjectManager:
 
         # --- Run Beam On ---
         num_events = resolved_run_manifest.get('events', 1)
-        threads = resolved_run_manifest.get('threads', 1)
         macro_content.append("\n# --- Start Simulation ---")
-        if threads > 1:
-            macro_content.append(f"/run/numberOfThreads {threads}")
         event_modulo_n = resolved_run_manifest.get('event_modulo_n', 0)
         event_modulo_seed_once = resolved_run_manifest.get('event_modulo_seed_once', 0)
         if event_modulo_n > 0 or event_modulo_seed_once > 0:
             macro_content.append(f"/run/eventModulo {event_modulo_n} {event_modulo_seed_once}")
-        use_maximum_logical_cores = resolved_run_manifest.get('use_maximum_logical_cores', False)
-        if use_maximum_logical_cores:
-            macro_content.append("/run/useMaximumLogicalCores")
         macro_content.append(f"/run/beamOn {num_events}")
 
         # 3. Write the macro file

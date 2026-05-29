@@ -93,9 +93,12 @@ def test_generate_macro_emits_number_of_threads_when_threads_greater_than_one(tm
     macro_text = macro_path.read_text(encoding="utf-8")
 
     assert "/run/numberOfThreads 4" in macro_text
+    assert "/run/initialize" in macro_text
     assert "/run/beamOn 1" in macro_text
     thread_pos = macro_text.index("/run/numberOfThreads 4")
+    initialize_pos = macro_text.index("/run/initialize")
     beam_on_pos = macro_text.index("/run/beamOn")
+    assert thread_pos < initialize_pos
     assert thread_pos < beam_on_pos
 
 
