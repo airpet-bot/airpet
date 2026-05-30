@@ -50,6 +50,12 @@ async function handleBlobResponse(response, defaultFilename) {
     document.body.removeChild(a);
 }
 
+function normalizeAiTurnLimit(value, fallback = 10) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(50, Math.max(1, parsed));
+}
+
 // --- API Functions ---
 
 /**
@@ -841,18 +847,42 @@ export async function uploadAiArtifact(file, sourceLabel = 'chat-attachment') {
 }
 
 /**
+ * Completes a browser-mediated AI visual verification checkpoint request.
+ * @param {string} requestId
+ * @param {Object} payload
+ * @returns {Promise<Object>}
+ */
+export async function completeAiVisualVerificationRequest(requestId, payload = {}) {
+    const response = await fetch(`${API_BASE_URL}/api/ai/visual_verification_requests/${encodeURIComponent(requestId)}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    return handleResponse(response);
+}
+
+/**
  * Sends a message to the stateful AI chat assistant.
  * @param {string} message - The user's text message.
  * @param {string} model - The model ID to use.
  * @param {number} turnLimit - Maximum number of tool iterations.
  * @param {string[]} attachmentIds - Optional uploaded artifact ids to attach.
+ * @param {Object} options - Optional backend requirements.
  * @returns {Promise<Object>}
  */
-export async function sendAiChatMessage(message, model, turnLimit = 10, attachmentIds = []) {
-    const payload = { message, model, turn_limit: turnLimit };
+export async function sendAiChatMessage(message, model, turnLimit = 10, attachmentIds = [], options = {}) {
+    const payload = { message, model, turn_limit: normalizeAiTurnLimit(turnLimit, 10) };
     if (Array.isArray(attachmentIds) && attachmentIds.length > 0) {
         payload.attachment_ids = attachmentIds;
     }
+    if (typeof options.clientDisplayMessage === 'string' && options.clientDisplayMessage.trim()) {
+        payload.client_display_message = options.clientDisplayMessage.trim();
+    }
+    const hasAttachments = Array.isArray(attachmentIds) && attachmentIds.length > 0;
+    const disableTools = options.disableTools === true;
+    const requireTools = disableTools ? false : options.requireTools === true;
+    const requireJsonMode = options.requireJsonMode === false ? false : true;
+    const requireVision = options.requireVision === true || hasAttachments;
 
     const localPrefixes = {
         'llama_cpp::': 'llama_cpp',
@@ -876,10 +906,10 @@ export async function sendAiChatMessage(message, model, turnLimit = 10, attachme
                     }
                 },
                 requirements: {
-                    // Local adapters are currently text-first (no tool calling yet).
-                    require_tools: false,
-                    require_json_mode: true,
-                    require_vision: Array.isArray(attachmentIds) && attachmentIds.length > 0,
+                    disable_tools: disableTools,
+                    require_tools: requireTools,
+                    require_json_mode: requireJsonMode,
+                    require_vision: requireVision,
                     require_streaming: false
                 }
             };
@@ -902,13 +932,22 @@ export async function sendAiChatMessage(message, model, turnLimit = 10, attachme
  * @param {number} turnLimit Maximum turns.
  * @param {function} onProgress Callback for progress events.
  * @param {string[]} attachmentIds Optional uploaded artifact ids to attach.
+ * @param {Object} options Optional backend requirements.
  * @returns {Promise<Object>} Final result.
  */
-export async function streamAiChatMessage(message, model, turnLimit = 10, onProgress, attachmentIds = []) {
-    const payload = { message, model, turn_limit: turnLimit };
+export async function streamAiChatMessage(message, model, turnLimit = 10, onProgress, attachmentIds = [], options = {}) {
+    const payload = { message, model, turn_limit: normalizeAiTurnLimit(turnLimit, 10) };
     if (Array.isArray(attachmentIds) && attachmentIds.length > 0) {
         payload.attachment_ids = attachmentIds;
     }
+    if (typeof options.clientDisplayMessage === 'string' && options.clientDisplayMessage.trim()) {
+        payload.client_display_message = options.clientDisplayMessage.trim();
+    }
+    const hasAttachments = Array.isArray(attachmentIds) && attachmentIds.length > 0;
+    const disableTools = options.disableTools === true;
+    const requireTools = disableTools ? false : options.requireTools === true;
+    const requireJsonMode = options.requireJsonMode === false ? false : true;
+    const requireVision = options.requireVision === true || hasAttachments;
 
     const localPrefixes = {
         'llama_cpp::': 'llama_cpp',
@@ -932,9 +971,10 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
                     }
                 },
                 requirements: {
-                    require_tools: false,
-                    require_json_mode: true,
-                    require_vision: Array.isArray(attachmentIds) && attachmentIds.length > 0,
+                    disable_tools: disableTools,
+                    require_tools: requireTools,
+                    require_json_mode: requireJsonMode,
+                    require_vision: requireVision,
                     require_streaming: false
                 }
             };
@@ -1023,6 +1063,31 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
                         recentTools: recentTools
                     });
                     lastToolUpdate = Date.now();
+                } else if (data.type === 'visual_verification_request') {
+                    onProgress?.({
+                        type: 'visual_verification_request',
+                        requestId: data.request_id,
+                        reason: data.reason,
+                        questions: data.questions,
+                    });
+                    if (typeof options.onVisualVerificationRequest === 'function') {
+                        try {
+                            await options.onVisualVerificationRequest(data);
+                        } catch (visualErr) {
+                            if (data.request_id) {
+                                await completeAiVisualVerificationRequest(data.request_id, {
+                                    success: false,
+                                    error: visualErr.message || String(visualErr),
+                                });
+                            }
+                            throw visualErr;
+                        }
+                    } else if (data.request_id) {
+                        await completeAiVisualVerificationRequest(data.request_id, {
+                            success: false,
+                            error: 'The AIRPET frontend did not provide a visual verification handler for this stream.',
+                        });
+                    }
                 } else if (data.type === 'complete') {
                     finalResult = {
                         success: true,

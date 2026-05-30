@@ -135,6 +135,159 @@ EXAMPLES_DIR = os.path.join(os.getcwd(), "examples", "projects")
 # For timeout
 last_access = {}
 
+AI_VISUAL_VERIFICATION_TOOL_NAME = "request_visual_verification"
+AI_VISUAL_VERIFICATION_ALLOWED_VIEWS = ("front", "side", "top", "isometric")
+AI_VISUAL_VERIFICATION_REQUEST_TIMEOUT_SECONDS = 120.0
+AI_VISUAL_VERIFICATION_REQUESTS: Dict[str, Dict[str, Any]] = {}
+AI_VISUAL_VERIFICATION_LOCK = threading.Lock()
+
+
+def _bounded_int(value: Any, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(parsed, minimum), maximum)
+
+
+def _bool_with_default(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _normalize_visual_verification_request_args(args: Any) -> Dict[str, Any]:
+    args = args if isinstance(args, dict) else {}
+
+    requested_views = args.get("views")
+    if isinstance(requested_views, str):
+        requested_views = [requested_views]
+    if not isinstance(requested_views, list):
+        requested_views = []
+
+    views = [
+        str(view).strip()
+        for view in requested_views
+        if str(view).strip() in AI_VISUAL_VERIFICATION_ALLOWED_VIEWS
+    ]
+    if not views:
+        views = list(AI_VISUAL_VERIFICATION_ALLOWED_VIEWS)
+
+    raw_questions = args.get("questions")
+    questions = [
+        str(item).strip()
+        for item in raw_questions
+        if str(item).strip()
+    ] if isinstance(raw_questions, list) else []
+
+    raw_focus = args.get("focus_component_ids")
+    focus_component_ids = [
+        str(item).strip()
+        for item in raw_focus
+        if str(item).strip()
+    ] if isinstance(raw_focus, list) else []
+
+    reason = str(args.get("reason") or "Model requested a live AIRPET visual verification checkpoint.").strip()
+
+    return {
+        "reason": reason,
+        "questions": questions[:12],
+        "focus_component_ids": focus_component_ids[:32],
+        "capture_options": {
+            "views": views,
+            "image_width": _bounded_int(args.get("image_width"), 768, minimum=128, maximum=2048),
+            "image_height": _bounded_int(args.get("image_height"), 576, minimum=128, maximum=2048),
+            "include_grid": _bool_with_default(args.get("include_grid"), True),
+            "include_axes": _bool_with_default(args.get("include_axes"), True),
+        },
+    }
+
+
+def _cleanup_stale_visual_verification_requests() -> None:
+    cutoff = time.time() - max(AI_VISUAL_VERIFICATION_REQUEST_TIMEOUT_SECONDS * 2, 300.0)
+    with AI_VISUAL_VERIFICATION_LOCK:
+        stale_ids = [
+            request_id
+            for request_id, entry in AI_VISUAL_VERIFICATION_REQUESTS.items()
+            if float(entry.get("created_at") or 0) < cutoff
+        ]
+        for request_id in stale_ids:
+            AI_VISUAL_VERIFICATION_REQUESTS.pop(request_id, None)
+
+
+def _create_visual_verification_request(args: Any, *, tool_call_id: str) -> Dict[str, Any]:
+    _cleanup_stale_visual_verification_requests()
+    request_id = str(uuid.uuid4())
+    normalized = _normalize_visual_verification_request_args(args)
+    payload = {
+        "request_id": request_id,
+        "tool_call_id": tool_call_id,
+        **normalized,
+    }
+    entry = {
+        "created_at": time.time(),
+        "event": threading.Event(),
+        "payload": payload,
+        "result": None,
+    }
+    with AI_VISUAL_VERIFICATION_LOCK:
+        AI_VISUAL_VERIFICATION_REQUESTS[request_id] = entry
+    return payload
+
+
+def _complete_visual_verification_request(request_id: str, result: Dict[str, Any]) -> bool:
+    with AI_VISUAL_VERIFICATION_LOCK:
+        entry = AI_VISUAL_VERIFICATION_REQUESTS.get(request_id)
+        if entry is None:
+            return False
+        entry["result"] = result
+        event = entry.get("event")
+    if isinstance(event, threading.Event):
+        event.set()
+    return True
+
+
+def _wait_for_visual_verification_result(request_id: str) -> Dict[str, Any]:
+    with AI_VISUAL_VERIFICATION_LOCK:
+        entry = AI_VISUAL_VERIFICATION_REQUESTS.get(request_id)
+
+    if entry is None:
+        return {
+            "success": False,
+            "error": f"Visual verification request not found: {request_id}",
+            "request_id": request_id,
+        }
+
+    event = entry.get("event")
+    if not isinstance(event, threading.Event) or not event.wait(AI_VISUAL_VERIFICATION_REQUEST_TIMEOUT_SECONDS):
+        with AI_VISUAL_VERIFICATION_LOCK:
+            AI_VISUAL_VERIFICATION_REQUESTS.pop(request_id, None)
+        return {
+            "success": False,
+            "error": "Timed out waiting for AIRPET browser visual verification capture.",
+            "request_id": request_id,
+        }
+
+    with AI_VISUAL_VERIFICATION_LOCK:
+        completed = AI_VISUAL_VERIFICATION_REQUESTS.pop(request_id, None)
+
+    result = completed.get("result") if isinstance(completed, dict) else None
+    return result if isinstance(result, dict) else {
+        "success": False,
+        "error": "AIRPET browser visual verification capture returned no result.",
+        "request_id": request_id,
+    }
+
 def get_project_manager_for_session() -> ProjectManager:
     """
     Retrieves or creates a ProjectManager instance for the current user session.
@@ -9707,6 +9860,15 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
     if APP_MODE != 'production':
         logger.debug(f"tool_name={tool_name}")
 
+    if tool_name == AI_VISUAL_VERIFICATION_TOOL_NAME:
+        return {
+            "success": False,
+            "error": (
+                "request_visual_verification requires streamed chat with an AIRPET browser client. "
+                "Use /api/ai/chat/stream from the web UI so the browser can capture screenshots."
+            ),
+        }
+
     # Helper to convert list [x,y,z] to dict {'x':x,'y':y,'z':z}
     def to_vec_dict(val, default_val='0'):
         if isinstance(val, list) and len(val) == 3:
@@ -12012,6 +12174,22 @@ AI_CHAT_ATTACHMENT_ALLOWED_MIME_TYPES = {
 }
 
 
+def _normalize_ai_turn_limit(value: Any, *, default: int = 50, minimum: int = 1, maximum: int = 50) -> int:
+    if isinstance(value, bool):
+        parsed = default
+    elif isinstance(value, (int, float)):
+        parsed = int(value)
+    elif isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            parsed = default
+    else:
+        parsed = default
+
+    return max(minimum, min(maximum, parsed))
+
+
 def _normalize_ai_chat_attachment_ids(raw_attachments: Any) -> List[str]:
     if raw_attachments is None:
         return []
@@ -12191,6 +12369,78 @@ def _build_gemini_attachment_parts_for_chat_message(
     return attachment_parts
 
 
+def _build_visual_verification_feedback_text(result: Dict[str, Any]) -> str:
+    if not isinstance(result, dict):
+        result = {"success": False, "error": "Invalid visual verification result payload."}
+
+    if result.get("success") is False:
+        return (
+            "AIRPET visual verification checkpoint failed or was unavailable.\n\n"
+            f"Error: {result.get('error') or 'Unknown visual verification error.'}\n\n"
+            "Continue using available metadata/tool inspection. If visual evidence is essential, explain the limitation."
+        )
+
+    public_metadata = {
+        "request_id": result.get("request_id"),
+        "reason": result.get("reason"),
+        "questions": result.get("questions") or [],
+        "focus_component_ids": result.get("focus_component_ids") or [],
+        "packet_metadata": result.get("packet_metadata") or {},
+        "attached_views": [
+            {
+                "artifact_id": item.get("artifact_id"),
+                "original_filename": item.get("original_filename"),
+                "mime_type": item.get("mime_type"),
+                "visual_verification_view": item.get("visual_verification_view"),
+            }
+            for item in result.get("ai_attachments") or []
+            if isinstance(item, dict)
+        ],
+    }
+
+    return (
+        "AIRPET browser visual verification checkpoint completed. "
+        "The current detector screenshots are attached to this message, and structured metadata follows. "
+        "Use the screenshots and metadata together before deciding whether to repair anything.\n\n"
+        "```json\n"
+        f"{json.dumps(public_metadata, indent=2)}\n"
+        "```"
+    )
+
+
+def _build_visual_verification_chat_message(result: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "role": "user",
+        "content": _build_visual_verification_feedback_text(result),
+        "metadata": {
+            "original_message": "AIRPET visual verification checkpoint result.",
+            "ai_attachments": result.get("ai_attachments") if isinstance(result, dict) else [],
+            "visual_verification_request_id": result.get("request_id") if isinstance(result, dict) else None,
+        },
+    }
+
+
+def _build_visual_verification_request_sse_payload(
+    pm: ProjectManager,
+    request_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    sync_payload = build_success_payload(
+        pm,
+        message="AIRPET AI requested a live visual verification checkpoint.",
+        exclude_unchanged_tessellated=True,
+    )
+    return {
+        "type": "visual_verification_request",
+        **request_payload,
+        "success": True,
+        "project_name": sync_payload.get("project_name"),
+        "project_state": sync_payload.get("project_state"),
+        "scene_update": sync_payload.get("scene_update"),
+        "response_type": sync_payload.get("response_type"),
+        "history_status": sync_payload.get("history_status"),
+    }
+
+
 @app.route('/api/ai/artifacts/upload', methods=['POST'])
 def upload_ai_artifact_route():
     pm = get_project_manager_for_session()
@@ -12270,6 +12520,65 @@ def get_ai_artifact_metadata_route(artifact_id):
         "schema_version": ARTIFACT_STORE_SCHEMA_VERSION,
         "artifact": artifact,
     })
+
+
+@app.route('/api/ai/visual_verification_requests/<request_id>/complete', methods=['POST'])
+def complete_ai_visual_verification_request_route(request_id):
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+
+    if data.get("success") is False:
+        result = {
+            "success": False,
+            "request_id": request_id,
+            "error": str(data.get("error") or "AIRPET browser visual verification capture failed."),
+        }
+    else:
+        raw_attachment_ids = data.get("attachment_ids")
+        if raw_attachment_ids is None:
+            raw_attachment_ids = [
+                item.get("artifact_id")
+                for item in data.get("attachments", [])
+                if isinstance(item, dict) and item.get("artifact_id")
+            ]
+
+        try:
+            resolved_attachments = _resolve_ai_chat_attachments(pm, raw_attachment_ids or [])
+        except AIArtifactValidationError as exc:
+            result = {
+                "success": False,
+                "request_id": request_id,
+                "error": str(exc),
+            }
+        else:
+            view_by_artifact_id = {
+                str(item.get("artifact_id")): item.get("visual_verification_view") or item.get("view_name")
+                for item in data.get("attachments", [])
+                if isinstance(item, dict) and item.get("artifact_id")
+            }
+            public_attachments = _public_ai_chat_attachment_metadata(resolved_attachments)
+            for item in public_attachments:
+                view_name = view_by_artifact_id.get(str(item.get("artifact_id")))
+                if view_name:
+                    item["visual_verification_view"] = view_name
+
+            result = {
+                "success": True,
+                "request_id": request_id,
+                "reason": data.get("reason"),
+                "questions": data.get("questions") if isinstance(data.get("questions"), list) else [],
+                "focus_component_ids": data.get("focus_component_ids") if isinstance(data.get("focus_component_ids"), list) else [],
+                "packet_metadata": data.get("packet_metadata") if isinstance(data.get("packet_metadata"), dict) else {},
+                "ai_attachments": public_attachments,
+            }
+
+    if not _complete_visual_verification_request(request_id, result):
+        return jsonify({
+            "success": False,
+            "error": f"Visual verification request not found or already completed: {request_id}",
+        }), 404
+
+    return jsonify({"success": True, "request_id": request_id})
 
 
 MULTIMODAL_EXTRACTION_ROUTE_SCHEMA_VERSION = "2026-03-14.multimodal-intake.checkpoint3"
@@ -13627,13 +13936,16 @@ def _normalize_chat_selector_requirements(
     if not isinstance(selector_requirements, dict):
         return {}
 
-    return {
+    normalized = {
         "require_tools": bool(selector_requirements.get("require_tools", False)),
         "require_json_mode": bool(selector_requirements.get("require_json_mode", False)),
         "require_vision": bool(selector_requirements.get("require_vision", False)),
         "require_streaming": bool(selector_requirements.get("require_streaming", False)),
         "min_context_tokens": _coerce_optional_int(selector_requirements.get("min_context_tokens")),
     }
+    if selector_requirements.get("disable_tools"):
+        normalized["disable_tools"] = True
+    return normalized
 
 
 def _build_chat_backend_contradictions(
@@ -13947,10 +14259,16 @@ def _stream_ai_chat_response(
     chat_extra_payload,
     client_instance=None,
     chat_attachments: Optional[List[Dict[str, Any]]] = None,
+    client_display_message: Optional[str] = None,
 ):
     """Generator function for streaming AI chat progress via SSE."""
     import time
     
+    display_user_message = (
+        str(client_display_message).strip()
+        if client_display_message is not None and str(client_display_message).strip()
+        else user_message
+    )
     context_summary = pm.get_summarized_context()
     attachment_notice = _build_ai_chat_attachment_notice(chat_attachments or [])
     attachment_metadata = _public_ai_chat_attachment_metadata(chat_attachments or [])
@@ -13965,7 +14283,7 @@ def _stream_ai_chat_response(
             "content": formatted_user_msg,
             "metadata": {
                 "model_id": model_id,
-                "original_message": user_message,
+                "original_message": display_user_message,
                 "resolved_backend_id": selected_backend_id,
                 "ai_attachments": attachment_metadata,
             },
@@ -13975,6 +14293,7 @@ def _stream_ai_chat_response(
 
         try:
             require_tools = bool((selector_requirements or {}).get("require_tools", False))
+            disable_tools = bool((selector_requirements or {}).get("disable_tools", False))
             require_json_mode = bool((selector_requirements or {}).get("require_json_mode", True))
             require_streaming = bool((selector_requirements or {}).get("require_streaming", False))
             min_context_tokens = _coerce_optional_int((selector_requirements or {}).get("min_context_tokens"))
@@ -13988,7 +14307,7 @@ def _stream_ai_chat_response(
 
             openai_tool_schemas = tuple(_build_openai_tool_schema_from_ai_tools())
             use_native_tool_loop = bool(selected_backend_id == "llama_cpp")
-            effective_require_tools = bool(require_tools or use_native_tool_loop)
+            effective_require_tools = False if disable_tools else bool(require_tools or use_native_tool_loop)
 
             job_id = None
             version_id = None
@@ -14031,9 +14350,9 @@ def _stream_ai_chat_response(
                     fallback_text=adapter_response.text,
                 )
                 assistant_text = assistant_payload.get("content") or adapter_response.text or ""
-                parsed_tool_calls = assistant_payload.get("tool_calls") or []
+                parsed_tool_calls = (assistant_payload.get("tool_calls") or []) if effective_require_tools else []
 
-                if not parsed_tool_calls and isinstance(adapter_response.tool_calls, list):
+                if effective_require_tools and not parsed_tool_calls and isinstance(adapter_response.tool_calls, list):
                     parsed_tool_calls = _normalize_tool_calls_payload(adapter_response.tool_calls)
 
                 executable_tool_calls = _build_executable_tool_calls(parsed_tool_calls, turn)
@@ -14110,7 +14429,19 @@ def _stream_ai_chat_response(
                         continue
 
                     args = tool_call.get("arguments", {})
-                    result = dispatch_ai_tool(pm, tool_name, args)
+                    visual_feedback_msg = None
+                    if tool_name == AI_VISUAL_VERIFICATION_TOOL_NAME:
+                        tool_call_id = str(tool_call.get("id") or f"call_{turn}_{tool_name}")
+                        request_payload = _create_visual_verification_request(args, tool_call_id=tool_call_id)
+                        yield (
+                            "data: "
+                            f"{json.dumps(_build_visual_verification_request_sse_payload(pm, request_payload))}"
+                            "\n\n"
+                        )
+                        result = _wait_for_visual_verification_result(request_payload["request_id"])
+                        visual_feedback_msg = _build_visual_verification_chat_message(result)
+                    else:
+                        result = dispatch_ai_tool(pm, tool_name, args)
 
                     if isinstance(result, dict):
                         if "job_id" in result:
@@ -14134,6 +14465,16 @@ def _stream_ai_chat_response(
                             tool_call_id=tool_call_id,
                         )
                     )
+                    if visual_feedback_msg:
+                        visual_store = _get_ai_artifact_store_for_session(pm)
+                        pm.chat_history.append(visual_feedback_msg)
+                        local_messages.append(
+                            TextMessage(
+                                role="user",
+                                content=visual_feedback_msg.get("content") or "",
+                                image_parts=_build_openai_image_parts_for_chat_message(visual_feedback_msg, visual_store),
+                            )
+                        )
 
             turn_limit_text = "Turn limit reached. Please try a more specific request."
             _persist_final_stream_reply(
@@ -14207,7 +14548,7 @@ def _stream_ai_chat_response(
             "parts": [{"text": formatted_user_msg}],
             "metadata": {
                 "model_id": model_id,
-                "original_message": user_message,
+                "original_message": display_user_message,
                 "ai_attachments": attachment_metadata,
             }
         })
@@ -14281,6 +14622,7 @@ def _stream_ai_chat_response(
                 tool_names = []
                 has_tool_call = False
                 tool_results_parts = []
+                visual_feedback_messages = []
                 
                 for part in response_parts:
                     if getattr(part, 'function_call', None):
@@ -14290,7 +14632,20 @@ def _stream_ai_chat_response(
                         tool_names.append(tool_name)
                         
                         print(f"  Stream Tool Calls: {tool_name}", flush=True)
-                        result = dispatch_ai_tool(pm, tool_name, args)
+                        if tool_name == AI_VISUAL_VERIFICATION_TOOL_NAME:
+                            request_payload = _create_visual_verification_request(
+                                args,
+                                tool_call_id=f"gemini_turn_{turn}_{tool_name}",
+                            )
+                            yield (
+                                "data: "
+                                f"{json.dumps(_build_visual_verification_request_sse_payload(pm, request_payload))}"
+                                "\n\n"
+                            )
+                            result = _wait_for_visual_verification_result(request_payload["request_id"])
+                            visual_feedback_messages.append(_build_visual_verification_chat_message(result))
+                        else:
+                            result = dispatch_ai_tool(pm, tool_name, args)
                         
                         if "job_id" in result: job_id = result["job_id"]
                         if "version_id" in result: version_id = result["version_id"]
@@ -14335,6 +14690,16 @@ def _stream_ai_chat_response(
                 tool_response_msg = {"role": "function", "parts": tool_results_parts}
                 sanitized_history.append(tool_response_msg)
                 pm.chat_history.append(tool_response_msg)
+                if visual_feedback_messages:
+                    visual_store = _get_ai_artifact_store_for_session(pm)
+                    for visual_msg in visual_feedback_messages:
+                        pm.chat_history.append(visual_msg)
+                        visual_parts = _build_gemini_history_parts(visual_msg, visual_store)
+                        if visual_parts:
+                            sanitized_history.append({
+                                "role": "user",
+                                "parts": visual_parts,
+                            })
             
             turn_limit_text = "Turn limit reached. Please try a more specific request."
             _persist_final_stream_reply(
@@ -14377,8 +14742,9 @@ def ai_chat_stream_route():
     pm = get_project_manager_for_session()
     data = request.get_json() or {}
     user_message = data.get('message')
+    client_display_message = data.get('client_display_message')
     model_id = data.get('model', 'models/gemini-3.1-flash-lite-preview')
-    turn_limit = data.get('turn_limit', 50)
+    turn_limit = _normalize_ai_turn_limit(data.get('turn_limit', 50))
     raw_attachments = data.get("attachment_ids", data.get("attachments"))
 
     if not user_message:
@@ -14438,10 +14804,11 @@ def ai_chat_stream_route():
             preferred_backend_id = str(preferred_backend_id)
 
         allow_fallback = _coerce_bool(selector_cfg.get("allow_fallback"), True)
+        disable_tools = _coerce_bool(requirements_cfg.get("disable_tools"), False)
 
         text_request = TextGenerationRequest(
             messages=(TextMessage(role="user", content=str(user_message)),),
-            require_tools=_coerce_bool(requirements_cfg.get("require_tools"), True),
+            require_tools=False if disable_tools else _coerce_bool(requirements_cfg.get("require_tools"), True),
             require_json_mode=_coerce_bool(requirements_cfg.get("require_json_mode"), True),
             require_vision=bool(chat_attachments) or _coerce_bool(requirements_cfg.get("require_vision"), False),
             require_streaming=_coerce_bool(requirements_cfg.get("require_streaming"), False),
@@ -14449,6 +14816,7 @@ def ai_chat_stream_route():
         )
 
         requirements_payload = {
+            "disable_tools": disable_tools,
             "require_tools": text_request.require_tools,
             "require_json_mode": text_request.require_json_mode,
             "require_vision": text_request.require_vision,
@@ -14530,6 +14898,7 @@ def ai_chat_stream_route():
             chat_extra_payload,
             gemini_client,
             chat_attachments,
+            client_display_message,
         )
 
     return Response(generate(), mimetype='text/event-stream')
@@ -14540,14 +14909,21 @@ def ai_chat_route():
     pm = get_project_manager_for_session()
     data = request.get_json() or {}
     user_message = data.get('message')
+    client_display_message = data.get('client_display_message')
     model_id = data.get('model', 'models/gemini-3.1-flash-lite-preview')
-    turn_limit = data.get('turn_limit', 50)
+    turn_limit = _normalize_ai_turn_limit(data.get('turn_limit', 50))
     raw_attachments = data.get("attachment_ids", data.get("attachments"))
     if APP_MODE != "production":
         logger.debug(f"Received turn_limit: {turn_limit}")
 
     if not user_message:
         return jsonify({"success": False, "error": "No message provided."}), 400
+
+    display_user_message = (
+        str(client_display_message).strip()
+        if client_display_message is not None and str(client_display_message).strip()
+        else user_message
+    )
 
     try:
         chat_attachments = _resolve_ai_chat_attachments(pm, raw_attachments)
@@ -14624,10 +15000,11 @@ def ai_chat_route():
             preferred_backend_id = str(preferred_backend_id)
 
         allow_fallback = _coerce_bool(selector_cfg.get("allow_fallback"), True)
+        disable_tools = _coerce_bool(requirements_cfg.get("disable_tools"), False)
 
         text_request = TextGenerationRequest(
             messages=(TextMessage(role="user", content=str(user_message)),),
-            require_tools=_coerce_bool(requirements_cfg.get("require_tools"), True),
+            require_tools=False if disable_tools else _coerce_bool(requirements_cfg.get("require_tools"), True),
             require_json_mode=_coerce_bool(requirements_cfg.get("require_json_mode"), True),
             require_vision=bool(chat_attachments) or _coerce_bool(requirements_cfg.get("require_vision"), False),
             require_streaming=_coerce_bool(requirements_cfg.get("require_streaming"), False),
@@ -14635,6 +15012,7 @@ def ai_chat_route():
         )
 
         requirements_payload = {
+            "disable_tools": disable_tools,
             "require_tools": text_request.require_tools,
             "require_json_mode": text_request.require_json_mode,
             "require_vision": text_request.require_vision,
@@ -14734,7 +15112,7 @@ def ai_chat_route():
             "content": formatted_user_msg,
             "metadata": {
                 "model_id": model_id,
-                "original_message": user_message,
+                "original_message": display_user_message,
                 "resolved_backend_id": selected_backend_id,
                 "ai_attachments": attachment_metadata,
             },
@@ -14744,6 +15122,7 @@ def ai_chat_route():
 
         try:
             require_tools = bool((selector_requirements or {}).get("require_tools", False))
+            disable_tools = bool((selector_requirements or {}).get("disable_tools", False))
             require_json_mode = bool((selector_requirements or {}).get("require_json_mode", True))
             require_streaming = bool((selector_requirements or {}).get("require_streaming", False))
             min_context_tokens = _coerce_optional_int((selector_requirements or {}).get("min_context_tokens"))
@@ -14760,7 +15139,7 @@ def ai_chat_route():
 
             openai_tool_schemas: Tuple[Dict[str, Any], ...] = tuple(_build_openai_tool_schema_from_ai_tools())
             use_native_tool_loop = bool(selected_backend_id == "llama_cpp")
-            effective_require_tools = bool(require_tools or use_native_tool_loop)
+            effective_require_tools = False if disable_tools else bool(require_tools or use_native_tool_loop)
 
             job_id = None
             version_id = None
@@ -14811,10 +15190,10 @@ def ai_chat_route():
                     fallback_text=adapter_response.text,
                 )
                 assistant_text = assistant_payload.get("content") or adapter_response.text or ""
-                parsed_tool_calls = assistant_payload.get("tool_calls") or []
+                parsed_tool_calls = (assistant_payload.get("tool_calls") or []) if effective_require_tools else []
 
                 # Prefer native tool_calls from backend response when present.
-                if not parsed_tool_calls and isinstance(adapter_response.tool_calls, list):
+                if effective_require_tools and not parsed_tool_calls and isinstance(adapter_response.tool_calls, list):
                     parsed_tool_calls = _normalize_tool_calls_payload(adapter_response.tool_calls)
 
                 if APP_MODE != "production":
@@ -14944,7 +15323,7 @@ def ai_chat_route():
             "parts": [{"text": formatted_user_msg}],
             "metadata": {
                 "model_id": model_id,
-                "original_message": user_message,
+                "original_message": display_user_message,
                 "ai_attachments": attachment_metadata,
             } # Store original message for UI
         })
@@ -15100,7 +15479,7 @@ def ai_chat_route():
             "content": formatted_user_msg,
             "metadata": {
                 "model_id": model_id,
-                "original_message": user_message,
+                "original_message": display_user_message,
                 "ai_attachments": attachment_metadata,
             } # Store original message for UI
         })

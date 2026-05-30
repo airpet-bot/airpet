@@ -1015,6 +1015,133 @@ def test_ai_chat_stream_persists_prompt_reply_and_tool_activity_in_history_for_l
         assert final_messages, history
 
 
+def test_ai_chat_stream_disable_tools_overrides_llama_native_tool_loop(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.invoke_text_request_for_backend') as MockInvokeAdapter:
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        MockInvokeAdapter.return_value = MagicMock(
+            backend_id='llama_cpp',
+            model='vision-local',
+            text='The current views look aligned. No repairs recommended.',
+            usage={'prompt_tokens': 100, 'completion_tokens': 12},
+            raw_response={},
+        )
+
+        response = client.post('/api/ai/chat/stream', json={
+            'message': 'VISUAL SELF-CRITIQUE AND REPAIR REQUEST',
+            'model': 'llama_cpp::vision-local',
+            'backend_selector': {
+                'preferred_backend_id': 'llama_cpp',
+                'allow_fallback': False,
+                'runtime_config': {
+                    'backends': {
+                        'llama_cpp': {
+                            'enabled': True,
+                            'model': 'vision-local',
+                            'capabilities': {
+                                'supports_vision': True,
+                            },
+                        },
+                    },
+                },
+                'requirements': {
+                    'disable_tools': True,
+                    'require_tools': False,
+                    'require_json_mode': False,
+                    'require_vision': True,
+                    'require_streaming': False,
+                },
+            },
+        })
+
+        assert response.status_code == 200
+        events = _parse_sse_data_events(response)
+        assert [evt for evt in events if evt.get('type') == 'tool_calls'] == []
+        complete_events = [evt for evt in events if evt.get('type') == 'complete']
+        assert complete_events, events
+        assert complete_events[-1]['message'] == 'The current views look aligned. No repairs recommended.'
+
+        request = MockInvokeAdapter.call_args.args[1]
+        assert request.require_tools is False
+        assert request.require_json_mode is False
+        assert request.tool_schemas is None
+        assert request.tool_choice is None
+
+
+def test_ai_chat_stream_disable_tools_ignores_tool_shaped_local_text(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.invoke_text_request_for_backend') as MockInvokeAdapter, \
+         patch('app.dispatch_ai_tool') as MockDispatchTool:
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        tool_shaped_text = json.dumps({
+            "tool_calls": [
+                {
+                    "tool": "manage_define",
+                    "arguments": {
+                        "action": "upsert",
+                        "name": "should_not_execute",
+                        "define_type": "constant",
+                        "value": "1",
+                    },
+                },
+            ],
+        })
+        MockInvokeAdapter.return_value = MagicMock(
+            backend_id='llama_cpp',
+            model='vision-local',
+            text=tool_shaped_text,
+            usage={'prompt_tokens': 80, 'completion_tokens': 20},
+            raw_response={},
+        )
+
+        response = client.post('/api/ai/chat/stream', json={
+            'message': 'Critique-only visual check.',
+            'model': 'llama_cpp::vision-local',
+            'turn_limit': 0,
+            'backend_selector': {
+                'preferred_backend_id': 'llama_cpp',
+                'allow_fallback': False,
+                'runtime_config': {
+                    'backends': {
+                        'llama_cpp': {
+                            'enabled': True,
+                            'model': 'vision-local',
+                            'capabilities': {
+                                'supports_vision': True,
+                            },
+                        },
+                    },
+                },
+                'requirements': {
+                    'disable_tools': True,
+                    'require_tools': False,
+                    'require_json_mode': False,
+                    'require_vision': True,
+                    'require_streaming': False,
+                },
+            },
+        })
+
+        assert response.status_code == 200
+        events = _parse_sse_data_events(response)
+        turn_events = [evt for evt in events if evt.get('type') == 'turn_start']
+        assert turn_events
+        assert turn_events[0]['turn_limit'] == 1
+        assert [evt for evt in events if evt.get('type') == 'tool_calls'] == []
+        complete_events = [evt for evt in events if evt.get('type') == 'complete']
+        assert complete_events, events
+        assert complete_events[-1]['message'] == tool_shaped_text
+        MockDispatchTool.assert_not_called()
+
+
 def test_ai_chat_stream_persists_final_reply_in_history_for_gemini(client):
     final_part = MagicMock()
     final_part.function_call = None
@@ -1040,6 +1167,7 @@ def test_ai_chat_stream_persists_final_reply_in_history_for_gemini(client):
 
         response = client.post('/api/ai/chat/stream', json={
             'message': 'Say hello.',
+            'client_display_message': 'Friendly visible hello.',
             'model': 'models/gemini-2.0-flash-exp',
         })
 
@@ -1052,6 +1180,12 @@ def test_ai_chat_stream_persists_final_reply_in_history_for_gemini(client):
         history_response = client.get('/api/ai/history')
         assert history_response.status_code == 200
         history = history_response.get_json()['history']
+        visible_user_messages = [
+            msg for msg in history
+            if msg.get('role') == 'user'
+            and (msg.get('metadata') or {}).get('original_message') == 'Friendly visible hello.'
+        ]
+        assert visible_user_messages, history
 
         final_messages = [
             msg for msg in history

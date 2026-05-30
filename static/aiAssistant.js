@@ -1,5 +1,5 @@
 // static/aiAssistant.js
-import * as APIService from './apiService.js';
+import * as APIService from './apiService.js?v=21';
 import * as UIManager from './uiManager.js';
 import { formatBackendDiagnosticsError } from './backendDiagnosticsUi.js';
 import {
@@ -7,11 +7,21 @@ import {
     buildRuntimeConfigPayloadFromFormState,
     getLocalRuntimeBackendIds,
 } from './aiRuntimeConfigUi.js';
+import {
+    VISUAL_SELF_CRITIQUE_DEFAULT_CAPTURE_OPTIONS,
+    VISUAL_SELF_CRITIQUE_SOURCE_LABEL,
+    buildAutomaticVisualSelfCritiqueDisplayMessage,
+    buildAutomaticVisualSelfCritiqueGoal,
+    buildVisualSelfCritiqueDisplayMessage,
+    buildVisualSelfCritiqueMetadata,
+    buildVisualSelfCritiquePrompt,
+} from './visualSelfCritique.js?v=2';
 
 let messageList, promptInput, generateButton, clearButton, modelSelect, contextStatsEl;
-let attachmentInput, attachButton, attachmentTray;
+let attachmentInput, attachButton, visualCheckButton, autoVisualCheckToggle, attachmentTray;
 let isProcessing = false;
 let onGeometryUpdateCallback = () => {};
+let onVisualVerificationPacketRequested = null;
 let localUnsavedMessages = [];
 let pendingAttachments = [];
 let currentRecentTools = [];
@@ -25,6 +35,38 @@ let runtimeConfigFormEls = {};
 let runtimeConfigLoaded = false;
 let historyLoaded = false;
 
+const AUTO_VISUAL_CHECK_STORAGE_KEY = 'airpet_auto_visual_check_enabled';
+
+const VISUAL_CHECK_TRIGGER_TOOLS = new Set([
+    'create_primitive_solid',
+    'manage_detector_feature_generator',
+    'update_property',
+    'manage_define',
+    'manage_material',
+    'modify_solid',
+    'create_boolean_solid',
+    'manage_logical_volume',
+    'place_volume',
+    'modify_physical_volume',
+    'create_detector_ring',
+    'delete_objects',
+    'create_parameter_registry',
+    'setup_param_study',
+    'apply_best_result',
+    'set_volume_appearance',
+    'delete_detector_ring',
+    'batch_geometry_update',
+    'insert_physics_template',
+    'manage_optical_surface',
+    'manage_surface_link',
+    'manage_assembly',
+    'manage_ui_group',
+    'manage_particle_source',
+    'configure_incident_beam',
+    'set_active_source',
+    'rename_ui_group',
+]);
+
 export function init(callbacks) {
     messageList = document.getElementById('ai_message_list');
     promptInput = document.getElementById('ai_prompt_input');
@@ -34,12 +76,17 @@ export function init(callbacks) {
     contextStatsEl = document.getElementById('ai_context_stats');
     attachmentInput = document.getElementById('ai_attachment_input');
     attachButton = document.getElementById('ai_attach_button');
+    visualCheckButton = document.getElementById('ai_visual_check_button');
+    autoVisualCheckToggle = document.getElementById('ai_auto_visual_check_toggle');
     attachmentTray = document.getElementById('ai_attachment_tray');
 
     initRuntimeConfigUi();
 
     if (callbacks && callbacks.onGeometryUpdate) {
         onGeometryUpdateCallback = callbacks.onGeometryUpdate;
+    }
+    if (callbacks && typeof callbacks.onVisualVerificationPacketRequested === 'function') {
+        onVisualVerificationPacketRequested = callbacks.onVisualVerificationPacketRequested;
     }
 
     generateButton.addEventListener('click', handleSend);
@@ -57,6 +104,17 @@ export function init(callbacks) {
     if (attachButton && attachmentInput) {
         attachButton.addEventListener('click', () => attachmentInput.click());
         attachmentInput.addEventListener('change', handleAttachmentSelection);
+    }
+
+    if (visualCheckButton) {
+        visualCheckButton.addEventListener('click', handleVisualSelfCritique);
+    }
+
+    if (autoVisualCheckToggle) {
+        autoVisualCheckToggle.checked = localStorage.getItem(AUTO_VISUAL_CHECK_STORAGE_KEY) === 'true';
+        autoVisualCheckToggle.addEventListener('change', () => {
+            localStorage.setItem(AUTO_VISUAL_CHECK_STORAGE_KEY, autoVisualCheckToggle.checked ? 'true' : 'false');
+        });
     }
 
     if (modelSelect) {
@@ -492,6 +550,69 @@ function renderHistory(history) {
     scrollToBottom();
 }
 
+function isAutoVisualCheckEnabled() {
+    return Boolean(autoVisualCheckToggle?.checked);
+}
+
+function shouldRunAutoVisualCheckAfterTools(toolsUsed) {
+    if (!isAutoVisualCheckEnabled()) return false;
+    if (typeof onVisualVerificationPacketRequested !== 'function') return false;
+    return [...toolsUsed].some((toolName) => VISUAL_CHECK_TRIGGER_TOOLS.has(toolName));
+}
+
+function waitForRenderFrames(frameCount = 2) {
+    let promise = Promise.resolve();
+    for (let i = 0; i < frameCount; i += 1) {
+        promise = promise.then(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    }
+    return promise;
+}
+
+function normalizeAiTurnLimit(value, fallback = 10) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(50, Math.max(1, parsed));
+}
+
+async function handleDynamicVisualVerificationRequest(requestPayload) {
+    const requestId = requestPayload?.request_id;
+    if (!requestId) {
+        throw new Error('AI visual verification request is missing request_id.');
+    }
+    if (typeof onVisualVerificationPacketRequested !== 'function') {
+        throw new Error('Visual verification capture is not available in this AIRPET session.');
+    }
+
+    UIManager.showTemporaryStatus?.('AI requested a live visual checkpoint. Updating scene...', 1800);
+    if (onGeometryUpdateCallback && (requestPayload.project_state || requestPayload.scene_update)) {
+        await onGeometryUpdateCallback(requestPayload);
+    }
+    await waitForRenderFrames(2);
+
+    const captureOptions = {
+        ...VISUAL_SELF_CRITIQUE_DEFAULT_CAPTURE_OPTIONS,
+        ...(requestPayload.capture_options || {}),
+    };
+    const packet = await onVisualVerificationPacketRequested(captureOptions);
+    const uploadedArtifacts = await uploadVisualVerificationPacketImages(packet);
+    const packetMetadata = buildVisualSelfCritiqueMetadata(packet, uploadedArtifacts);
+    const attachmentIds = uploadedArtifacts.map((item) => item.artifact_id).filter(Boolean);
+
+    await APIService.completeAiVisualVerificationRequest(requestId, {
+        success: true,
+        reason: requestPayload.reason || null,
+        questions: Array.isArray(requestPayload.questions) ? requestPayload.questions : [],
+        focus_component_ids: Array.isArray(requestPayload.focus_component_ids) ? requestPayload.focus_component_ids : [],
+        packet_metadata: packetMetadata,
+        attachment_ids: attachmentIds,
+        attachments: uploadedArtifacts.map((item) => ({
+            artifact_id: item.artifact_id,
+            visual_verification_view: item.visual_verification_view || null,
+        })),
+    });
+    UIManager.showTemporaryStatus?.('AI visual checkpoint captured and returned to the model.', 1800);
+}
+
 async function handleSend() {
     if (isProcessing) return;
     
@@ -505,7 +626,7 @@ async function handleSend() {
     }
 
     const turnLimitInput = document.getElementById('ai_turn_limit');
-    const turnLimit = turnLimitInput ? parseInt(turnLimitInput.value, 10) : 10;
+    const turnLimit = normalizeAiTurnLimit(turnLimitInput ? turnLimitInput.value : null, 10);
 
     setLoading(true);
     const attachmentsForTurn = [...pendingAttachments];
@@ -519,13 +640,19 @@ async function handleSend() {
     currentRecentTools = [];
     currentTurn = 1;
     currentTurnLimit = turnLimit;
+    const toolsUsed = new Set();
 
     const thinkingIndicator = createThinkingIndicator();
     
     try {
         const result = await APIService.streamAiChatMessage(message, model, turnLimit, (progress) => {
+            if (progress?.type === 'tool_calls' && Array.isArray(progress.tools)) {
+                progress.tools.forEach((toolName) => toolsUsed.add(toolName));
+            }
             updateThinkingIndicator(thinkingIndicator, progress);
-        }, attachmentIds);
+        }, attachmentIds, {
+            onVisualVerificationRequest: handleDynamicVisualVerificationRequest,
+        });
         removeThinkingIndicator(thinkingIndicator);
         addMessageToUI('model', result.message);
         
@@ -538,34 +665,210 @@ async function handleSend() {
             }
         }
         await loadHistory(true);
+        if (shouldRunAutoVisualCheckAfterTools(toolsUsed)) {
+            await runVisualSelfCritique({
+                automatic: true,
+                userGoal: buildAutomaticVisualSelfCritiqueGoal({
+                    originalUserMessage: message,
+                    toolsUsed: [...toolsUsed],
+                }),
+                displayMessage: buildAutomaticVisualSelfCritiqueDisplayMessage(message),
+                turnLimit,
+            });
+        }
     } catch (err) {
         removeThinkingIndicator(thinkingIndicator);
-        if (attachmentIds.length > 0 && pendingAttachments.length === 0) {
-            pendingAttachments = attachmentsForTurn;
-            renderPendingAttachments();
-        }
-        const backendError = formatBackendDiagnosticsError(err);
-
-        if (backendError) {
-            UIManager.showError("AI Error: " + backendError.alertMessage);
-            addMessageToUI('system', backendError.chatMessage);
-            UIManager.upsertAiBackendDiagnostic?.(backendError.readiness);
-
-            try {
-                const diagResponse = await APIService.getAiBackendDiagnostics(['llama_cpp', 'lm_studio']);
-                if (diagResponse?.success && Array.isArray(diagResponse.diagnostics)) {
-                    diagResponse.diagnostics.forEach(diagnostic => {
-                        UIManager.upsertAiBackendDiagnostic?.(diagnostic);
-                    });
-                }
-            } catch (_diagErr) {
-            }
-        } else {
-            UIManager.showError("AI Error: " + err.message);
-            addMessageToUI('system', "Error: " + err.message);
-        }
+        await handleAiChatError(err, {
+            attachmentIds,
+            attachmentsForTurn,
+            restorePendingAttachments: true,
+        });
     } finally {
         setLoading(false);
+        scrollToBottom();
+        refreshContextStats();
+    }
+}
+
+async function handleAiChatError(err, {
+    attachmentIds = [],
+    attachmentsForTurn = [],
+    restorePendingAttachments = false,
+} = {}) {
+    if (restorePendingAttachments && attachmentIds.length > 0 && pendingAttachments.length === 0) {
+        pendingAttachments = attachmentsForTurn;
+        renderPendingAttachments();
+    }
+
+    const backendError = formatBackendDiagnosticsError(err);
+
+    if (backendError) {
+        UIManager.showError("AI Error: " + backendError.alertMessage);
+        addMessageToUI('system', backendError.chatMessage);
+        UIManager.upsertAiBackendDiagnostic?.(backendError.readiness);
+
+        try {
+            const diagResponse = await APIService.getAiBackendDiagnostics(['llama_cpp', 'lm_studio']);
+            if (diagResponse?.success && Array.isArray(diagResponse.diagnostics)) {
+                diagResponse.diagnostics.forEach(diagnostic => {
+                    UIManager.upsertAiBackendDiagnostic?.(diagnostic);
+                });
+            }
+        } catch (_diagErr) {
+        }
+    } else {
+        UIManager.showError("AI Error: " + (err.message || err));
+        addMessageToUI('system', "Error: " + (err.message || err));
+    }
+}
+
+function visualVerificationDataUrlToFile(dataUrl, filename) {
+    const parts = String(dataUrl || '').split(',');
+    if (parts.length < 2 || !parts[0].startsWith('data:')) {
+        throw new Error(`Visual verification view ${filename} is missing PNG image data.`);
+    }
+
+    const mimeMatch = parts[0].match(/^data:([^;]+);base64$/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/png';
+    const binary = atob(parts.slice(1).join(','));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+
+    return new File([bytes], filename, { type: mimeType });
+}
+
+async function uploadVisualVerificationPacketImages(packet) {
+    const uploaded = [];
+    const views = Array.isArray(packet?.views) ? packet.views : [];
+
+    for (const view of views) {
+        if (!view?.image?.data_url) continue;
+        const safeViewName = String(view.name || `view_${uploaded.length + 1}`)
+            .replace(/[^a-z0-9_-]+/gi, '_')
+            .replace(/^_+|_+$/g, '') || `view_${uploaded.length + 1}`;
+        const file = visualVerificationDataUrlToFile(
+            view.image.data_url,
+            `airpet_visual_verification_${safeViewName}.png`,
+        );
+        const response = await APIService.uploadAiArtifact(file, `${VISUAL_SELF_CRITIQUE_SOURCE_LABEL}:${safeViewName}`);
+        if (response?.success && response.artifact) {
+            uploaded.push({
+                ...response.artifact,
+                visual_verification_view: view.name || safeViewName,
+            });
+        }
+    }
+
+    if (uploaded.length === 0) {
+        throw new Error('No visual verification screenshots were captured for AI review.');
+    }
+
+    return uploaded;
+}
+
+async function handleVisualSelfCritique() {
+    if (isProcessing) return;
+
+    const userGoal = promptInput.value.trim();
+    await runVisualSelfCritique({
+        automatic: false,
+        userGoal,
+        displayMessage: buildVisualSelfCritiqueDisplayMessage(userGoal),
+    });
+}
+
+async function runVisualSelfCritique({
+    automatic = false,
+    userGoal = '',
+    displayMessage = null,
+    turnLimit = null,
+} = {}) {
+    if (typeof onVisualVerificationPacketRequested !== 'function') {
+        UIManager.showError('Visual verification capture is not available yet.');
+        return;
+    }
+
+    const model = UIManager.getAiSelectedModel();
+    if (!model || model === '--export--') {
+        UIManager.showError("Please select a valid vision-capable AI model for visual check.");
+        return;
+    }
+
+    const turnLimitInput = document.getElementById('ai_turn_limit');
+    const resolvedTurnLimit = Number.isFinite(Number(turnLimit))
+        ? normalizeAiTurnLimit(turnLimit, 10)
+        : normalizeAiTurnLimit(turnLimitInput ? turnLimitInput.value : null, 10);
+
+    setLoading(true);
+    setVisualCheckBusy(true);
+    currentRecentTools = [];
+    currentTurn = 1;
+    currentTurnLimit = resolvedTurnLimit;
+    let thinkingIndicator = null;
+
+    try {
+        UIManager.showTemporaryStatus?.(
+            automatic
+                ? 'Auto visual check: capturing current AIRPET views...'
+                : 'Capturing visual verification views...',
+            1800,
+        );
+        const packet = await onVisualVerificationPacketRequested({
+            ...VISUAL_SELF_CRITIQUE_DEFAULT_CAPTURE_OPTIONS,
+        });
+        const uploadedArtifacts = await uploadVisualVerificationPacketImages(packet);
+        const packetMetadata = buildVisualSelfCritiqueMetadata(packet, uploadedArtifacts);
+        const message = buildVisualSelfCritiquePrompt({
+            packetMetadata,
+            userGoal,
+            allowRepairs: automatic,
+        });
+        const messageForDisplay = displayMessage || buildVisualSelfCritiqueDisplayMessage(userGoal);
+        const attachmentIds = uploadedArtifacts.map((item) => item.artifact_id).filter(Boolean);
+
+        addMessageToUI('user', messageForDisplay, false, uploadedArtifacts);
+        if (!automatic) {
+            promptInput.value = '';
+        }
+        scrollToBottom();
+        thinkingIndicator = createThinkingIndicator();
+
+        const result = await APIService.streamAiChatMessage(
+            message,
+            model,
+            resolvedTurnLimit,
+            (progress) => updateThinkingIndicator(thinkingIndicator, progress),
+            attachmentIds,
+            {
+                disableTools: !automatic,
+                requireTools: automatic,
+                requireJsonMode: automatic,
+                requireVision: true,
+                clientDisplayMessage: messageForDisplay,
+                onVisualVerificationRequest: handleDynamicVisualVerificationRequest,
+            },
+        );
+
+        removeThinkingIndicator(thinkingIndicator);
+        addMessageToUI('model', result.message);
+
+        if (onGeometryUpdateCallback) {
+            try {
+                await onGeometryUpdateCallback(result);
+            } catch (syncErr) {
+                console.error('Visual self-critique geometry refresh failed:', syncErr);
+                UIManager.showError("Visual check applied, but the project refresh failed: " + (syncErr.message || syncErr));
+            }
+        }
+        await loadHistory(true);
+    } catch (err) {
+        removeThinkingIndicator(thinkingIndicator);
+        await handleAiChatError(err);
+    } finally {
+        setLoading(false);
+        setVisualCheckBusy(false);
         scrollToBottom();
         refreshContextStats();
     }
@@ -596,6 +899,13 @@ function setAttachmentUploadBusy(isBusy) {
     if (attachButton) {
         attachButton.disabled = isBusy || isProcessing;
         attachButton.textContent = isBusy ? 'Uploading...' : 'Attach';
+    }
+}
+
+function setVisualCheckBusy(isBusy) {
+    if (visualCheckButton) {
+        visualCheckButton.disabled = isBusy || isProcessing;
+        visualCheckButton.textContent = isBusy ? 'Checking...' : 'Visual Check';
     }
 }
 
@@ -708,6 +1018,7 @@ function setLoading(loading) {
     generateButton.disabled = loading;
     promptInput.disabled = loading;
     if (attachButton) attachButton.disabled = loading;
+    if (visualCheckButton) visualCheckButton.disabled = loading;
 }
 
 function scrollToBottom() {
@@ -833,6 +1144,15 @@ function updateThinkingIndicator(indicator, progress) {
         appendProgressEntry(
             `tool_calls:${currentTurn}:${toolList}`,
             `<strong>Turn ${currentTurn} tools:</strong> ${toolList}`,
+            'thinking-tools'
+        );
+    } else if (progress.type === 'visual_verification_request') {
+        if (toggleSummary) {
+            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} • visual checkpoint`;
+        }
+        appendProgressEntry(
+            `visual_verification_request:${progress.requestId || Date.now()}`,
+            `<strong>Visual checkpoint:</strong> ${progress.reason || 'capturing AIRPET screenshots for the model.'}`,
             'thinking-tools'
         );
     } else if (progress.type === 'paused') {

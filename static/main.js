@@ -34,7 +34,7 @@ import {
     normalizeHistoryDeleteSelection,
 } from './historyDeleteFlow.js';
 import * as UIManager from './uiManager.js';
-import * as AIAssistant from './aiAssistant.js';
+import * as AIAssistant from './aiAssistant.js?v=21';
 import { mergeProjectStateWithExclusions } from './projectStateMerge.js';
 import {
     buildResolvedSimulationOptions,
@@ -564,6 +564,7 @@ async function initializeApp() {
 
     // Initialize AI Assistant
     AIAssistant.init({
+        onVisualVerificationPacketRequested: createVisualVerificationPacket,
         onGeometryUpdate: async (result) => {
             let canonicalResult = null;
             if (result?.project_state || result?.scene_update) {

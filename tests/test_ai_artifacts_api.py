@@ -9,7 +9,9 @@ from app import (
     app,
     _build_gemini_sdk_history,
     _build_local_adapter_message_history,
+    _create_visual_verification_request,
     _get_ai_artifact_store_for_session,
+    _wait_for_visual_verification_result,
 )
 from src.expression_evaluator import ExpressionEvaluator
 from src.project_manager import ProjectManager
@@ -208,3 +210,56 @@ def test_chat_history_builders_attach_image_parts_from_artifact_metadata(tmp_pat
     assert len(gemini_history[0]['parts']) == 2
     assert gemini_history[0]['parts'][0] == {'text': 'Build this detector.'}
     assert getattr(gemini_history[0]['parts'][1], 'inline_data', None) is not None
+
+
+def test_visual_verification_completion_route_resolves_pending_checkpoint(client, tmp_path):
+    pm = _build_project_manager(tmp_path)
+
+    with patch('app.get_project_manager_for_session', return_value=pm):
+        request_payload = _create_visual_verification_request(
+            {
+                'reason': 'Check sensor alignment.',
+                'views': ['front'],
+                'questions': ['Is the sensor centered?'],
+            },
+            tool_call_id='call-test-visual',
+        )
+
+        upload_response = client.post(
+            '/api/ai/artifacts/upload',
+            data={
+                'artifact': (io.BytesIO(b'\x89PNG\r\n\x1a\nimage'), 'front.png'),
+            },
+            content_type='multipart/form-data',
+        )
+        assert upload_response.status_code == 200
+        artifact = upload_response.get_json()['artifact']
+
+        response = client.post(
+            f"/api/ai/visual_verification_requests/{request_payload['request_id']}/complete",
+            json={
+                'success': True,
+                'reason': request_payload['reason'],
+                'questions': request_payload['questions'],
+                'packet_metadata': {
+                    'kind': 'airpet.visual_verification_packet',
+                    'views': [{'name': 'front', 'attached_artifact_id': artifact['artifact_id']}],
+                },
+                'attachment_ids': [artifact['artifact_id']],
+                'attachments': [
+                    {
+                        'artifact_id': artifact['artifact_id'],
+                        'visual_verification_view': 'front',
+                    }
+                ],
+            },
+        )
+
+        assert response.status_code == 200
+        result = _wait_for_visual_verification_result(request_payload['request_id'])
+
+    assert result['success'] is True
+    assert result['request_id'] == request_payload['request_id']
+    assert result['packet_metadata']['kind'] == 'airpet.visual_verification_packet'
+    assert result['ai_attachments'][0]['artifact_id'] == artifact['artifact_id']
+    assert result['ai_attachments'][0]['visual_verification_view'] == 'front'

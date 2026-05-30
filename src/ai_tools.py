@@ -710,6 +710,61 @@ RUN_SIMULATION_OPTION_KEYS = tuple(RUN_SIMULATION_OPTION_SPECS.keys())
 # Mapping of AI tools to ProjectManager methods
 AI_GEOMETRY_TOOLS = [
     {
+        "name": "request_visual_verification",
+        "description": (
+            "Request a live AIRPET browser visual verification checkpoint during a streamed AI construction turn. "
+            "Use this after making a meaningful batch of geometry edits when you need screenshots and structured "
+            "metadata to check alignment, scale, orientation, missing parts, sensitive-detector/material assignments, "
+            "sources, scoring, fields, or CAD/procedural-generator provenance before continuing. This tool is available "
+            "only in streamed chat sessions with the AIRPET browser open; if unavailable, continue with metadata/tool "
+            "inspection and explain the limitation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Why this visual checkpoint is needed and what changed immediately before it.",
+                },
+                "questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Specific visual/metadata questions to answer from the checkpoint.",
+                },
+                "focus_component_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional PV/LV/source/component ids or names that should receive extra attention.",
+                },
+                "views": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["front", "side", "top", "isometric"],
+                    },
+                    "description": "Canonical AIRPET views to capture. Defaults to all four views.",
+                },
+                "image_width": {
+                    "type": "integer",
+                    "description": "Requested screenshot width in pixels. Defaults to 768.",
+                },
+                "image_height": {
+                    "type": "integer",
+                    "description": "Requested screenshot height in pixels. Defaults to 576.",
+                },
+                "include_grid": {
+                    "type": "boolean",
+                    "description": "Whether to include the AIRPET grid in screenshots. Defaults to true.",
+                },
+                "include_axes": {
+                    "type": "boolean",
+                    "description": "Whether to include the AIRPET axes overlay. Defaults to true.",
+                },
+            },
+            "required": ["reason"],
+        },
+    },
+    {
         "name": "get_project_summary",
         "description": "Get a high-level overview of the project structure, including names of all volumes and materials.",
         "parameters": {"type": "object", "properties": {}}

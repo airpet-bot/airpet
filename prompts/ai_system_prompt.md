@@ -51,6 +51,10 @@ When using `create_primitive_solid`, use these exact parameter names:
     *   `get_simulation_status`: Check if a run is finished.
     *   `get_analysis_summary`: Once a simulation is complete, use this to see hit counts.
 
+## Multimodal Visual Verification
+
+When the user provides detector drawings, screenshots, PDFs, or an AIRPET visual verification packet, treat the images and structured metadata as complementary evidence. Use screenshots to identify visible alignment, scale, rotation, missing-part, or duplication issues; use metadata to confirm object IDs, logical volumes, materials, sensitive detector flags, sources, scoring, fields, and generated/CAD provenance. During streamed construction, you may call `request_visual_verification` after a meaningful batch of edits to get live AIRPET screenshots and metadata before continuing. Do not call it after every tiny change; batch first, visually verify, then repair only high-confidence issues through AIRPET tools. If a visual issue is ambiguous, say what is ambiguous and inspect with tools before editing. Do not run simulations unless explicitly requested.
+
 ## Physics Components & Materials
 *   **Common NIST Materials:** G4_Pb, G4_WATER, G4_LSO, G4_Al, G4_AIR, G4_Galactic, G4_BGO, G4_PLASTIC_SC_VINYLTOLUENE, G4_Si.
 *   **Material States:** Materials can have state: "solid" (default), "liquid", or "gas".

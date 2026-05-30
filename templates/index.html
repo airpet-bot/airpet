@@ -1470,7 +1470,8 @@
             padding: 0;
         }
 
-        #ai_attach_button {
+        #ai_attach_button,
+        #ai_visual_check_button {
             height: 42px;
             flex: 0 0 auto;
             border-radius: 20px;
@@ -1481,8 +1482,31 @@
             border: 1px solid #cbd5e1;
         }
 
-        #ai_attach_button:hover {
+        #ai_attach_button:hover,
+        #ai_visual_check_button:hover:not(:disabled) {
             background: #e2e8f0;
+        }
+
+        #ai_visual_check_button {
+            background: #eef6ff;
+            border-color: #bfdbfe;
+            color: #1e3a8a;
+            font-weight: 600;
+        }
+
+        #ai_visual_check_button:hover:not(:disabled) {
+            background: #dbeafe;
+        }
+
+        .ai-auto-visual-check {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
+        }
+
+        .ai-auto-visual-check input {
+            margin: 0;
         }
 
         #ai_prompt_input {
@@ -3697,6 +3721,10 @@
                                 <span class="ai-model-info ai-backend-status" id="ai_backend_status" title="Local backend readiness status">Backend: n/a</span>
                                 <span class="ai-model-info">Max turns: <input type="number" id="ai_turn_limit" value="50" min="1" max="50" style="width: 44px; font-size: 11px;"></span>
                                 <span class="ai-model-info" id="ai_context_stats">Context: n/a</span>
+                                <label class="ai-model-info ai-auto-visual-check" title="After geometry-changing AI tool calls, automatically send AIRPET screenshots and metadata back to the model for one critique/repair pass.">
+                                    <input type="checkbox" id="ai_auto_visual_check_toggle">
+                                    Auto visual check
+                                </label>
                             </div>
                             <div class="ai-status-right">
                                 <button id="ai_runtime_config_btn" class="ai-runtime-config-btn" title="Edit session runtime profile for local backends">Local backends ⚙</button>
@@ -3708,6 +3736,7 @@
                         <div id="ai_input_row">
                             <input type="file" id="ai_attachment_input" accept="image/png,image/jpeg,image/webp,application/pdf" multiple hidden>
                             <button id="ai_attach_button" title="Attach detector diagram image or PDF">Attach</button>
+                            <button id="ai_visual_check_button" title="Capture AIRPET screenshots and metadata, then ask a vision-capable model to critique and repair the detector">Visual Check</button>
                             <textarea id="ai_prompt_input" placeholder="Type a message or geometry instruction..." rows="1"></textarea>
                             <button id="ai_generate_button" title="Send message">
                                 <span class="button-text">➤</span>
@@ -5891,8 +5920,8 @@
             }
         }
     </script>
-    <script type="module" src="{{ url_for('static', filename='aiAssistant.js') }}?v=20"></script>
-    <script type="module" src="{{ url_for('static', filename='main.js') }}?v=29"></script>
+    <script type="module" src="{{ url_for('static', filename='aiAssistant.js') }}?v=21"></script>
+    <script type="module" src="{{ url_for('static', filename='main.js') }}?v=30"></script>
     {% if app_mode != 'local' %}
     <div id="app-footer"
         style="position: fixed; bottom: 5px; left: 10px; font-size: 11px; z-index: 2000; color: #888;">
