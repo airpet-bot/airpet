@@ -5165,9 +5165,10 @@ def add_source_route():
     
     source_type = data.get('source_type', 'gps')
     ion_params = data.get('ion_params')
+    gps_command_sequence = data.get('gps_command_sequence')
     new_source, error_msg = pm.add_source(
         name_suggestion, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id,
-        source_type=source_type, ion_params=ion_params)
+        source_type=source_type, ion_params=ion_params, gps_command_sequence=gps_command_sequence)
     if new_source:
         return create_success_response(pm, "Particle source created.")
     else:
@@ -5219,13 +5220,14 @@ def update_source_route():
     new_volume_link_id = data.get('volume_link_id')
     new_source_type = data.get('source_type')
     new_ion_params = data.get('ion_params')
+    new_gps_command_sequence = data.get('gps_command_sequence')
 
     if not source_id:
         return jsonify({"success": False, "error": "Source ID is required."}), 400
 
     success, error_msg = pm.update_particle_source(
         source_id, new_name, new_gps_commands, new_position, new_rotation, new_activity, new_confine_to_pv, new_volume_link_id,
-        new_source_type, new_ion_params
+        new_source_type, new_ion_params, new_gps_command_sequence
     )
 
     if success:
@@ -9208,6 +9210,15 @@ AI_TOOL_ARG_ALIASES = {
         "ion": "ion_params",
         "ion_params": "ion_params"
     },
+    "manage_simulation_control": {
+        "operation": "action",
+        "preset": "preset_id",
+        "process_preset": "preset_id",
+        "macro": "command",
+        "macro_command": "command",
+        "type": "placeholder_type",
+        "family": "placeholder_family"
+    },
     "configure_incident_beam": {
         "name": "source_name",
         "source": "source_name",
@@ -9294,6 +9305,7 @@ AI_TOOL_DEFAULTS = {
         "rotation": {"x": "0", "y": "0", "z": "0"},
         "activity": 1.0
     },
+    "manage_simulation_control": {"action": "get"},
     "configure_incident_beam": {
         "source_name": "incident_beam",
         "incident_axis": "+z",
@@ -11247,7 +11259,8 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     args.get('confine_to_pv'),
                     args.get('volume_link_id'),
                     args.get('source_type', 'gps'),
-                    args.get('ion_params')
+                    args.get('ion_params'),
+                    args.get('gps_command_sequence')
                 )
                 if new_source:
                     return {
@@ -11276,7 +11289,8 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     args.get('confine_to_pv'),
                     args.get('volume_link_id'),
                     args.get('source_type'),
-                    args.get('ion_params')
+                    args.get('ion_params'),
+                    args.get('gps_command_sequence')
                 )
                 if success:
                     return {"success": True, "message": f"Particle source '{source_id}' updated."}
@@ -11295,6 +11309,19 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 return {"success": False, "error": error}
 
             return {"success": False, "error": f"Invalid action '{action}' for manage_particle_source."}
+
+        elif tool_name == "manage_simulation_control":
+            action = args.get('action')
+            kwargs = dict(args or {})
+            kwargs.pop('action', None)
+            result, error = pm.manage_simulation_control(action, **kwargs)
+            if result:
+                return {
+                    "success": True,
+                    "message": f"Geant4 simulation control action '{action}' completed.",
+                    **result,
+                }
+            return {"success": False, "error": error}
 
         elif tool_name == "configure_incident_beam":
             result, error = pm.configure_incident_beam(

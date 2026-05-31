@@ -84,6 +84,31 @@ _SUPPORTED_SCORING_TALLY_QUANTITIES = {
     "volume_flux",
 }
 
+GEANT4_SIMULATION_CONTROL_SCHEMA_VERSION = 1
+_SUPPORTED_GEANT4_MACRO_PHASES = {"pre_init", "post_init", "pre_beam"}
+_SUPPORTED_GEANT4_PROCESS_PRESETS = {
+    "em_low_energy_detector",
+    "em_precision_transport",
+    "optical_debug",
+    "hadronic_diagnostics",
+}
+_SUPPORTED_GEANT4_BIASING_PLACEHOLDER_TYPES = {
+    "importance_sampling",
+    "weight_window",
+    "generic_biasing",
+    "em_cross_section_biasing",
+    "forced_interaction",
+    "splitting",
+    "russian_roulette",
+}
+_SUPPORTED_GEANT4_FAST_SIM_PLACEHOLDER_TYPES = {
+    "gflash",
+    "fast_simulation_model",
+    "parameterised_shower",
+    "channeling",
+    "parallel_world_fast_sim",
+}
+
 def convert_to_internal_units(value, unit_str, category="length"):
     if value is None: return None
     try:
@@ -2457,13 +2482,60 @@ class BorderSurface:
     
 class ParticleSource:
     """Represents a particle source (G4GeneralParticleSource) in the project."""
-    def __init__(self, name, gps_commands=None, position=None, rotation=None, vis_attributes=None, activity=1.0, confine_to_pv=None, volume_link_id=None, source_type="gps", ion_params=None):
+    @staticmethod
+    def normalize_gps_command_sequence(raw_sequence):
+        if raw_sequence is None:
+            return []
+        if not isinstance(raw_sequence, list):
+            raise ValueError("gps_command_sequence must be an array.")
+
+        normalized = []
+        for index, raw_entry in enumerate(raw_sequence):
+            if isinstance(raw_entry, str):
+                stripped = raw_entry.strip()
+                if stripped.startswith("/gps/"):
+                    stripped = stripped[5:]
+                parts = stripped.split(maxsplit=1)
+                raw_entry = {
+                    "command": parts[0] if parts else "",
+                    "value": parts[1] if len(parts) > 1 else "",
+                }
+            if not isinstance(raw_entry, dict):
+                raise ValueError(f"gps_command_sequence[{index}] must be an object or command string.")
+
+            command = _normalize_non_empty_string(raw_entry.get("command"))
+            if not command:
+                raise ValueError(f"gps_command_sequence[{index}].command must be a non-empty string.")
+            if command.startswith("/gps/"):
+                command = command[5:]
+            elif command.startswith("/"):
+                command = command[1:]
+            if not re.fullmatch(r"[A-Za-z0-9_./+-]+", command):
+                raise ValueError(f"gps_command_sequence[{index}].command contains unsupported characters.")
+
+            value = raw_entry.get("value", "")
+            if value is None:
+                value = ""
+            value = str(value).strip()
+            if "\n" in value or "\r" in value:
+                raise ValueError(f"gps_command_sequence[{index}].value must be a single line.")
+
+            normalized.append({
+                "enabled": _normalize_boolean(raw_entry.get("enabled"), True, f"gps_command_sequence[{index}].enabled"),
+                "command": command,
+                "value": value,
+            })
+
+        return normalized
+
+    def __init__(self, name, gps_commands=None, position=None, rotation=None, vis_attributes=None, activity=1.0, confine_to_pv=None, volume_link_id=None, source_type="gps", ion_params=None, gps_command_sequence=None):
         self.id = str(uuid.uuid4())
         self.name = name
         self.type = source_type # "gps" or "ion"
         
         # Store the raw GPS commands as a dictionary for easy editing
         self.gps_commands = gps_commands if gps_commands is not None else {}
+        self.gps_command_sequence = self.normalize_gps_command_sequence(gps_command_sequence)
         self.ion_params = ion_params if ion_params is not None else {}
 
         # Store the position separately for easy access by the transform gizmo
@@ -2490,6 +2562,7 @@ class ParticleSource:
             "name": self.name,
             "type": self.type,
             "gps_commands": self.gps_commands,
+            "gps_command_sequence": deepcopy(self.gps_command_sequence),
             "ion_params": self.ion_params,
             "position": self.position,
             "rotation": self.rotation,
@@ -2517,6 +2590,7 @@ class ParticleSource:
             volume_link_id=data.get('volume_link_id'),
             source_type=data.get('type', 'gps'),
             ion_params=data.get('ion_params'),
+            gps_command_sequence=data.get('gps_command_sequence'),
         )
         instance.id = data.get('id', str(uuid.uuid4()))
         instance._evaluated_position = data.get('_evaluated_position', {'x': 0, 'y': 0, 'z': 0})
@@ -3003,6 +3077,374 @@ class RegionCutsAndLimits:
             min_range_mm=data.get('min_range_mm', 0.0),
         )
 
+
+def _normalize_integer(value, default, field_name):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer.")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        return int(value.strip())
+    raise ValueError(f"{field_name} must be an integer.")
+
+
+def _normalize_geant4_macro_command_path(value, field_name):
+    command = _normalize_non_empty_string(value)
+    if not command:
+        raise ValueError(f"{field_name} must be a non-empty Geant4 command path.")
+    if not command.startswith("/"):
+        command = f"/{command}"
+    if not re.fullmatch(r"/[A-Za-z0-9_./+-]+", command):
+        raise ValueError(f"{field_name} contains unsupported characters.")
+
+    blocked_commands = {
+        "/run/beamOn",
+        "/analysis/setFileName",
+        "/random/setSeeds",
+        "/g4pet/detector/readFile",
+    }
+    if command in blocked_commands:
+        raise ValueError(f"{field_name} cannot override AIRPET-managed command '{command}'.")
+    return command
+
+
+def _normalize_geant4_macro_phase(value, field_name):
+    phase = _normalize_non_empty_string(value) or "pre_init"
+    if phase not in _SUPPORTED_GEANT4_MACRO_PHASES:
+        raise ValueError(
+            f"{field_name} must be one of: "
+            + ", ".join(sorted(_SUPPORTED_GEANT4_MACRO_PHASES))
+        )
+    return phase
+
+
+def _normalize_geant4_overlap_test(raw_state, field_name):
+    state = raw_state if isinstance(raw_state, dict) else {}
+    resolution = _normalize_integer(state.get("resolution"), 10000, f"{field_name}.resolution")
+    if resolution <= 0:
+        raise ValueError(f"{field_name}.resolution must be greater than 0.")
+
+    maximum_errors = _normalize_integer(state.get("maximum_errors"), 1, f"{field_name}.maximum_errors")
+    if maximum_errors < 0:
+        raise ValueError(f"{field_name}.maximum_errors must be greater than or equal to 0.")
+
+    recursion_start = _normalize_integer(state.get("recursion_start"), 0, f"{field_name}.recursion_start")
+    if recursion_start < 0:
+        raise ValueError(f"{field_name}.recursion_start must be greater than or equal to 0.")
+
+    recursion_depth = _normalize_integer(state.get("recursion_depth"), -1, f"{field_name}.recursion_depth")
+    if recursion_depth < -1:
+        raise ValueError(f"{field_name}.recursion_depth must be -1 or greater.")
+
+    tolerance_mm = _normalize_float(state.get("tolerance_mm"), 0.0, f"{field_name}.tolerance_mm")
+    if tolerance_mm < 0.0:
+        raise ValueError(f"{field_name}.tolerance_mm must be greater than or equal to 0.")
+
+    return {
+        "enabled": _normalize_boolean(state.get("enabled"), False, f"{field_name}.enabled"),
+        "resolution": resolution,
+        "tolerance_mm": tolerance_mm,
+        "verbosity": _normalize_boolean(state.get("verbosity"), True, f"{field_name}.verbosity"),
+        "recursion_start": recursion_start,
+        "recursion_depth": recursion_depth,
+        "maximum_errors": maximum_errors,
+        "check_parallel": _normalize_boolean(state.get("check_parallel"), False, f"{field_name}.check_parallel"),
+    }
+
+
+def _normalize_geant4_process_preset_entry(raw_entry, field_name):
+    if isinstance(raw_entry, str):
+        raw_entry = {"preset_id": raw_entry}
+    if not isinstance(raw_entry, dict):
+        raise ValueError(f"{field_name} must be a preset id string or object.")
+
+    preset_id = _normalize_non_empty_string(raw_entry.get("preset_id") or raw_entry.get("id"))
+    if preset_id not in _SUPPORTED_GEANT4_PROCESS_PRESETS:
+        raise ValueError(
+            f"{field_name}.preset_id must be one of: "
+            + ", ".join(sorted(_SUPPORTED_GEANT4_PROCESS_PRESETS))
+        )
+
+    normalized = {
+        "preset_id": preset_id,
+        "enabled": _normalize_boolean(raw_entry.get("enabled"), True, f"{field_name}.enabled"),
+    }
+    note = _normalize_non_empty_string(raw_entry.get("note"))
+    if note:
+        normalized["note"] = note
+    return normalized
+
+
+def _normalize_geant4_process_presets(raw_presets, field_name):
+    if raw_presets is None:
+        return []
+    if not isinstance(raw_presets, list):
+        raise ValueError(f"{field_name} must be an array.")
+    normalized = []
+    seen = set()
+    for index, raw_entry in enumerate(raw_presets):
+        entry = _normalize_geant4_process_preset_entry(raw_entry, f"{field_name}[{index}]")
+        preset_id = entry["preset_id"]
+        if preset_id in seen:
+            continue
+        seen.add(preset_id)
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_geant4_macro_command_entry(raw_entry, field_name):
+    if isinstance(raw_entry, str):
+        stripped = raw_entry.strip()
+        parts = stripped.split(maxsplit=1)
+        raw_entry = {
+            "command": parts[0] if parts else "",
+            "value": parts[1] if len(parts) > 1 else "",
+        }
+    if not isinstance(raw_entry, dict):
+        raise ValueError(f"{field_name} must be an object or command string.")
+
+    command = _normalize_geant4_macro_command_path(raw_entry.get("command"), f"{field_name}.command")
+    value = raw_entry.get("value", "")
+    if value is None:
+        value = ""
+    value = str(value).strip()
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"{field_name}.value must be a single line.")
+
+    normalized = {
+        "command_id": _normalize_non_empty_string(raw_entry.get("command_id"))
+        or f"geant4_macro_{uuid.uuid4().hex}",
+        "enabled": _normalize_boolean(raw_entry.get("enabled"), True, f"{field_name}.enabled"),
+        "phase": _normalize_geant4_macro_phase(raw_entry.get("phase"), f"{field_name}.phase"),
+        "command": command,
+        "value": value,
+    }
+
+    comment = _normalize_non_empty_string(raw_entry.get("comment"))
+    if comment:
+        normalized["comment"] = comment
+    return normalized
+
+
+def _normalize_geant4_macro_commands(raw_commands, field_name):
+    if raw_commands is None:
+        return []
+    if not isinstance(raw_commands, list):
+        raise ValueError(f"{field_name} must be an array.")
+    normalized = []
+    seen_ids = set()
+    for index, raw_entry in enumerate(raw_commands):
+        entry = _normalize_geant4_macro_command_entry(raw_entry, f"{field_name}[{index}]")
+        command_id = entry["command_id"]
+        if command_id in seen_ids:
+            entry["command_id"] = f"{command_id}_{uuid.uuid4().hex[:8]}"
+        seen_ids.add(entry["command_id"])
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_geant4_placeholder_entry(raw_entry, field_name, supported_types, default_type):
+    if not isinstance(raw_entry, dict):
+        raise ValueError(f"{field_name} must be an object.")
+
+    placeholder_type = _normalize_non_empty_string(
+        raw_entry.get("placeholder_type") or raw_entry.get("type")
+    ) or default_type
+    if placeholder_type not in supported_types:
+        raise ValueError(
+            f"{field_name}.placeholder_type must be one of: "
+            + ", ".join(sorted(supported_types))
+        )
+
+    normalized = {
+        "placeholder_id": _normalize_non_empty_string(raw_entry.get("placeholder_id"))
+        or f"geant4_placeholder_{uuid.uuid4().hex}",
+        "enabled": _normalize_boolean(raw_entry.get("enabled"), True, f"{field_name}.enabled"),
+        "placeholder_type": placeholder_type,
+    }
+
+    for key in ("target", "particle", "region", "notes"):
+        value = _normalize_non_empty_string(raw_entry.get(key))
+        if value:
+            normalized[key] = value
+
+    parameters = raw_entry.get("parameters")
+    if parameters is not None:
+        if not isinstance(parameters, dict):
+            raise ValueError(f"{field_name}.parameters must be an object.")
+        normalized["parameters"] = deepcopy(parameters)
+
+    return normalized
+
+
+def _normalize_geant4_placeholders(raw_entries, field_name, supported_types, default_type):
+    if raw_entries is None:
+        return []
+    if not isinstance(raw_entries, list):
+        raise ValueError(f"{field_name} must be an array.")
+    normalized = []
+    seen_ids = set()
+    for index, raw_entry in enumerate(raw_entries):
+        entry = _normalize_geant4_placeholder_entry(
+            raw_entry,
+            f"{field_name}[{index}]",
+            supported_types,
+            default_type,
+        )
+        placeholder_id = entry["placeholder_id"]
+        if placeholder_id in seen_ids:
+            entry["placeholder_id"] = f"{placeholder_id}_{uuid.uuid4().hex[:8]}"
+        seen_ids.add(entry["placeholder_id"])
+        normalized.append(entry)
+    return normalized
+
+
+class Geant4SimulationControl:
+    """Advanced Geant4 control state shared by UI, AI, and macro generation."""
+
+    ENVIRONMENT_FIELD_NAME = "environment.simulation_control"
+
+    def __init__(
+        self,
+        schema_version=GEANT4_SIMULATION_CONTROL_SCHEMA_VERSION,
+        geometry_overlap_test=None,
+        physics_process_presets=None,
+        macro_commands=None,
+        biasing_placeholders=None,
+        fast_simulation_placeholders=None,
+    ):
+        self.schema_version = int(schema_version or GEANT4_SIMULATION_CONTROL_SCHEMA_VERSION)
+        self.geometry_overlap_test = _normalize_geant4_overlap_test(
+            geometry_overlap_test,
+            "simulation_control.geometry_overlap_test",
+        )
+        self.physics_process_presets = _normalize_geant4_process_presets(
+            physics_process_presets,
+            "simulation_control.physics_process_presets",
+        )
+        self.macro_commands = _normalize_geant4_macro_commands(
+            macro_commands,
+            "simulation_control.macro_commands",
+        )
+        self.biasing_placeholders = _normalize_geant4_placeholders(
+            biasing_placeholders,
+            "simulation_control.biasing_placeholders",
+            _SUPPORTED_GEANT4_BIASING_PLACEHOLDER_TYPES,
+            "generic_biasing",
+        )
+        self.fast_simulation_placeholders = _normalize_geant4_placeholders(
+            fast_simulation_placeholders,
+            "simulation_control.fast_simulation_placeholders",
+            _SUPPORTED_GEANT4_FAST_SIM_PLACEHOLDER_TYPES,
+            "fast_simulation_model",
+        )
+
+    @classmethod
+    def validate(cls, data, field_name="simulation_control"):
+        if data is None:
+            return True, None
+        if not isinstance(data, dict):
+            return False, f"{field_name} must be an object."
+        try:
+            cls.from_dict(data)
+        except ValueError as exc:
+            return False, str(exc).replace("simulation_control", field_name, 1)
+        return True, None
+
+    def to_dict(self):
+        return {
+            "schema_version": self.schema_version,
+            "geometry_overlap_test": deepcopy(self.geometry_overlap_test),
+            "physics_process_presets": deepcopy(self.physics_process_presets),
+            "macro_commands": deepcopy(self.macro_commands),
+            "biasing_placeholders": deepcopy(self.biasing_placeholders),
+            "fast_simulation_placeholders": deepcopy(self.fast_simulation_placeholders),
+        }
+
+    def to_summary_dict(self):
+        active_controls = []
+
+        if self.geometry_overlap_test.get("enabled"):
+            overlap = self.geometry_overlap_test
+            active_controls.append({
+                "kind": "geometry_overlap_test",
+                "label": "Geometry overlap test",
+                "description": (
+                    f"Geometry overlap test enabled: {overlap['resolution']} points, "
+                    f"tolerance {overlap['tolerance_mm']:g} mm, max errors {overlap['maximum_errors']}"
+                ),
+                "state": deepcopy(overlap),
+            })
+
+        enabled_presets = [p for p in self.physics_process_presets if p.get("enabled", True)]
+        if enabled_presets:
+            active_controls.append({
+                "kind": "physics_process_presets",
+                "label": "Physics/process presets",
+                "description": (
+                    "Physics/process presets enabled: "
+                    + ", ".join(entry["preset_id"] for entry in enabled_presets)
+                ),
+                "state": deepcopy(enabled_presets),
+            })
+
+        enabled_macro_commands = [c for c in self.macro_commands if c.get("enabled", True)]
+        if enabled_macro_commands:
+            active_controls.append({
+                "kind": "macro_commands",
+                "label": "Advanced macro commands",
+                "description": f"{len(enabled_macro_commands)} advanced Geant4 macro command(s) enabled",
+                "state": deepcopy(enabled_macro_commands),
+            })
+
+        enabled_biasing = [p for p in self.biasing_placeholders if p.get("enabled", True)]
+        if enabled_biasing:
+            active_controls.append({
+                "kind": "biasing_placeholders",
+                "label": "Biasing placeholders",
+                "description": f"{len(enabled_biasing)} biasing intent placeholder(s) saved; not emitted as runtime commands yet",
+                "state": deepcopy(enabled_biasing),
+            })
+
+        enabled_fast_sim = [p for p in self.fast_simulation_placeholders if p.get("enabled", True)]
+        if enabled_fast_sim:
+            active_controls.append({
+                "kind": "fast_simulation_placeholders",
+                "label": "Fast simulation placeholders",
+                "description": f"{len(enabled_fast_sim)} fast-simulation intent placeholder(s) saved; not emitted as runtime commands yet",
+                "state": deepcopy(enabled_fast_sim),
+            })
+
+        return {
+            "has_active_controls": bool(active_controls),
+            "active_control_count": len(active_controls),
+            "summary_text": (
+                "; ".join(control["description"] for control in active_controls)
+                if active_controls else "No advanced Geant4 simulation controls enabled."
+            ),
+            "active_controls": active_controls,
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        if data is None:
+            return cls()
+        if not isinstance(data, dict):
+            raise ValueError("simulation_control must be an object.")
+        return cls(
+            schema_version=data.get("schema_version", GEANT4_SIMULATION_CONTROL_SCHEMA_VERSION),
+            geometry_overlap_test=data.get("geometry_overlap_test"),
+            physics_process_presets=data.get("physics_process_presets"),
+            macro_commands=data.get("macro_commands"),
+            biasing_placeholders=data.get("biasing_placeholders"),
+            fast_simulation_placeholders=data.get("fast_simulation_placeholders"),
+        )
+
+
 class EnvironmentState:
     """Saved-project environment state shared by UI, AI, and runtime plumbing."""
 
@@ -3031,6 +3473,7 @@ class EnvironmentState:
         local_uniform_magnetic_field=None,
         local_uniform_electric_field=None,
         region_cuts_and_limits=None,
+        simulation_control=None,
         optical_physics=False,
         optical_boundary_invoke_sd=False,
         process_inactivation=None,
@@ -3127,6 +3570,11 @@ class EnvironmentState:
         else:
             self.region_cuts_and_limits = RegionCutsAndLimits.from_dict(region_cuts_and_limits)
 
+        if isinstance(simulation_control, Geant4SimulationControl):
+            self.simulation_control = simulation_control
+        else:
+            self.simulation_control = Geant4SimulationControl.from_dict(simulation_control)
+
         self.optical_physics = bool(optical_physics)
 
     @classmethod
@@ -3183,10 +3631,18 @@ class EnvironmentState:
         region_controls_data = data.get('region_cuts_and_limits')
         if region_controls_data is None and 'region_controls' in data:
             region_controls_data = data.get('region_controls')
+        simulation_control_data = data.get('simulation_control')
 
         ok, err = RegionCutsAndLimits.validate(
             region_controls_data,
             field_name=f"{field_name}.region_cuts_and_limits",
+        )
+        if not ok:
+            return ok, err
+
+        ok, err = Geant4SimulationControl.validate(
+            data.get('simulation_control'),
+            field_name=f"{field_name}.simulation_control",
         )
         if not ok:
             return ok, err
@@ -3309,7 +3765,7 @@ class EnvironmentState:
         return True, None
 
     def to_dict(self):
-        return {
+        data = {
             "global_uniform_magnetic_field": self.global_uniform_magnetic_field.to_dict(),
             "global_uniform_electric_field": self.global_uniform_electric_field.to_dict(),
             "local_uniform_magnetic_field": self.local_uniform_magnetic_field.to_dict(),
@@ -3348,6 +3804,10 @@ class EnvironmentState:
             "msc_step_limit": self.msc_step_limit,
             "msc_step_limit_mu_had": self.msc_step_limit_mu_had,
         }
+        simulation_control = self.simulation_control.to_dict()
+        if simulation_control != Geant4SimulationControl().to_dict():
+            data["simulation_control"] = simulation_control
+        return data
 
     def to_summary_dict(self):
         active_controls = []
@@ -3640,6 +4100,10 @@ class EnvironmentState:
                 {"msc_step_limit_mu_had": self.msc_step_limit_mu_had},
             )
 
+        simulation_control_summary = self.simulation_control.to_summary_dict()
+        for control in simulation_control_summary.get("active_controls", []):
+            active_controls.append(deepcopy(control))
+
         summary_text = "No environment controls enabled."
         if active_controls:
             summary_text = "; ".join(control["description"] for control in active_controls)
@@ -3675,6 +4139,7 @@ class EnvironmentState:
         region_controls_data = data.get('region_cuts_and_limits')
         if region_controls_data is None and 'region_controls' in data:
             region_controls_data = data.get('region_controls')
+        simulation_control_data = data.get('simulation_control')
 
         optical_physics = data.get('optical_physics', False)
         if isinstance(optical_physics, str):
@@ -3846,7 +4311,13 @@ class EnvironmentState:
             print(f"Warning: Invalid region cuts and limits payload: {exc}. Using defaults.")
             region_cuts_and_limits = RegionCutsAndLimits()
 
-        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, em_verbose, cerenkov_track_secondaries_first, scintillation_track_secondaries_first, cerenkov_stack_photons, scintillation_stack_photons, cerenkov_max_beta_change, scintillation_track_info, wls_time_profile, wls2_time_profile, lpm, msc_lateral_displacement, msc_mu_had_lateral_displacement, msc_step_limit, msc_step_limit_mu_had)
+        try:
+            simulation_control = Geant4SimulationControl.from_dict(simulation_control_data)
+        except ValueError as exc:
+            print(f"Warning: Invalid Geant4 simulation control payload: {exc}. Using defaults.")
+            simulation_control = Geant4SimulationControl()
+
+        return cls(field, electric_field, local_field, local_electric_field, region_cuts_and_limits, simulation_control, optical_physics, optical_boundary_invoke_sd, process_inactivation, em_apply_cuts, eloss_fluct, field_stepper_type, field_minimum_step_mm, cerenkov_max_photons, scintillation_by_particle_type, scintillation_finite_rise_time, fluo, auger, auger_cascade, pixe, deexcitation_ignore_cut, em_integral, em_use_saturation, em_polarisation, em_verbose, cerenkov_track_secondaries_first, scintillation_track_secondaries_first, cerenkov_stack_photons, scintillation_stack_photons, cerenkov_max_beta_change, scintillation_track_info, wls_time_profile, wls2_time_profile, lpm, msc_lateral_displacement, msc_mu_had_lateral_displacement, msc_step_limit, msc_step_limit_mu_had)
 
 
 class ScoringState:

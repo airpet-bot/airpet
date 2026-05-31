@@ -20,7 +20,8 @@ from .geometry_types import GeometryState, Solid, Define, Material, Element, Iso
                             DivisionVolume, ParamVolume, OpticalSurface, SkinSurface, \
                             BorderSurface, ParticleSource, GlobalUniformMagneticField, \
                             GlobalUniformElectricField, LocalUniformMagneticField, ScoringState, \
-                            LocalUniformElectricField, normalize_detector_feature_generator_entry
+                            LocalUniformElectricField, Geant4SimulationControl, \
+                            normalize_detector_feature_generator_entry
 from .gdml_parser import GDMLParser
 from .gdml_writer import GDMLWriter
 from .step_parser import parse_step_file
@@ -28,6 +29,48 @@ from .objective_formula import evaluate_objective_formula
 from .scoring_artifacts import build_run_manifest_summary, build_scoring_runtime_plan
 
 AUTOSAVE_VERSION_ID = "autosave"
+
+GEANT4_PROCESS_PRESET_DEFINITIONS = {
+    "em_low_energy_detector": {
+        "label": "Low-energy EM detector",
+        "description": "Enable fluorescence, Auger, PIXE, and deexcitation controls commonly needed for low-energy detector studies.",
+        "commands": [
+            "/process/em/fluo true",
+            "/process/em/auger true",
+            "/process/em/augerCascade true",
+            "/process/em/pixe true",
+            "/process/em/deexcitationIgnoreCut true",
+        ],
+    },
+    "em_precision_transport": {
+        "label": "Precision EM transport",
+        "description": "Tighten selected electromagnetic process controls while preserving Geant4 defaults where possible.",
+        "commands": [
+            "/process/em/applyCuts true",
+            "/process/em/integral true",
+            "/process/eLoss/fluct true",
+            "/process/eLoss/LPM true",
+        ],
+    },
+    "optical_debug": {
+        "label": "Optical debug verbosity",
+        "description": "Emit optical-process verbosity commands when optical physics is enabled.",
+        "requires_optical_physics": True,
+        "commands": [
+            "/process/optical/verbose 1",
+            "/process/optical/cerenkov/verbose 1",
+            "/process/optical/scintillation/verbose 1",
+            "/process/optical/boundary/verbose 1",
+        ],
+    },
+    "hadronic_diagnostics": {
+        "label": "Hadronic diagnostics",
+        "description": "Enable a compact hadronic-process diagnostic verbosity level.",
+        "commands": [
+            "/process/had/verbose 1",
+        ],
+    },
+}
 
 
 def _normalize_step_import_offset(raw_offset):
@@ -5699,6 +5742,40 @@ class ProjectManager:
 
         return ScoringState.from_dict(candidate_state), None
 
+    def _normalize_simulation_control_update_value(self, target_obj, property_path, new_value):
+        if not isinstance(target_obj, Geant4SimulationControl):
+            return None, f"Invalid simulation control target for property path '{property_path}'"
+
+        candidate_state = target_obj.to_dict()
+
+        if property_path == 'state':
+            if not isinstance(new_value, dict):
+                return None, "environment.simulation_control must be an object."
+            candidate_state = deepcopy(new_value)
+        elif property_path in {
+            'schema_version',
+            'geometry_overlap_test',
+            'physics_process_presets',
+            'macro_commands',
+            'biasing_placeholders',
+            'fast_simulation_placeholders',
+        }:
+            candidate_state[property_path] = deepcopy(new_value)
+        elif property_path.startswith('geometry_overlap_test.'):
+            leaf_key = property_path.split('.', 1)[1]
+            candidate_state.setdefault('geometry_overlap_test', {})[leaf_key] = deepcopy(new_value)
+        else:
+            return None, f"Invalid property path '{property_path}'"
+
+        is_valid, validation_error = Geant4SimulationControl.validate(
+            candidate_state,
+            field_name='environment.simulation_control',
+        )
+        if not is_valid:
+            return None, validation_error
+
+        return Geant4SimulationControl.from_dict(candidate_state), None
+
     def update_object_property(self, object_type, object_id, property_path, new_value):
         """
         Updates a property of an object.
@@ -5724,6 +5801,7 @@ class ProjectManager:
                 "local_uniform_magnetic_field": self.current_geometry_state.environment.local_uniform_magnetic_field,
                 "local_uniform_electric_field": self.current_geometry_state.environment.local_uniform_electric_field,
                 "region_cuts_and_limits": self.current_geometry_state.environment.region_cuts_and_limits,
+                "simulation_control": self.current_geometry_state.environment.simulation_control,
                 "optical_physics": self.current_geometry_state.environment.optical_physics,
             }
             target_obj = environment_objects.get(object_id)
@@ -5763,9 +5841,21 @@ class ProjectManager:
 
         try:
             if object_type == "environment":
-                new_value, coercion_error = self._normalize_environment_update_value(target_obj, property_path, new_value)
-                if coercion_error:
-                    return False, coercion_error
+                if isinstance(target_obj, Geant4SimulationControl):
+                    next_simulation_control, coercion_error = self._normalize_simulation_control_update_value(
+                        target_obj,
+                        property_path,
+                        new_value,
+                    )
+                    if coercion_error:
+                        return False, coercion_error
+                    self.current_geometry_state.environment.simulation_control = next_simulation_control
+                    target_obj = next_simulation_control
+                    path_parts = None
+                else:
+                    new_value, coercion_error = self._normalize_environment_update_value(target_obj, property_path, new_value)
+                    if coercion_error:
+                        return False, coercion_error
             elif object_type == "scoring":
                 next_scoring_state, coercion_error = self._normalize_scoring_update_value(
                     target_obj,
@@ -5802,6 +5892,142 @@ class ProjectManager:
             # Add logic here to revert the change?
             return False, f"Update failed during recalculation: {error_msg}"
         return True, None
+
+    def manage_simulation_control(self, action, **kwargs):
+        if not self.current_geometry_state:
+            return None, "No project loaded"
+
+        action = str(action or "").strip()
+        current_control = self.current_geometry_state.environment.simulation_control
+
+        if action == "get":
+            return {
+                "simulation_control": current_control.to_dict(),
+                "summary": current_control.to_summary_dict(),
+                "available_process_presets": deepcopy(GEANT4_PROCESS_PRESET_DEFINITIONS),
+                "runtime_notes": {
+                    "biasing_placeholders": "Saved for AI/planning visibility only; AIRPET does not yet register Geant4 biasing operators.",
+                    "fast_simulation_placeholders": "Saved for AI/planning visibility only; AIRPET does not yet register Geant4 fast-simulation models.",
+                },
+            }, None
+
+        candidate = current_control.to_dict()
+
+        if action == "set_geometry_overlap_test":
+            overlap = dict(candidate.get("geometry_overlap_test") or {})
+            for key in (
+                "enabled",
+                "resolution",
+                "tolerance_mm",
+                "verbosity",
+                "recursion_start",
+                "recursion_depth",
+                "maximum_errors",
+                "check_parallel",
+            ):
+                if key in kwargs:
+                    overlap[key] = kwargs[key]
+            candidate["geometry_overlap_test"] = overlap
+
+        elif action == "set_process_preset":
+            preset_id = str(kwargs.get("preset_id") or "").strip()
+            if preset_id not in GEANT4_PROCESS_PRESET_DEFINITIONS:
+                return None, (
+                    "preset_id must be one of: "
+                    + ", ".join(sorted(GEANT4_PROCESS_PRESET_DEFINITIONS.keys()))
+                )
+            enabled = kwargs.get("enabled", True)
+            presets = [
+                entry
+                for entry in candidate.get("physics_process_presets", [])
+                if entry.get("preset_id") != preset_id
+            ]
+            presets.append({
+                "preset_id": preset_id,
+                "enabled": enabled,
+                **({"note": str(kwargs.get("note")).strip()} if kwargs.get("note") else {}),
+            })
+            candidate["physics_process_presets"] = presets
+
+        elif action == "add_macro_command":
+            command_entry = {
+                "command": kwargs.get("command"),
+                "value": kwargs.get("value", ""),
+                "phase": kwargs.get("phase", "pre_init"),
+                "enabled": kwargs.get("enabled", True),
+            }
+            if kwargs.get("comment"):
+                command_entry["comment"] = kwargs.get("comment")
+            if kwargs.get("command_id"):
+                command_entry["command_id"] = kwargs.get("command_id")
+            candidate.setdefault("macro_commands", []).append(command_entry)
+
+        elif action == "remove_macro_command":
+            command_id = str(kwargs.get("command_id") or "").strip()
+            if not command_id:
+                return None, "command_id is required."
+            candidate["macro_commands"] = [
+                entry
+                for entry in candidate.get("macro_commands", [])
+                if entry.get("command_id") != command_id
+            ]
+
+        elif action == "add_biasing_placeholder":
+            placeholder = {
+                "placeholder_type": kwargs.get("placeholder_type") or kwargs.get("type") or "generic_biasing",
+                "enabled": kwargs.get("enabled", True),
+                "target": kwargs.get("target", ""),
+                "particle": kwargs.get("particle", ""),
+                "region": kwargs.get("region", ""),
+                "notes": kwargs.get("notes", ""),
+                "parameters": kwargs.get("parameters", {}),
+            }
+            if kwargs.get("placeholder_id"):
+                placeholder["placeholder_id"] = kwargs.get("placeholder_id")
+            candidate.setdefault("biasing_placeholders", []).append(placeholder)
+
+        elif action == "add_fast_simulation_placeholder":
+            placeholder = {
+                "placeholder_type": kwargs.get("placeholder_type") or kwargs.get("type") or "fast_simulation_model",
+                "enabled": kwargs.get("enabled", True),
+                "target": kwargs.get("target", ""),
+                "particle": kwargs.get("particle", ""),
+                "region": kwargs.get("region", ""),
+                "notes": kwargs.get("notes", ""),
+                "parameters": kwargs.get("parameters", {}),
+            }
+            if kwargs.get("placeholder_id"):
+                placeholder["placeholder_id"] = kwargs.get("placeholder_id")
+            candidate.setdefault("fast_simulation_placeholders", []).append(placeholder)
+
+        elif action == "clear_placeholders":
+            placeholder_family = str(kwargs.get("placeholder_family") or "all").strip()
+            if placeholder_family in {"all", "biasing"}:
+                candidate["biasing_placeholders"] = []
+            if placeholder_family in {"all", "fast_simulation"}:
+                candidate["fast_simulation_placeholders"] = []
+            if placeholder_family not in {"all", "biasing", "fast_simulation"}:
+                return None, "placeholder_family must be one of: all, biasing, fast_simulation."
+
+        else:
+            return None, f"Invalid action '{action}' for manage_simulation_control."
+
+        try:
+            next_control = Geant4SimulationControl.from_dict(candidate)
+        except ValueError as exc:
+            return None, str(exc)
+
+        self.current_geometry_state.environment.simulation_control = next_control
+        self._capture_history_state(f"Updated Geant4 simulation control ({action})")
+        success, error_msg = self.recalculate_geometry_state()
+        if not success:
+            return None, f"Update failed during recalculation: {error_msg}"
+
+        return {
+            "simulation_control": next_control.to_dict(),
+            "summary": next_control.to_summary_dict(),
+            "available_process_presets": deepcopy(GEANT4_PROCESS_PRESET_DEFINITIONS),
+        }, None
 
     def add_define(self, name_suggestion, define_type, raw_expression, unit=None, category=None):
         if not self.current_geometry_state: return None, "No project loaded"
@@ -8043,7 +8269,7 @@ class ProjectManager:
         
         return normalized
 
-    def add_source(self, name_suggestion, gps_commands, position, rotation, activity=1.0, confine_to_pv=None, volume_link_id=None, source_type="gps", ion_params=None):
+    def add_source(self, name_suggestion, gps_commands, position, rotation, activity=1.0, confine_to_pv=None, volume_link_id=None, source_type="gps", ion_params=None, gps_command_sequence=None):
         """Adds a new particle source to the project, optionally linked to a volume."""
         if not self.current_geometry_state:
             return None, "No project loaded"
@@ -8065,6 +8291,7 @@ class ProjectManager:
             volume_link_id=volume_link_id,
             source_type=source_type,
             ion_params=ion_params,
+            gps_command_sequence=gps_command_sequence,
         )
 
         if linked_pv:
@@ -8081,7 +8308,7 @@ class ProjectManager:
         
         return new_source.to_dict(), None
 
-    def update_particle_source(self, source_id, new_name, new_gps_commands, new_position, new_rotation, new_activity=None, new_confine_to_pv=None, new_volume_link_id=None, new_source_type=None, new_ion_params=None):
+    def update_particle_source(self, source_id, new_name, new_gps_commands, new_position, new_rotation, new_activity=None, new_confine_to_pv=None, new_volume_link_id=None, new_source_type=None, new_ion_params=None, new_gps_command_sequence=None):
         """Updates the properties of an existing particle source."""
         if not self.current_geometry_state:
             return False, "No project loaded"
@@ -8133,6 +8360,14 @@ class ProjectManager:
 
         if new_ion_params is not None:
             source_to_update.ion_params = new_ion_params
+
+        if new_gps_command_sequence is not None:
+            try:
+                source_to_update.gps_command_sequence = ParticleSource.normalize_gps_command_sequence(
+                    new_gps_command_sequence
+                )
+            except ValueError as exc:
+                return False, str(exc)
 
         # Handle Linked Volume Updates
         source_to_update.volume_link_id = new_volume_link_id
@@ -9674,6 +9909,106 @@ class ProjectManager:
         }
         return self._preflight_finalize(scoped_report)
 
+    def _format_geant4_macro_command(self, command_entry):
+        command = str(command_entry.get("command", "")).strip()
+        value = str(command_entry.get("value", "") or "").strip()
+        return f"{command} {value}".rstrip()
+
+    def _get_simulation_control_macro_commands(self, simulation_control, phase, *, optical_physics=False):
+        if not isinstance(simulation_control, Geant4SimulationControl):
+            simulation_control = Geant4SimulationControl.from_dict(simulation_control)
+
+        macro_lines = []
+
+        if phase == "pre_init":
+            for preset in simulation_control.physics_process_presets:
+                if not preset.get("enabled", True):
+                    continue
+                preset_id = preset.get("preset_id")
+                definition = GEANT4_PROCESS_PRESET_DEFINITIONS.get(preset_id)
+                if not definition:
+                    macro_lines.append(f"# Skipped unknown Geant4 process preset: {preset_id}")
+                    continue
+                if definition.get("requires_optical_physics") and not optical_physics:
+                    macro_lines.append(
+                        f"# Skipped Geant4 process preset '{preset_id}' because optical physics is disabled."
+                    )
+                    continue
+                macro_lines.append(f"# Preset: {definition.get('label', preset_id)}")
+                macro_lines.extend(definition.get("commands", []))
+
+        for command_entry in simulation_control.macro_commands:
+            if not command_entry.get("enabled", True):
+                continue
+            if command_entry.get("phase", "pre_init") != phase:
+                continue
+            comment = command_entry.get("comment")
+            if comment:
+                macro_lines.append(f"# {comment}")
+            macro_lines.append(self._format_geant4_macro_command(command_entry))
+
+        return macro_lines
+
+    def _append_simulation_control_macro_phase(self, macro_content, simulation_control, phase, *, optical_physics=False):
+        lines = self._get_simulation_control_macro_commands(
+            simulation_control,
+            phase,
+            optical_physics=optical_physics,
+        )
+        if not lines:
+            return
+        phase_labels = {
+            "pre_init": "Advanced Geant4 Controls (PreInit)",
+            "post_init": "Advanced Geant4 Controls (PostInit)",
+            "pre_beam": "Advanced Geant4 Controls (PreBeam)",
+        }
+        macro_content.append(f"# --- {phase_labels.get(phase, phase)} ---")
+        macro_content.extend(lines)
+        macro_content.append("")
+
+    def _append_geometry_overlap_test_macro(self, macro_content, simulation_control):
+        if not isinstance(simulation_control, Geant4SimulationControl):
+            simulation_control = Geant4SimulationControl.from_dict(simulation_control)
+        overlap = simulation_control.geometry_overlap_test
+        if not overlap.get("enabled"):
+            return
+        macro_content.append("# --- Geometry Overlap Test ---")
+        macro_content.append(f"/geometry/test/tolerance {float(overlap.get('tolerance_mm', 0.0)):.12g} mm")
+        macro_content.append(f"/geometry/test/verbosity {str(bool(overlap.get('verbosity', True))).lower()}")
+        macro_content.append(f"/geometry/test/resolution {int(overlap.get('resolution', 10000))}")
+        macro_content.append(f"/geometry/test/recursion_start {int(overlap.get('recursion_start', 0))}")
+        macro_content.append(f"/geometry/test/recursion_depth {int(overlap.get('recursion_depth', -1))}")
+        macro_content.append(f"/geometry/test/maximum_errors {int(overlap.get('maximum_errors', 1))}")
+        macro_content.append(f"/geometry/test/check_parallel {str(bool(overlap.get('check_parallel', False))).lower()}")
+        macro_content.append("/geometry/test/run")
+        macro_content.append("")
+
+    def _append_simulation_control_placeholder_notes(self, macro_content, simulation_control):
+        if not isinstance(simulation_control, Geant4SimulationControl):
+            simulation_control = Geant4SimulationControl.from_dict(simulation_control)
+        enabled_biasing = [p for p in simulation_control.biasing_placeholders if p.get("enabled", True)]
+        enabled_fast_sim = [p for p in simulation_control.fast_simulation_placeholders if p.get("enabled", True)]
+        if not enabled_biasing and not enabled_fast_sim:
+            return
+        macro_content.append("# --- Geant4 Simulation Control Placeholders ---")
+        if enabled_biasing:
+            macro_content.append("# Biasing intents saved in project state; AIRPET does not yet register runtime biasing operators.")
+            for entry in enabled_biasing:
+                macro_content.append(
+                    "# Biasing placeholder: "
+                    f"{entry.get('placeholder_type')} target={entry.get('target', '')} "
+                    f"particle={entry.get('particle', '')} notes={entry.get('notes', '')}"
+                )
+        if enabled_fast_sim:
+            macro_content.append("# Fast-simulation intents saved in project state; AIRPET does not yet register runtime fast-simulation models.")
+            for entry in enabled_fast_sim:
+                macro_content.append(
+                    "# Fast-simulation placeholder: "
+                    f"{entry.get('placeholder_type')} target={entry.get('target', '')} "
+                    f"particle={entry.get('particle', '')} notes={entry.get('notes', '')}"
+                )
+        macro_content.append("")
+
     def generate_macro_file(self, job_id, sim_params, build_dir, run_dir, version_dir):
         """
         Generates a Geant4 macro file from simulation parameters.
@@ -10155,6 +10490,13 @@ class ProjectManager:
                 macro_content.append(f"/process/msc/StepLimitMuHad {msc_step_limit_mu_had}")
             macro_content.append("")
 
+        self._append_simulation_control_macro_phase(
+            macro_content,
+            temp_state.environment.simulation_control,
+            "pre_init",
+            optical_physics=temp_state.environment.optical_physics,
+        )
+
         # Geant4 only accepts thread-count commands in PreInit, before /run/initialize.
         threads = resolved_run_manifest.get('threads', 1)
         use_maximum_logical_cores = resolved_run_manifest.get('use_maximum_logical_cores', False)
@@ -10169,6 +10511,21 @@ class ProjectManager:
         # --- Initialize ---
         macro_content.append("/run/initialize")
         macro_content.append("")
+
+        self._append_simulation_control_macro_phase(
+            macro_content,
+            temp_state.environment.simulation_control,
+            "post_init",
+            optical_physics=temp_state.environment.optical_physics,
+        )
+        self._append_geometry_overlap_test_macro(
+            macro_content,
+            temp_state.environment.simulation_control,
+        )
+        self._append_simulation_control_placeholder_notes(
+            macro_content,
+            temp_state.environment.simulation_control,
+        )
 
         # --- Process Inactivation ---
         process_inactivation = temp_state.environment.process_inactivation
@@ -10516,6 +10873,14 @@ class ProjectManager:
 
                     macro_content.append(f"/gps/{cmd} {final_val_str}")
 
+                for sequence_entry in getattr(source, 'gps_command_sequence', []) or []:
+                    if not sequence_entry.get("enabled", True):
+                        continue
+                    sequence_cmd = str(sequence_entry.get("command", "")).strip()
+                    sequence_value = str(sequence_entry.get("value", "") or "").strip()
+                    if sequence_cmd:
+                        macro_content.append(f"/gps/{sequence_cmd} {sequence_value}".rstrip())
+
                 if emit_gps_direction:
                     raw_components = direction_vector.replace(',', ' ').split()
                     formatted_components = []
@@ -10586,6 +10951,12 @@ class ProjectManager:
         event_modulo_seed_once = resolved_run_manifest.get('event_modulo_seed_once', 0)
         if event_modulo_n > 0 or event_modulo_seed_once > 0:
             macro_content.append(f"/run/eventModulo {event_modulo_n} {event_modulo_seed_once}")
+        self._append_simulation_control_macro_phase(
+            macro_content,
+            temp_state.environment.simulation_control,
+            "pre_beam",
+            optical_physics=temp_state.environment.optical_physics,
+        )
         macro_content.append(f"/run/beamOn {num_events}")
 
         # 3. Write the macro file

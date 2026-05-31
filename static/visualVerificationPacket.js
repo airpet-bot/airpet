@@ -215,6 +215,7 @@ function summarizeEnvironment(projectState) {
         local_uniform_magnetic_field: environment.local_uniform_magnetic_field || null,
         local_uniform_electric_field: environment.local_uniform_electric_field || null,
         region_cuts_and_limits: environment.region_cuts_and_limits || null,
+        simulation_control: environment.simulation_control || null,
         optical_physics: Boolean(environment.optical_physics),
         process_inactivation: asArray(environment.process_inactivation),
     };

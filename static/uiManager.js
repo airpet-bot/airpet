@@ -104,7 +104,8 @@ let newProjectButton, saveProjectButton, exportGdmlButton,
 let structureTreeRoot, assembliesListRoot, lvolumesListRoot, definesListRoot, materialsListRoot,
     elementsListRoot, isotopesListRoot, solidsListRoot, opticalSurfacesListRoot, skinSurfacesListRoot,
     borderSurfacesListRoot;
-let inspectorContentDiv, environmentPanelRoot, cadImportsPanelRoot, detectorFeatureGeneratorsPanelRoot, scoringPanelRoot;
+let inspectorContentDiv, environmentPanelRoot, cadImportsPanelRoot, detectorFeatureGeneratorsPanelRoot,
+    simulationControlPanelRoot, scoringPanelRoot;
 let loadedScoringResultSummary = null;
 let previousLoadedScoringResultSummary = null;
 
@@ -356,6 +357,7 @@ export function initUI(cb) {
     environmentPanelRoot = document.getElementById('environment_panel_root');
     cadImportsPanelRoot = document.getElementById('cad_imports_panel_root');
     detectorFeatureGeneratorsPanelRoot = document.getElementById('detector_feature_generators_panel_root');
+    simulationControlPanelRoot = document.getElementById('simulation_control_panel_root');
     scoringPanelRoot = document.getElementById('scoring_panel_root');
 
 
@@ -2138,6 +2140,384 @@ export function setLoadedScoringResultMetadata(versionId, jobId, metadata, { shi
     renderScoringPanel(callbacks.getProjectState ? callbacks.getProjectState() : null);
 }
 
+const SIMULATION_CONTROL_OBJECT_TYPE = 'environment';
+const SIMULATION_CONTROL_OBJECT_ID = 'simulation_control';
+const SIMULATION_PROCESS_PRESETS = [
+    {
+        preset_id: 'em_low_energy_detector',
+        label: 'Low-Energy EM Detector',
+        description: 'Fluorescence, Auger, PIXE, and de-excitation controls useful for low-energy detector studies.',
+    },
+    {
+        preset_id: 'em_precision_transport',
+        label: 'Precision EM Transport',
+        description: 'Applies cuts, integral energy loss, fluctuations, and LPM controls for stricter EM transport.',
+    },
+    {
+        preset_id: 'optical_debug',
+        label: 'Optical Debug Verbosity',
+        description: 'Enables optical process verbosity when optical physics is enabled.',
+    },
+    {
+        preset_id: 'hadronic_diagnostics',
+        label: 'Hadronic Diagnostics',
+        description: 'Turns on hadronic process verbosity for troubleshooting hadron workflows.',
+    },
+];
+
+function coerceSimulationControlBoolean(value, fallback) {
+    return typeof value === 'boolean' ? value : fallback;
+}
+
+function coerceSimulationControlInteger(value, fallback, { min = null } = {}) {
+    const nextValue = Number.parseInt(value, 10);
+    if (!Number.isInteger(nextValue)) return fallback;
+    if (min !== null && nextValue < min) return fallback;
+    return nextValue;
+}
+
+function coerceSimulationControlNumber(value, fallback, { min = null } = {}) {
+    const nextValue = Number(value);
+    if (!Number.isFinite(nextValue)) return fallback;
+    if (min !== null && nextValue < min) return fallback;
+    return nextValue;
+}
+
+function normalizeSimulationControlList(value) {
+    return Array.isArray(value)
+        ? value.filter((entry) => entry && typeof entry === 'object').map((entry) => ({ ...entry }))
+        : [];
+}
+
+function normalizeSimulationControlState(rawState) {
+    const state = rawState && typeof rawState === 'object' ? rawState : {};
+    const overlap = state.geometry_overlap_test && typeof state.geometry_overlap_test === 'object'
+        ? state.geometry_overlap_test
+        : {};
+
+    return {
+        schema_version: coerceSimulationControlInteger(state.schema_version, 1, { min: 1 }),
+        geometry_overlap_test: {
+            enabled: coerceSimulationControlBoolean(overlap.enabled, false),
+            resolution: coerceSimulationControlInteger(overlap.resolution, 10000, { min: 1 }),
+            tolerance_mm: coerceSimulationControlNumber(overlap.tolerance_mm, 0.0, { min: 0 }),
+            verbosity: coerceSimulationControlBoolean(overlap.verbosity, true),
+            recursion_start: coerceSimulationControlInteger(overlap.recursion_start, 0, { min: 0 }),
+            recursion_depth: coerceSimulationControlInteger(overlap.recursion_depth, -1),
+            maximum_errors: coerceSimulationControlInteger(overlap.maximum_errors, 1, { min: 1 }),
+            check_parallel: coerceSimulationControlBoolean(overlap.check_parallel, false),
+        },
+        physics_process_presets: normalizeSimulationControlList(state.physics_process_presets),
+        macro_commands: normalizeSimulationControlList(state.macro_commands),
+        biasing_placeholders: normalizeSimulationControlList(state.biasing_placeholders),
+        fast_simulation_placeholders: normalizeSimulationControlList(state.fast_simulation_placeholders),
+    };
+}
+
+function buildSimulationControlSummary(state) {
+    const overlapEnabled = Boolean(state.geometry_overlap_test.enabled);
+    const enabledPresetCount = state.physics_process_presets.filter((entry) => entry.enabled !== false).length;
+    const enabledMacroCount = state.macro_commands.filter((entry) => entry.enabled !== false).length;
+    const enabledBiasingCount = state.biasing_placeholders.filter((entry) => entry.enabled !== false).length;
+    const enabledFastSimCount = state.fast_simulation_placeholders.filter((entry) => entry.enabled !== false).length;
+    const activeBits = [];
+    if (overlapEnabled) activeBits.push('overlap test');
+    if (enabledPresetCount) activeBits.push(`${enabledPresetCount} process preset${enabledPresetCount === 1 ? '' : 's'}`);
+    if (enabledMacroCount) activeBits.push(`${enabledMacroCount} macro command${enabledMacroCount === 1 ? '' : 's'}`);
+    if (enabledBiasingCount) activeBits.push(`${enabledBiasingCount} biasing intent${enabledBiasingCount === 1 ? '' : 's'}`);
+    if (enabledFastSimCount) activeBits.push(`${enabledFastSimCount} fast-sim intent${enabledFastSimCount === 1 ? '' : 's'}`);
+
+    return activeBits.length > 0
+        ? activeBits.join(', ')
+        : 'No advanced Geant4 controls enabled.';
+}
+
+function setSimulationControlStateValue(state, updates) {
+    return {
+        ...state,
+        ...updates,
+    };
+}
+
+function createSimulationControlIntegerInput(parent, { labelText, id, value, onChange, fieldLabel, min = null }) {
+    const fieldWrap = document.createElement('div');
+    fieldWrap.className = 'environment-vector-field';
+
+    const label = document.createElement('label');
+    label.htmlFor = id;
+    label.textContent = labelText;
+    fieldWrap.appendChild(label);
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.step = '1';
+    if (min !== null) input.min = String(min);
+    input.id = id;
+    input.value = String(value);
+    input.addEventListener('change', () => {
+        const nextValue = Number.parseInt(input.value, 10);
+        if (!Number.isInteger(nextValue) || (min !== null && nextValue < min)) {
+            showError(`${fieldLabel} ${labelText} must be an integer${min !== null ? ` >= ${min}` : ''}.`);
+            input.value = String(value);
+            return;
+        }
+
+        onChange(nextValue);
+    });
+    fieldWrap.appendChild(input);
+    parent.appendChild(fieldWrap);
+}
+
+function appendSimulationControlSummary(parent, title, summary, statusBadge, { open = false } = {}) {
+    const card = document.createElement('details');
+    card.className = 'scoring-card';
+    card.open = open;
+
+    const summaryEl = document.createElement('summary');
+    summaryEl.className = 'scoring-card-summary';
+
+    const layout = document.createElement('div');
+    layout.className = 'scoring-card-summary-layout';
+
+    const text = document.createElement('div');
+    text.className = 'scoring-card-summary-text';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'scoring-title';
+    titleEl.textContent = title;
+    text.appendChild(titleEl);
+
+    const summaryLine = document.createElement('div');
+    summaryLine.className = 'scoring-summary';
+    summaryLine.textContent = summary;
+    text.appendChild(summaryLine);
+
+    const meta = document.createElement('div');
+    meta.className = 'scoring-summary-meta';
+    const badge = document.createElement('code');
+    badge.className = 'scoring-status';
+    badge.textContent = statusBadge;
+    meta.appendChild(badge);
+
+    layout.appendChild(text);
+    layout.appendChild(meta);
+    summaryEl.appendChild(layout);
+    card.appendChild(summaryEl);
+
+    const body = document.createElement('div');
+    body.className = 'scoring-card-body';
+    card.appendChild(body);
+
+    parent.appendChild(card);
+    return body;
+}
+
+function renderSimulationControlPanel(projectState) {
+    if (!simulationControlPanelRoot) return;
+
+    simulationControlPanelRoot.innerHTML = '';
+
+    if (!projectState) {
+        const empty = document.createElement('p');
+        empty.textContent = 'No project loaded.';
+        simulationControlPanelRoot.appendChild(empty);
+        return;
+    }
+
+    const simulationControlState = normalizeSimulationControlState(projectState?.environment?.simulation_control);
+    const persistSimulationControlState = (nextState) => {
+        if (callbacks.onInspectorPropertyChanged) {
+            callbacks.onInspectorPropertyChanged(
+                SIMULATION_CONTROL_OBJECT_TYPE,
+                SIMULATION_CONTROL_OBJECT_ID,
+                'state',
+                nextState,
+            );
+        }
+    };
+
+    const intro = document.createElement('p');
+    intro.className = 'scoring-intro';
+    intro.textContent = 'Advanced Geant4 controls saved with this project: overlap tests, process presets, ordered macro commands, and future biasing/fast-simulation intents.';
+    simulationControlPanelRoot.appendChild(intro);
+
+    const note = document.createElement('p');
+    note.className = 'scoring-note';
+    note.textContent = 'Biasing and fast-simulation entries are placeholders for AI planning until AIRPET registers the required C++ runtime components.';
+    simulationControlPanelRoot.appendChild(note);
+
+    const overlap = simulationControlState.geometry_overlap_test;
+    const overlapBody = appendSimulationControlSummary(
+        simulationControlPanelRoot,
+        'Geometry Overlap Test',
+        overlap.enabled
+            ? `Runs after /run/initialize at ${overlap.resolution} points, tolerance ${overlap.tolerance_mm} mm.`
+            : 'Disabled. Enable this to emit /geometry/test commands after run initialization.',
+        overlap.enabled ? 'runtime' : 'off',
+        { open: true },
+    );
+
+    const updateOverlap = (updates) => {
+        persistSimulationControlState(setSimulationControlStateValue(simulationControlState, {
+            geometry_overlap_test: {
+                ...simulationControlState.geometry_overlap_test,
+                ...updates,
+            },
+        }));
+    };
+
+    const overlapToggle = document.createElement('div');
+    overlapToggle.className = 'environment-toggle-row';
+    const overlapEnabledInput = document.createElement('input');
+    overlapEnabledInput.type = 'checkbox';
+    overlapEnabledInput.id = 'simulation_control_overlap_enabled';
+    overlapEnabledInput.checked = overlap.enabled;
+    overlapEnabledInput.addEventListener('change', () => updateOverlap({ enabled: overlapEnabledInput.checked }));
+    overlapToggle.appendChild(overlapEnabledInput);
+    const overlapEnabledLabel = document.createElement('label');
+    overlapEnabledLabel.htmlFor = overlapEnabledInput.id;
+    overlapEnabledLabel.textContent = 'Enable overlap test';
+    overlapToggle.appendChild(overlapEnabledLabel);
+    overlapBody.appendChild(overlapToggle);
+
+    const overlapRow = document.createElement('div');
+    overlapRow.className = 'environment-vector-row';
+    createScoringIntegerInput(overlapRow, {
+        labelText: 'Resolution',
+        id: 'simulation_control_overlap_resolution',
+        value: overlap.resolution,
+        fieldLabel: 'Geometry overlap test',
+        onChange: (nextValue) => updateOverlap({ resolution: nextValue }),
+    });
+    createEnvironmentFieldInput(overlapRow, {
+        labelText: 'Tolerance (mm)',
+        id: 'simulation_control_overlap_tolerance',
+        value: overlap.tolerance_mm,
+        fieldLabel: 'Geometry overlap test',
+        onChange: (nextValue) => updateOverlap({ tolerance_mm: nextValue }),
+    });
+    createSimulationControlIntegerInput(overlapRow, {
+        labelText: 'Max Errors',
+        id: 'simulation_control_overlap_maximum_errors',
+        value: overlap.maximum_errors,
+        fieldLabel: 'Geometry overlap test',
+        min: 0,
+        onChange: (nextValue) => updateOverlap({ maximum_errors: nextValue }),
+    });
+    overlapBody.appendChild(overlapRow);
+
+    const recursionRow = document.createElement('div');
+    recursionRow.className = 'environment-vector-row';
+    createSimulationControlIntegerInput(recursionRow, {
+        labelText: 'Recursion Start',
+        id: 'simulation_control_overlap_recursion_start',
+        value: overlap.recursion_start,
+        fieldLabel: 'Geometry overlap test',
+        min: 0,
+        onChange: (nextValue) => updateOverlap({ recursion_start: nextValue }),
+    });
+    createSimulationControlIntegerInput(recursionRow, {
+        labelText: 'Recursion Depth',
+        id: 'simulation_control_overlap_recursion_depth',
+        value: overlap.recursion_depth,
+        fieldLabel: 'Geometry overlap test',
+        onChange: (nextValue) => updateOverlap({ recursion_depth: nextValue }),
+    });
+    overlapBody.appendChild(recursionRow);
+
+    [
+        ['verbosity', 'Verbose overlap report'],
+        ['check_parallel', 'Check parallel worlds'],
+    ].forEach(([key, labelText]) => {
+        const toggleRow = document.createElement('div');
+        toggleRow.className = 'environment-toggle-row';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.id = `simulation_control_overlap_${key}`;
+        input.checked = Boolean(overlap[key]);
+        input.addEventListener('change', () => updateOverlap({ [key]: input.checked }));
+        toggleRow.appendChild(input);
+        const label = document.createElement('label');
+        label.htmlFor = input.id;
+        label.textContent = labelText;
+        toggleRow.appendChild(label);
+        overlapBody.appendChild(toggleRow);
+    });
+
+    const enabledPresetIds = new Set(
+        simulationControlState.physics_process_presets
+            .filter((entry) => entry.enabled !== false)
+            .map((entry) => entry.preset_id)
+    );
+    const presetBody = appendSimulationControlSummary(
+        simulationControlPanelRoot,
+        'Physics / Process Presets',
+        enabledPresetIds.size > 0
+            ? `${enabledPresetIds.size} preset${enabledPresetIds.size === 1 ? '' : 's'} enabled.`
+            : 'No process presets enabled.',
+        enabledPresetIds.size > 0 ? 'runtime' : 'off',
+    );
+
+    SIMULATION_PROCESS_PRESETS.forEach((preset) => {
+        const row = document.createElement('div');
+        row.className = 'environment-toggle-row';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.id = `simulation_control_process_${preset.preset_id}`;
+        input.checked = enabledPresetIds.has(preset.preset_id);
+        input.addEventListener('change', () => {
+            const nextPresets = simulationControlState.physics_process_presets
+                .filter((entry) => entry.preset_id !== preset.preset_id);
+            nextPresets.push({
+                preset_id: preset.preset_id,
+                enabled: input.checked,
+            });
+            persistSimulationControlState(setSimulationControlStateValue(simulationControlState, {
+                physics_process_presets: nextPresets,
+            }));
+        });
+        row.appendChild(input);
+        const label = document.createElement('label');
+        label.htmlFor = input.id;
+        label.textContent = preset.label;
+        label.title = preset.description;
+        row.appendChild(label);
+        presetBody.appendChild(row);
+    });
+
+    const presetNote = document.createElement('p');
+    presetNote.className = 'scoring-note';
+    presetNote.textContent = 'These presets emit known-safe Geant4 macro commands. Use the AI tool for one-off advanced macro commands that are not represented here.';
+    presetBody.appendChild(presetNote);
+
+    const advancedBody = appendSimulationControlSummary(
+        simulationControlPanelRoot,
+        'Macro Commands & Future Runtime Hooks',
+        buildSimulationControlSummary(simulationControlState),
+        'advanced',
+    );
+    createReadOnlyProperty(
+        advancedBody,
+        'Macro commands:',
+        `${simulationControlState.macro_commands.filter((entry) => entry.enabled !== false).length} enabled / ${simulationControlState.macro_commands.length} saved`,
+    );
+    createReadOnlyProperty(
+        advancedBody,
+        'Biasing intents:',
+        `${simulationControlState.biasing_placeholders.filter((entry) => entry.enabled !== false).length} enabled / ${simulationControlState.biasing_placeholders.length} saved`,
+    );
+    createReadOnlyProperty(
+        advancedBody,
+        'Fast-sim intents:',
+        `${simulationControlState.fast_simulation_placeholders.filter((entry) => entry.enabled !== false).length} enabled / ${simulationControlState.fast_simulation_placeholders.length} saved`,
+    );
+
+    const advancedNote = document.createElement('p');
+    advancedNote.className = 'scoring-note';
+    advancedNote.textContent = 'Advanced macro commands and placeholders are editable through the AI manage_simulation_control tool for now, so the GUI stays compact.';
+    advancedBody.appendChild(advancedNote);
+}
+
 function renderScoringPanel(projectState) {
     if (!scoringPanelRoot) return;
 
@@ -3391,6 +3771,7 @@ export function updateHierarchy(projectState, sceneUpdate) {
     borderSurfacesListRoot = document.getElementById('border_surfaces_list_root');
     cadImportsPanelRoot = document.getElementById('cad_imports_panel_root');
     detectorFeatureGeneratorsPanelRoot = document.getElementById('detector_feature_generators_panel_root');
+    simulationControlPanelRoot = document.getElementById('simulation_control_panel_root');
     scoringPanelRoot = document.getElementById('scoring_panel_root');
 
     // Clear all lists
@@ -3420,6 +3801,7 @@ export function updateHierarchy(projectState, sceneUpdate) {
     renderEnvironmentPanel(projectState);
     renderCadImportsPanel(projectState);
     renderDetectorFeatureGeneratorsPanel(projectState);
+    renderSimulationControlPanel(projectState);
     renderScoringPanel(projectState);
     updateHierarchyToolButtons(projectState);
 
@@ -4199,6 +4581,7 @@ export function clearHierarchy() {
     renderEnvironmentPanel(null);
     renderCadImportsPanel(null);
     renderDetectorFeatureGeneratorsPanel(null);
+    renderSimulationControlPanel(null);
     renderScoringPanel(null);
 }
 

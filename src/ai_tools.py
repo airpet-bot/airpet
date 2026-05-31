@@ -827,6 +827,75 @@ AI_GEOMETRY_TOOLS = [
             "required": ["object_type", "object_id", "property_path", "new_value"]
         }
     },
+    {
+        "name": "manage_simulation_control",
+        "description": (
+            "Inspect or update advanced Geant4 simulation controls. Use this for geometry overlap tests, "
+            "safe process-control presets, explicit advanced macro commands, and saved biasing/fast-simulation "
+            "intent placeholders. Biasing and fast-simulation placeholders are planning metadata only until AIRPET "
+            "adds the required C++ runtime registration."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "get",
+                        "set_geometry_overlap_test",
+                        "set_process_preset",
+                        "add_macro_command",
+                        "remove_macro_command",
+                        "add_biasing_placeholder",
+                        "add_fast_simulation_placeholder",
+                        "clear_placeholders",
+                    ],
+                },
+                "enabled": {"type": "boolean"},
+                "resolution": {"type": "integer", "description": "Geometry overlap-test surface points. Default is 10000."},
+                "tolerance_mm": {"type": "number", "description": "Geometry overlap-report tolerance in mm."},
+                "verbosity": {"type": "boolean", "description": "Whether Geant4 overlap checking should run verbosely."},
+                "recursion_start": {"type": "integer"},
+                "recursion_depth": {"type": "integer", "description": "Use -1 for full depth."},
+                "maximum_errors": {"type": "integer"},
+                "check_parallel": {"type": "boolean"},
+                "preset_id": {
+                    "type": "string",
+                    "enum": [
+                        "em_low_energy_detector",
+                        "em_precision_transport",
+                        "optical_debug",
+                        "hadronic_diagnostics",
+                    ],
+                    "description": "Process preset to enable/disable.",
+                },
+                "command_id": {"type": "string", "description": "Advanced macro command id for removal or stable updates."},
+                "command": {"type": "string", "description": "Geant4 macro command path, e.g. '/process/eLoss/minKinEnergy'."},
+                "value": {"type": "string", "description": "Single-line macro command value, e.g. '100 eV'."},
+                "phase": {
+                    "type": "string",
+                    "enum": ["pre_init", "post_init", "pre_beam"],
+                    "description": "Macro phase where this command should be emitted.",
+                },
+                "comment": {"type": "string"},
+                "placeholder_id": {"type": "string"},
+                "placeholder_type": {
+                    "type": "string",
+                    "description": "Biasing or fast-simulation type, e.g. importance_sampling, weight_window, gflash, fast_simulation_model.",
+                },
+                "target": {"type": "string", "description": "Target LV/PV/region/envelope name for a placeholder."},
+                "particle": {"type": "string"},
+                "region": {"type": "string"},
+                "notes": {"type": "string"},
+                "parameters": {"type": "object"},
+                "placeholder_family": {
+                    "type": "string",
+                    "enum": ["all", "biasing", "fast_simulation"],
+                },
+            },
+            "required": ["action"],
+        },
+    },
     _create_manage_detector_feature_generator_tool(),
     {
         "name": "search_components",
@@ -1657,7 +1726,7 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "manage_particle_source",
-        "description": "Low-level GPS tool for creating or editing particle sources directly. Prefer configure_incident_beam for simple monoenergetic beams aimed at a target volume. All gps_commands values must be strings with units. Energy format: use '100*keV' or '1*GeV' (with * operator). Geant4 angular modes are ang/type='beam1d' for directed beams and ang/type='iso' for isotropic emission; friendly aliases like 'Direction' and 'Isotropic' are normalized. Geant4 particle names prefer 'e-' and 'e+'; common aliases like 'electron'/'positron' are normalized.",
+        "description": "Low-level GPS tool for creating or editing particle sources directly. Prefer configure_incident_beam for simple monoenergetic beams aimed at a target volume. All gps_commands values must be strings with units. Energy format: use '100*keV' or '1*GeV' (with * operator). Geant4 angular modes are ang/type='beam1d' for directed beams and ang/type='iso' for isotropic emission; friendly aliases like 'Direction' and 'Isotropic' are normalized. Use gps_command_sequence for repeated or ordered advanced GPS commands such as histogram points. Geant4 particle names prefer 'e-' and 'e+'; common aliases like 'electron'/'positron' are normalized.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1676,6 +1745,19 @@ AI_GEOMETRY_TOOLS = [
                     }
                 },
                 "gps_commands": {"type": "object", "description": "GPS commands as key-value pairs. ALL values must be strings. Use energy format '100*keV' or '1*GeV'. Examples: {'particle': 'e-', 'energy': '10*keV', 'pos/type': 'Point', 'ang/type': 'beam1d', 'ang/dir1': '0 0 1'}. Common particles: gamma, e-, e+, proton. Use ang/type='beam1d' for directed beams and ang/type='iso' for isotropic emission. Friendly aliases like distribution/direction/electron are normalized."},
+                "gps_command_sequence": {
+                    "type": "array",
+                    "description": "Ordered advanced GPS command entries emitted as /gps/<command> <value>. Use this when commands repeat or order matters, e.g. [{'command':'ene/type','value':'Arb'}, {'command':'hist/type','value':'energy'}, {'command':'hist/point','value':'0 0'}, {'command':'hist/point','value':'1 1'}, {'command':'hist/inter','value':'Lin'}].",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "enabled": {"type": "boolean"},
+                            "command": {"type": "string"},
+                            "value": {"type": "string"}
+                        },
+                        "required": ["command"]
+                    }
+                },
                 "position": {"type": "object"},
                 "rotation": {"type": "object"},
                 "activity": {"type": "number"},
