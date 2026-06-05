@@ -21,7 +21,7 @@ from .geometry_types import GeometryState, Solid, Define, Material, Element, Iso
                             BorderSurface, ParticleSource, GlobalUniformMagneticField, \
                             GlobalUniformElectricField, LocalUniformMagneticField, ScoringState, \
                             LocalUniformElectricField, Geant4SimulationControl, \
-                            normalize_detector_feature_generator_entry
+                            normalize_detector_feature_generator_entry, normalize_advanced_gps_state
 from .gdml_parser import GDMLParser
 from .gdml_writer import GDMLWriter
 from .step_parser import parse_step_file
@@ -8269,7 +8269,7 @@ class ProjectManager:
         
         return normalized
 
-    def add_source(self, name_suggestion, gps_commands, position, rotation, activity=1.0, confine_to_pv=None, volume_link_id=None, source_type="gps", ion_params=None, gps_command_sequence=None):
+    def add_source(self, name_suggestion, gps_commands, position, rotation, activity=1.0, confine_to_pv=None, volume_link_id=None, source_type="gps", ion_params=None, gps_command_sequence=None, advanced_gps=None):
         """Adds a new particle source to the project, optionally linked to a volume."""
         if not self.current_geometry_state:
             return None, "No project loaded"
@@ -8292,6 +8292,7 @@ class ProjectManager:
             source_type=source_type,
             ion_params=ion_params,
             gps_command_sequence=gps_command_sequence,
+            advanced_gps=advanced_gps,
         )
 
         if linked_pv:
@@ -8308,7 +8309,7 @@ class ProjectManager:
         
         return new_source.to_dict(), None
 
-    def update_particle_source(self, source_id, new_name, new_gps_commands, new_position, new_rotation, new_activity=None, new_confine_to_pv=None, new_volume_link_id=None, new_source_type=None, new_ion_params=None, new_gps_command_sequence=None):
+    def update_particle_source(self, source_id, new_name, new_gps_commands, new_position, new_rotation, new_activity=None, new_confine_to_pv=None, new_volume_link_id=None, new_source_type=None, new_ion_params=None, new_gps_command_sequence=None, new_advanced_gps=None):
         """Updates the properties of an existing particle source."""
         if not self.current_geometry_state:
             return False, "No project loaded"
@@ -8366,6 +8367,12 @@ class ProjectManager:
                 source_to_update.gps_command_sequence = ParticleSource.normalize_gps_command_sequence(
                     new_gps_command_sequence
                 )
+            except ValueError as exc:
+                return False, str(exc)
+
+        if new_advanced_gps is not None:
+            try:
+                source_to_update.advanced_gps = normalize_advanced_gps_state(new_advanced_gps)
             except ValueError as exc:
                 return False, str(exc)
 
@@ -10009,6 +10016,131 @@ class ProjectManager:
                 )
         macro_content.append("")
 
+    def _append_advanced_gps_source_list_settings(self, macro_content, active_sources):
+        source_list_settings = {}
+        for source in active_sources:
+            advanced_gps = getattr(source, 'advanced_gps', None) or {}
+            source_list_settings.update(advanced_gps.get("source_list", {}) or {})
+        if not source_list_settings:
+            return
+
+        macro_content.append("# --- Advanced GPS Source-List Controls ---")
+        if "multiple_vertex" in source_list_settings:
+            macro_content.append(f"/gps/source/multiplevertex {str(bool(source_list_settings['multiple_vertex'])).lower()}")
+        if "flat_sampling" in source_list_settings:
+            macro_content.append(f"/gps/source/flatsampling {str(bool(source_list_settings['flat_sampling'])).lower()}")
+        macro_content.append("")
+
+    def _append_advanced_gps_command_section(self, macro_content, section, command_order):
+        if not section:
+            return
+        for command in command_order:
+            if command not in section:
+                continue
+            value = section.get(command)
+            if command == "ene/calculate":
+                if str(value).strip().lower() in {"true", "1", "yes", "on"}:
+                    macro_content.append("/gps/ene/calculate")
+                continue
+            macro_content.append(f"/gps/{command} {str(value).strip()}".rstrip())
+
+    def _append_advanced_gps_histograms(self, macro_content, histograms):
+        for histogram in histograms or []:
+            if not histogram.get("enabled", True):
+                continue
+            hist_type = histogram.get("type")
+            if not hist_type:
+                continue
+            if histogram.get("reset"):
+                macro_content.append(f"/gps/hist/reset {hist_type}")
+            macro_content.append(f"/gps/hist/type {hist_type}")
+            if histogram.get("file"):
+                macro_content.append(f"/gps/hist/file {histogram.get('file')}")
+            for point in histogram.get("points", []) or []:
+                macro_content.append(f"/gps/hist/point {point}")
+            if histogram.get("interpolation"):
+                macro_content.append(f"/gps/hist/inter {histogram.get('interpolation')}")
+
+    def _append_advanced_gps_source_commands(self, macro_content, source):
+        advanced_gps = getattr(source, 'advanced_gps', None) or {}
+        if not advanced_gps:
+            return
+
+        lines_before = len(macro_content)
+        macro_content.append("# --- Advanced GPS Source Modeling ---")
+        self._append_advanced_gps_command_section(
+            macro_content,
+            advanced_gps.get("control", {}),
+            ["verbose", "number", "time", "polarization", "checkVolume"],
+        )
+        self._append_advanced_gps_command_section(
+            macro_content,
+            advanced_gps.get("position", {}),
+            [
+                "pos/type",
+                "pos/shape",
+                "pos/centre",
+                "pos/rot1",
+                "pos/rot2",
+                "pos/halfx",
+                "pos/halfy",
+                "pos/halfz",
+                "pos/radius",
+                "pos/inner_radius",
+                "pos/sigma_r",
+                "pos/sigma_x",
+                "pos/sigma_y",
+                "pos/paralp",
+                "pos/parthe",
+                "pos/parphi",
+                "pos/confine",
+            ],
+        )
+        self._append_advanced_gps_command_section(
+            macro_content,
+            advanced_gps.get("angular", {}),
+            [
+                "ang/type",
+                "direction",
+                "ang/rot1",
+                "ang/rot2",
+                "ang/mintheta",
+                "ang/maxtheta",
+                "ang/minphi",
+                "ang/maxphi",
+                "ang/sigma_r",
+                "ang/sigma_x",
+                "ang/sigma_y",
+                "ang/focuspoint",
+                "ang/user_coor",
+                "ang/surfnorm",
+            ],
+        )
+        self._append_advanced_gps_command_section(
+            macro_content,
+            advanced_gps.get("energy", {}),
+            [
+                "ene/type",
+                "ene/min",
+                "ene/max",
+                "ene/mono",
+                "ene/sigma",
+                "ene/alpha",
+                "ene/temp",
+                "ene/ezero",
+                "ene/gradient",
+                "ene/intercept",
+                "ene/biasAlpha",
+                "ene/emspec",
+                "ene/diffspec",
+                "ene/applyEneWeight",
+                "ene/calculate",
+            ],
+        )
+        self._append_advanced_gps_histograms(macro_content, advanced_gps.get("histograms", []))
+        if len(macro_content) == lines_before + 1:
+            macro_content.pop()
+
     def generate_macro_file(self, job_id, sim_params, build_dir, run_dir, version_dir):
         """
         Generates a Geant4 macro file from simulation parameters.
@@ -10781,6 +10913,7 @@ class ProjectManager:
             if total_activity == 0: total_activity = 1.0 # Prevent division by zero
 
             macro_content.append("# --- Primary Particle Source(s) ---")
+            self._append_advanced_gps_source_list_settings(macro_content, active_sources)
             
             for i, source in enumerate(active_sources):
                 # Calculate relative intensity (0.0 to 1.0)
@@ -10805,16 +10938,23 @@ class ProjectManager:
                 # Ion source handling
                 if getattr(source, 'type', 'gps') == 'ion':
                     ion_params = getattr(source, 'ion_params', None) or {}
+                    advanced_gps = getattr(source, 'advanced_gps', None) or {}
                     z = int(ion_params.get('Z', 0))
                     a = int(ion_params.get('A', 0))
                     if z <= 0 or a <= 0:
                         raise ValueError(f"Ion source '{source.name}' requires positive integer Z and A.")
                     q = int(ion_params.get('Q', 0))
-                    e = float(ion_params.get('excitation_energy_keV', 0.0))
+                    ion_advanced = advanced_gps.get("ion", {}) if isinstance(advanced_gps, dict) else {}
+                    level = ion_params.get('excitation_level', ion_params.get('level', ion_advanced.get("excitation_level")))
                     macro_content.append("/gps/particle ion")
-                    macro_content.append(f"/gps/ion {z} {a} {q} {e}")
+                    if level is not None:
+                        macro_content.append(f"/gps/ionLvl {z} {a} {q} {int(level)}")
+                    else:
+                        e = float(ion_params.get('excitation_energy_keV', 0.0))
+                        macro_content.append(f"/gps/ion {z} {a} {q} {e}")
                     cmds.pop('particle', None)
                     cmds.pop('ion', None)
+                    cmds.pop('ionLvl', None)
 
                 # Handling Confinement and Transform
                 evaluated_pos = source._evaluated_position
@@ -10873,6 +11013,8 @@ class ProjectManager:
 
                     macro_content.append(f"/gps/{cmd} {final_val_str}")
 
+                self._append_advanced_gps_source_commands(macro_content, source)
+
                 for sequence_entry in getattr(source, 'gps_command_sequence', []) or []:
                     if not sequence_entry.get("enabled", True):
                         continue
@@ -10904,19 +11046,22 @@ class ProjectManager:
                         macro_content.append(f"/gps/direction {direction_vector}")
 	                
 	                # Write Position (Centre)
-                # Use evaluated_pos (either Source origin or PV origin)
-                pos = evaluated_pos
-                macro_content.append(f"/gps/pos/centre {pos['x']} {pos['y']} {pos['z']} mm")
+                advanced_gps = getattr(source, 'advanced_gps', None) or {}
+                transform_mode = advanced_gps.get("airpet_transform_mode", "airpet")
+                if transform_mode == "airpet":
+                    # Use evaluated_pos (either Source origin or PV origin)
+                    pos = evaluated_pos
+                    macro_content.append(f"/gps/pos/centre {pos['x']} {pos['y']} {pos['z']} mm")
 
-                # Write Rotation
-                # Use evaluated_rot (either Source rot or PV rot)
-                rot = evaluated_rot
-                r = R.from_euler('zyx', [rot['z'], rot['y'], rot['x']], degrees=False)
-                rot_matrix = r.as_matrix()
-                x_prime = rot_matrix[:, 0]
-                y_prime = rot_matrix[:, 1]
-                macro_content.append(f"/gps/ang/rot1 {x_prime[0]} {x_prime[1]} {x_prime[2]}")
-                macro_content.append(f"/gps/ang/rot2 {y_prime[0]} {y_prime[1]} {y_prime[2]}")
+                    # Write Rotation
+                    # Use evaluated_rot (either Source rot or PV rot)
+                    rot = evaluated_rot
+                    r = R.from_euler('zyx', [rot['z'], rot['y'], rot['x']], degrees=False)
+                    rot_matrix = r.as_matrix()
+                    x_prime = rot_matrix[:, 0]
+                    y_prime = rot_matrix[:, 1]
+                    macro_content.append(f"/gps/ang/rot1 {x_prime[0]} {x_prime[1]} {x_prime[2]}")
+                    macro_content.append(f"/gps/ang/rot2 {y_prime[0]} {y_prime[1]} {y_prime[2]}")
                 
                 macro_content.append("")
 

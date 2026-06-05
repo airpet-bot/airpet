@@ -1728,6 +1728,29 @@ export async function populateInspector(itemContext, projectState) {
             createReadOnlyProperty(inspectorContentDiv, `/gps/${key}:`, value);
         }
 
+        const sequence = Array.isArray(data.gps_command_sequence) ? data.gps_command_sequence : [];
+        if (sequence.length > 0) {
+            createReadOnlyProperty(
+                inspectorContentDiv,
+                "Ordered GPS Commands:",
+                `${sequence.filter((entry) => entry?.enabled !== false).length} enabled / ${sequence.length} saved`
+            );
+        }
+
+        const advancedGps = data.advanced_gps && typeof data.advanced_gps === 'object' ? data.advanced_gps : null;
+        if (advancedGps) {
+            const sections = ['source_list', 'control', 'position', 'angular', 'energy', 'histograms', 'ion']
+                .filter((sectionName) => advancedGps[sectionName]);
+            createReadOnlyProperty(
+                inspectorContentDiv,
+                "Advanced GPS:",
+                sections.length > 0 ? sections.join(', ') : 'enabled'
+            );
+            if (advancedGps.airpet_transform_mode) {
+                createReadOnlyProperty(inspectorContentDiv, "GPS Transform Mode:", advancedGps.airpet_transform_mode);
+            }
+        }
+
     } else if (type === 'physical_volume') {
         const allDefines = projectState.defines || {};
         const posDefines = {};

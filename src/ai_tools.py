@@ -1736,12 +1736,13 @@ AI_GEOMETRY_TOOLS = [
                 "source_type": {"type": "string", "enum": ["gps", "ion"], "description": "Use 'ion' for Geant4 GPS ion sources configured with ion_params; defaults to 'gps'."},
                 "ion_params": {
                     "type": "object",
-                    "description": "Ion source settings used when source_type='ion'. Z and A are required for a physical ion; Q and excitation_energy_keV are optional.",
+                    "description": "Ion source settings used when source_type='ion'. Z and A are required for a physical ion; Q, excitation_energy_keV, and excitation_level are optional. Use excitation_level for /gps/ionLvl metastable levels 0-9.",
                     "properties": {
                         "Z": {"type": "integer", "description": "Atomic number."},
                         "A": {"type": "integer", "description": "Mass number."},
                         "Q": {"type": "number", "description": "Ion charge state."},
-                        "excitation_energy_keV": {"type": "number", "description": "Excitation energy in keV."}
+                        "excitation_energy_keV": {"type": "number", "description": "Excitation energy in keV."},
+                        "excitation_level": {"type": "integer", "description": "Metastable excitation level for /gps/ionLvl, 0-9."}
                     }
                 },
                 "gps_commands": {"type": "object", "description": "GPS commands as key-value pairs. ALL values must be strings. Use energy format '100*keV' or '1*GeV'. Examples: {'particle': 'e-', 'energy': '10*keV', 'pos/type': 'Point', 'ang/type': 'beam1d', 'ang/dir1': '0 0 1'}. Common particles: gamma, e-, e+, proton. Use ang/type='beam1d' for directed beams and ang/type='iso' for isotropic emission. Friendly aliases like distribution/direction/electron are normalized."},
@@ -1756,6 +1757,132 @@ AI_GEOMETRY_TOOLS = [
                             "value": {"type": "string"}
                         },
                         "required": ["command"]
+                    }
+                },
+                "advanced_gps": {
+                    "type": "object",
+                    "description": (
+                        "Structured Advanced GPS Source Modeling v1. Prefer this over raw gps_commands for complex "
+                        "source distributions. AIRPET emits these as /gps/... macro commands, while still keeping "
+                        "gps_command_sequence as an ordered escape hatch. By default AIRPET writes source position and "
+                        "rotation from the source transform after these commands; set airpet_transform_mode='structured' "
+                        "or 'none' if structured /gps/pos/centre or /gps/ang/rot* commands must not be overwritten."
+                    ),
+                    "properties": {
+                        "airpet_transform_mode": {
+                            "type": "string",
+                            "enum": ["airpet", "structured", "none"],
+                            "description": "Use 'airpet' for normal source transform emission; 'structured' or 'none' skips AIRPET's final /gps/pos/centre and /gps/ang/rot* commands."
+                        },
+                        "source_list": {
+                            "type": "object",
+                            "description": "Global GPS source-list controls applied once for active sources.",
+                            "properties": {
+                                "multiple_vertex": {"type": "boolean", "description": "Emit /gps/source/multiplevertex."},
+                                "flat_sampling": {"type": "boolean", "description": "Emit /gps/source/flatsampling."}
+                            }
+                        },
+                        "control": {
+                            "type": "object",
+                            "description": "Top-level GPS controls.",
+                            "properties": {
+                                "time": {"type": "string", "description": "Initial source time, e.g. '5 ns'."},
+                                "polarization": {"type": "object", "description": "Polarization vector {x,y,z} or string '0 1 0'."},
+                                "number": {"type": "integer", "description": "Particles generated per vertex."},
+                                "check_volume": {"type": "boolean", "description": "Emit /gps/checkVolume."},
+                                "verbose": {"type": "integer", "description": "GPS verbose level."}
+                            }
+                        },
+                        "position": {
+                            "type": "object",
+                            "description": "Structured /gps/pos/* distribution controls.",
+                            "properties": {
+                                "type": {"type": "string", "description": "Point, Beam, Plane, Surface, or Volume."},
+                                "shape": {"type": "string", "description": "Circle, Annulus, Ellipse, Square, Rectangle, Sphere, Ellipsoid, Cylinder, EllipticCylinder, or Para."},
+                                "centre": {"type": "object", "description": "Source center vector {x,y,z, optional unit}; numeric object/list values default to mm, or pass a string with explicit units."},
+                                "rot1": {"type": "object"},
+                                "rot2": {"type": "object"},
+                                "halfx": {"type": "string"},
+                                "halfy": {"type": "string"},
+                                "halfz": {"type": "string"},
+                                "radius": {"type": "string"},
+                                "inner_radius": {"type": "string"},
+                                "sigma_r": {"type": "string"},
+                                "sigma_x": {"type": "string"},
+                                "sigma_y": {"type": "string"},
+                                "paralp": {"type": "string"},
+                                "parthe": {"type": "string"},
+                                "parphi": {"type": "string"},
+                                "confine": {"type": "string"}
+                            }
+                        },
+                        "angular": {
+                            "type": "object",
+                            "description": "Structured /gps/ang/* and /gps/direction controls.",
+                            "properties": {
+                                "type": {"type": "string", "description": "iso, cos, planar, beam1d, beam2d, focused, or user."},
+                                "direction": {"type": "object", "description": "Momentum direction vector {x,y,z} or string."},
+                                "rot1": {"type": "object"},
+                                "rot2": {"type": "object"},
+                                "mintheta": {"type": "string"},
+                                "maxtheta": {"type": "string"},
+                                "minphi": {"type": "string"},
+                                "maxphi": {"type": "string"},
+                                "sigma_r": {"type": "string"},
+                                "sigma_x": {"type": "string"},
+                                "sigma_y": {"type": "string"},
+                                "focuspoint": {"type": "object", "description": "Focused beam target point {x,y,z, optional unit}; numeric object/list values default to mm, or pass a string with explicit units."},
+                                "user_coor": {"type": "boolean"},
+                                "surfnorm": {"type": "boolean"}
+                            }
+                        },
+                        "energy": {
+                            "type": "object",
+                            "description": "Structured /gps/ene/* spectral controls.",
+                            "properties": {
+                                "type": {"type": "string", "description": "Mono, Lin, Pow, Exp, CPow, Gauss, Brem, Bbody, Cdg, User, Arb, Epn, or LW."},
+                                "min": {"type": "string"},
+                                "max": {"type": "string"},
+                                "mono": {"type": "string"},
+                                "sigma": {"type": "string"},
+                                "alpha": {"type": "number"},
+                                "temp": {"type": "number"},
+                                "ezero": {"type": "number"},
+                                "gradient": {"type": "number"},
+                                "intercept": {"type": "number"},
+                                "bias_alpha": {"type": "number"},
+                                "calculate": {"type": "boolean"},
+                                "emspec": {"type": "boolean"},
+                                "diffspec": {"type": "boolean"},
+                                "apply_ene_weight": {"type": "boolean"}
+                            }
+                        },
+                        "histograms": {
+                            "type": "array",
+                            "description": "Histogram and GPS biasing entries. Use type values like energy, arb, theta, phi, biasx, biasy, biasz, biase, biaspt, or biaspp.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "enabled": {"type": "boolean"},
+                                    "type": {"type": "string"},
+                                    "reset": {"type": "boolean"},
+                                    "file": {"type": "string"},
+                                    "points": {
+                                        "type": "array",
+                                        "description": "Histogram points as strings like '1 keV 0.2', arrays [upper, weight], or objects with value/upper/weight."
+                                    },
+                                    "interpolation": {"type": "string", "enum": ["Lin", "Log", "Exp", "Spline"]}
+                                },
+                                "required": ["type"]
+                            }
+                        },
+                        "ion": {
+                            "type": "object",
+                            "description": "Advanced ion controls not represented in basic ion_params.",
+                            "properties": {
+                                "excitation_level": {"type": "integer", "description": "Metastable level for /gps/ionLvl, 0-9."}
+                            }
+                        }
                     }
                 },
                 "position": {"type": "object"},

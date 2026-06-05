@@ -1458,11 +1458,11 @@ export async function realizeDetectorFeatureGenerator(generatorId) {
     return handleResponse(response);
 }
 
-export async function addParticleSource(name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id, source_type = 'gps', ion_params = null, gps_command_sequence = null) {
+export async function addParticleSource(name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id, source_type = 'gps', ion_params = null, gps_command_sequence = null, advanced_gps = null) {
     const response = await fetch(`${API_BASE_URL}/api/add_source`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id, source_type, ion_params, gps_command_sequence })
+        body: JSON.stringify({ name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id, source_type, ion_params, gps_command_sequence, advanced_gps })
     });
     return handleResponse(response);
 }
@@ -1485,7 +1485,7 @@ export async function getSourceParamsFromVolume(volumeId) {
     return handleResponse(response);
 }
 
-export async function updateParticleSource(sourceId, name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id, source_type = null, ion_params = null, gps_command_sequence = null) {
+export async function updateParticleSource(sourceId, name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id, source_type = null, ion_params = null, gps_command_sequence = null, advanced_gps = null) {
     const response = await fetch(`${API_BASE_URL}/api/update_source`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1500,7 +1500,8 @@ export async function updateParticleSource(sourceId, name, gps_commands, positio
             volume_link_id: volume_link_id,
             source_type: source_type,
             ion_params: ion_params,
-            gps_command_sequence: gps_command_sequence
+            gps_command_sequence: gps_command_sequence,
+            advanced_gps: advanced_gps
         })
     });
     return handleResponse(response);

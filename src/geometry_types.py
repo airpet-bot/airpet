@@ -109,6 +109,104 @@ _SUPPORTED_GEANT4_FAST_SIM_PLACEHOLDER_TYPES = {
     "parallel_world_fast_sim",
 }
 
+ADVANCED_GPS_SCHEMA_VERSION = 1
+_SUPPORTED_ADVANCED_GPS_SECTIONS = {
+    "source_list",
+    "control",
+    "position",
+    "angular",
+    "energy",
+    "histograms",
+    "ion",
+    "airpet_transform_mode",
+}
+_SUPPORTED_ADVANCED_GPS_TRANSFORM_MODES = {"airpet", "structured", "none"}
+_SUPPORTED_ADVANCED_GPS_SOURCE_LIST_KEYS = {
+    "multiple_vertex": "multiple_vertex",
+    "multiplevertex": "multiple_vertex",
+    "flat_sampling": "flat_sampling",
+    "flatsampling": "flat_sampling",
+}
+_SUPPORTED_ADVANCED_GPS_CONTROL_COMMANDS = {
+    "time": "time",
+    "polarization": "polarization",
+    "number": "number",
+    "check_volume": "checkVolume",
+    "checkVolume": "checkVolume",
+    "verbose": "verbose",
+}
+_SUPPORTED_ADVANCED_GPS_POSITION_COMMANDS = {
+    "type": "pos/type",
+    "shape": "pos/shape",
+    "centre": "pos/centre",
+    "center": "pos/centre",
+    "rot1": "pos/rot1",
+    "rot2": "pos/rot2",
+    "halfx": "pos/halfx",
+    "halfy": "pos/halfy",
+    "halfz": "pos/halfz",
+    "radius": "pos/radius",
+    "inner_radius": "pos/inner_radius",
+    "sigma_r": "pos/sigma_r",
+    "sigma_x": "pos/sigma_x",
+    "sigma_y": "pos/sigma_y",
+    "paralp": "pos/paralp",
+    "parthe": "pos/parthe",
+    "parphi": "pos/parphi",
+    "confine": "pos/confine",
+}
+_SUPPORTED_ADVANCED_GPS_ANGULAR_COMMANDS = {
+    "type": "ang/type",
+    "rot1": "ang/rot1",
+    "rot2": "ang/rot2",
+    "mintheta": "ang/mintheta",
+    "maxtheta": "ang/maxtheta",
+    "minphi": "ang/minphi",
+    "maxphi": "ang/maxphi",
+    "sigma_r": "ang/sigma_r",
+    "sigma_x": "ang/sigma_x",
+    "sigma_y": "ang/sigma_y",
+    "focuspoint": "ang/focuspoint",
+    "user_coor": "ang/user_coor",
+    "surfnorm": "ang/surfnorm",
+    "direction": "direction",
+}
+_SUPPORTED_ADVANCED_GPS_ENERGY_COMMANDS = {
+    "type": "ene/type",
+    "min": "ene/min",
+    "max": "ene/max",
+    "mono": "ene/mono",
+    "sigma": "ene/sigma",
+    "alpha": "ene/alpha",
+    "temp": "ene/temp",
+    "ezero": "ene/ezero",
+    "gradient": "ene/gradient",
+    "intercept": "ene/intercept",
+    "bias_alpha": "ene/biasAlpha",
+    "biasAlpha": "ene/biasAlpha",
+    "calculate": "ene/calculate",
+    "emspec": "ene/emspec",
+    "diffspec": "ene/diffspec",
+    "apply_ene_weight": "ene/applyEneWeight",
+    "applyEneWeight": "ene/applyEneWeight",
+}
+_SUPPORTED_ADVANCED_GPS_HISTOGRAM_TYPES = {
+    "biasx",
+    "biasy",
+    "biasz",
+    "biast",
+    "biasp",
+    "biase",
+    "biaspt",
+    "biaspp",
+    "theta",
+    "phi",
+    "energy",
+    "arb",
+    "epn",
+}
+_SUPPORTED_ADVANCED_GPS_HISTOGRAM_INTERPOLATIONS = {"Lin", "Log", "Exp", "Spline"}
+
 def convert_to_internal_units(value, unit_str, category="length"):
     if value is None: return None
     try:
@@ -2479,7 +2577,255 @@ class BorderSurface:
         instance = cls(data['name'], data['physvol1_ref'], data['physvol2_ref'], data['surfaceproperty_ref'])
         instance.id = data.get('id', instance.id)
         return instance
-    
+
+
+def _normalize_gps_single_line_value(value, field_name, *, allow_empty=False):
+    if value is None:
+        if allow_empty:
+            return ""
+        raise ValueError(f"{field_name} must be provided.")
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (int, float)):
+        return f"{value:.12g}"
+    normalized = str(value).strip()
+    if not normalized and not allow_empty:
+        raise ValueError(f"{field_name} must be non-empty.")
+    if "\n" in normalized or "\r" in normalized:
+        raise ValueError(f"{field_name} must be a single line.")
+    return normalized
+
+
+def _gps_vector_parts_include_unit(parts):
+    return any(re.search(r"[A-Za-z]", str(part)) for part in parts)
+
+
+def _normalize_gps_vector_value(value, field_name, *, unit=None):
+    if isinstance(value, dict):
+        explicit_unit = _normalize_non_empty_string(value.get("unit")) if "unit" in value else None
+        vector_unit = explicit_unit or unit
+        parts = []
+        for axis in ("x", "y", "z"):
+            if axis not in value:
+                raise ValueError(f"{field_name}.{axis} is required.")
+            parts.append(_normalize_gps_single_line_value(value.get(axis), f"{field_name}.{axis}"))
+        normalized = " ".join(parts)
+        if vector_unit and not _gps_vector_parts_include_unit(parts):
+            normalized = f"{normalized} {vector_unit}"
+        return normalized
+    if isinstance(value, (list, tuple)):
+        if len(value) != 3:
+            raise ValueError(f"{field_name} must contain exactly three components.")
+        normalized = " ".join(_normalize_gps_single_line_value(part, f"{field_name}[{index}]") for index, part in enumerate(value))
+        if unit and not _gps_vector_parts_include_unit(value):
+            normalized = f"{normalized} {unit}"
+        return normalized
+    return _normalize_gps_single_line_value(value, field_name)
+
+
+def _normalize_advanced_gps_section(raw_section, field_name, command_map, vector_keys=None, vector_units=None):
+    if raw_section is None:
+        return {}
+    if not isinstance(raw_section, dict):
+        raise ValueError(f"{field_name} must be an object.")
+    vector_keys = set(vector_keys or [])
+    vector_units = vector_units or {}
+    normalized = {}
+    for raw_key, raw_value in raw_section.items():
+        if raw_value is None:
+            continue
+        canonical_key = command_map.get(raw_key)
+        if not canonical_key and raw_key in command_map.values():
+            canonical_key = raw_key
+        if not canonical_key:
+            raise ValueError(
+                f"{field_name}.{raw_key} is not supported. Supported keys: "
+                + ", ".join(sorted(command_map.keys()))
+            )
+        if canonical_key in vector_keys:
+            normalized[canonical_key] = _normalize_gps_vector_value(
+                raw_value,
+                f"{field_name}.{raw_key}",
+                unit=vector_units.get(canonical_key),
+            )
+        else:
+            normalized[canonical_key] = _normalize_gps_single_line_value(raw_value, f"{field_name}.{raw_key}")
+    return normalized
+
+
+def _normalize_advanced_gps_source_list(raw_section, field_name):
+    if raw_section is None:
+        return {}
+    if not isinstance(raw_section, dict):
+        raise ValueError(f"{field_name} must be an object.")
+    normalized = {}
+    for raw_key, raw_value in raw_section.items():
+        canonical_key = _SUPPORTED_ADVANCED_GPS_SOURCE_LIST_KEYS.get(raw_key)
+        if not canonical_key:
+            raise ValueError(
+                f"{field_name}.{raw_key} is not supported. Supported keys: "
+                + ", ".join(sorted(_SUPPORTED_ADVANCED_GPS_SOURCE_LIST_KEYS.keys()))
+            )
+        normalized[canonical_key] = _normalize_boolean(raw_value, False, f"{field_name}.{raw_key}")
+    return normalized
+
+
+def _normalize_advanced_gps_histogram_point(raw_point, field_name):
+    if isinstance(raw_point, dict):
+        if "value" in raw_point:
+            return _normalize_gps_single_line_value(raw_point.get("value"), f"{field_name}.value")
+        values = []
+        for key in ("x", "y", "z"):
+            if key in raw_point:
+                values.append(_normalize_gps_single_line_value(raw_point.get(key), f"{field_name}.{key}"))
+        if len(values) >= 2:
+            return " ".join(values)
+        if "upper" in raw_point and "weight" in raw_point:
+            return " ".join([
+                _normalize_gps_single_line_value(raw_point.get("upper"), f"{field_name}.upper"),
+                _normalize_gps_single_line_value(raw_point.get("weight"), f"{field_name}.weight"),
+            ])
+        raise ValueError(f"{field_name} must include value, x/y components, or upper/weight.")
+    if isinstance(raw_point, (list, tuple)):
+        if len(raw_point) < 2 or len(raw_point) > 3:
+            raise ValueError(f"{field_name} must have two or three components.")
+        return " ".join(
+            _normalize_gps_single_line_value(component, f"{field_name}[{index}]")
+            for index, component in enumerate(raw_point)
+        )
+    return _normalize_gps_single_line_value(raw_point, field_name)
+
+
+def _normalize_advanced_gps_histograms(raw_histograms, field_name):
+    if raw_histograms is None:
+        return []
+    if not isinstance(raw_histograms, list):
+        raise ValueError(f"{field_name} must be an array.")
+    normalized = []
+    for index, raw_entry in enumerate(raw_histograms):
+        entry_field = f"{field_name}[{index}]"
+        if not isinstance(raw_entry, dict):
+            raise ValueError(f"{entry_field} must be an object.")
+        hist_type = _normalize_non_empty_string(raw_entry.get("type") or raw_entry.get("hist_type"))
+        if hist_type not in _SUPPORTED_ADVANCED_GPS_HISTOGRAM_TYPES:
+            raise ValueError(
+                f"{entry_field}.type must be one of: "
+                + ", ".join(sorted(_SUPPORTED_ADVANCED_GPS_HISTOGRAM_TYPES))
+            )
+        entry = {
+            "type": hist_type,
+            "enabled": _normalize_boolean(raw_entry.get("enabled"), True, f"{entry_field}.enabled"),
+        }
+        if "reset" in raw_entry:
+            entry["reset"] = _normalize_boolean(raw_entry.get("reset"), False, f"{entry_field}.reset")
+        file_value = _normalize_non_empty_string(raw_entry.get("file"))
+        if file_value:
+            entry["file"] = file_value
+        interpolation = _normalize_non_empty_string(raw_entry.get("interpolation") or raw_entry.get("inter"))
+        if interpolation:
+            if interpolation not in _SUPPORTED_ADVANCED_GPS_HISTOGRAM_INTERPOLATIONS:
+                raise ValueError(
+                    f"{entry_field}.interpolation must be one of: "
+                    + ", ".join(sorted(_SUPPORTED_ADVANCED_GPS_HISTOGRAM_INTERPOLATIONS))
+                )
+            entry["interpolation"] = interpolation
+        points = raw_entry.get("points")
+        if points is not None:
+            if not isinstance(points, list):
+                raise ValueError(f"{entry_field}.points must be an array.")
+            entry["points"] = [
+                _normalize_advanced_gps_histogram_point(point, f"{entry_field}.points[{point_index}]")
+                for point_index, point in enumerate(points)
+            ]
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_advanced_gps_ion(raw_ion, field_name):
+    if raw_ion is None:
+        return {}
+    if not isinstance(raw_ion, dict):
+        raise ValueError(f"{field_name} must be an object.")
+    normalized = {}
+    level_value = raw_ion.get("excitation_level", raw_ion.get("level"))
+    if level_value is not None:
+        level = _normalize_non_negative_int(level_value, 0, f"{field_name}.excitation_level")
+        if level > 9:
+            raise ValueError(f"{field_name}.excitation_level must be between 0 and 9.")
+        normalized["excitation_level"] = level
+    return normalized
+
+
+def normalize_advanced_gps_state(raw_state):
+    if raw_state is None:
+        return {}
+    if not isinstance(raw_state, dict):
+        raise ValueError("advanced_gps must be an object.")
+
+    normalized = {"schema_version": ADVANCED_GPS_SCHEMA_VERSION}
+
+    transform_mode = raw_state.get("airpet_transform_mode", raw_state.get("transform_mode", "airpet"))
+    transform_mode = _normalize_non_empty_string(transform_mode) or "airpet"
+    if transform_mode not in _SUPPORTED_ADVANCED_GPS_TRANSFORM_MODES:
+        raise ValueError(
+            "advanced_gps.airpet_transform_mode must be one of: "
+            + ", ".join(sorted(_SUPPORTED_ADVANCED_GPS_TRANSFORM_MODES))
+        )
+    if transform_mode != "airpet":
+        normalized["airpet_transform_mode"] = transform_mode
+
+    source_list = _normalize_advanced_gps_source_list(raw_state.get("source_list"), "advanced_gps.source_list")
+    if source_list:
+        normalized["source_list"] = source_list
+
+    control = _normalize_advanced_gps_section(
+        raw_state.get("control"),
+        "advanced_gps.control",
+        _SUPPORTED_ADVANCED_GPS_CONTROL_COMMANDS,
+        vector_keys={"polarization"},
+    )
+    if control:
+        normalized["control"] = control
+
+    position = _normalize_advanced_gps_section(
+        raw_state.get("position"),
+        "advanced_gps.position",
+        _SUPPORTED_ADVANCED_GPS_POSITION_COMMANDS,
+        vector_keys={"pos/centre", "pos/rot1", "pos/rot2"},
+        vector_units={"pos/centre": "mm"},
+    )
+    if position:
+        normalized["position"] = position
+
+    angular = _normalize_advanced_gps_section(
+        raw_state.get("angular"),
+        "advanced_gps.angular",
+        _SUPPORTED_ADVANCED_GPS_ANGULAR_COMMANDS,
+        vector_keys={"ang/rot1", "ang/rot2", "ang/focuspoint", "direction"},
+        vector_units={"ang/focuspoint": "mm"},
+    )
+    if angular:
+        normalized["angular"] = angular
+
+    energy = _normalize_advanced_gps_section(
+        raw_state.get("energy"),
+        "advanced_gps.energy",
+        _SUPPORTED_ADVANCED_GPS_ENERGY_COMMANDS,
+    )
+    if energy:
+        normalized["energy"] = energy
+
+    histograms = _normalize_advanced_gps_histograms(raw_state.get("histograms"), "advanced_gps.histograms")
+    if histograms:
+        normalized["histograms"] = histograms
+
+    ion = _normalize_advanced_gps_ion(raw_state.get("ion"), "advanced_gps.ion")
+    if ion:
+        normalized["ion"] = ion
+
+    return normalized if len(normalized) > 1 else {}
+
+
 class ParticleSource:
     """Represents a particle source (G4GeneralParticleSource) in the project."""
     @staticmethod
@@ -2528,7 +2874,7 @@ class ParticleSource:
 
         return normalized
 
-    def __init__(self, name, gps_commands=None, position=None, rotation=None, vis_attributes=None, activity=1.0, confine_to_pv=None, volume_link_id=None, source_type="gps", ion_params=None, gps_command_sequence=None):
+    def __init__(self, name, gps_commands=None, position=None, rotation=None, vis_attributes=None, activity=1.0, confine_to_pv=None, volume_link_id=None, source_type="gps", ion_params=None, gps_command_sequence=None, advanced_gps=None):
         self.id = str(uuid.uuid4())
         self.name = name
         self.type = source_type # "gps" or "ion"
@@ -2536,6 +2882,7 @@ class ParticleSource:
         # Store the raw GPS commands as a dictionary for easy editing
         self.gps_commands = gps_commands if gps_commands is not None else {}
         self.gps_command_sequence = self.normalize_gps_command_sequence(gps_command_sequence)
+        self.advanced_gps = normalize_advanced_gps_state(advanced_gps)
         self.ion_params = ion_params if ion_params is not None else {}
 
         # Store the position separately for easy access by the transform gizmo
@@ -2557,7 +2904,7 @@ class ParticleSource:
         self._evaluated_rotation = {'x': 0, 'y': 0, 'z': 0}
 
     def to_dict(self):
-        return {
+        data = {
             "id": self.id,
             "name": self.name,
             "type": self.type,
@@ -2572,6 +2919,9 @@ class ParticleSource:
             "_evaluated_position": self._evaluated_position,
             "_evaluated_rotation": self._evaluated_rotation,
         }
+        if self.advanced_gps:
+            data["advanced_gps"] = deepcopy(self.advanced_gps)
+        return data
 
     @classmethod
     def from_dict(cls, data):
@@ -2591,6 +2941,7 @@ class ParticleSource:
             source_type=data.get('type', 'gps'),
             ion_params=data.get('ion_params'),
             gps_command_sequence=data.get('gps_command_sequence'),
+            advanced_gps=data.get('advanced_gps'),
         )
         instance.id = data.get('id', str(uuid.uuid4()))
         instance._evaluated_position = data.get('_evaluated_position', {'x': 0, 'y': 0, 'z': 0})

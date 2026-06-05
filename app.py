@@ -5166,9 +5166,11 @@ def add_source_route():
     source_type = data.get('source_type', 'gps')
     ion_params = data.get('ion_params')
     gps_command_sequence = data.get('gps_command_sequence')
+    advanced_gps = data.get('advanced_gps')
     new_source, error_msg = pm.add_source(
         name_suggestion, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id,
-        source_type=source_type, ion_params=ion_params, gps_command_sequence=gps_command_sequence)
+        source_type=source_type, ion_params=ion_params, gps_command_sequence=gps_command_sequence,
+        advanced_gps=advanced_gps)
     if new_source:
         return create_success_response(pm, "Particle source created.")
     else:
@@ -5221,13 +5223,14 @@ def update_source_route():
     new_source_type = data.get('source_type')
     new_ion_params = data.get('ion_params')
     new_gps_command_sequence = data.get('gps_command_sequence')
+    new_advanced_gps = data.get('advanced_gps')
 
     if not source_id:
         return jsonify({"success": False, "error": "Source ID is required."}), 400
 
     success, error_msg = pm.update_particle_source(
         source_id, new_name, new_gps_commands, new_position, new_rotation, new_activity, new_confine_to_pv, new_volume_link_id,
-        new_source_type, new_ion_params, new_gps_command_sequence
+        new_source_type, new_ion_params, new_gps_command_sequence, new_advanced_gps
     )
 
     if success:
@@ -9207,6 +9210,9 @@ AI_TOOL_ARG_ALIASES = {
         "source": "source_id",
         "gps": "gps_commands",
         "commands": "gps_commands",
+        "advanced": "advanced_gps",
+        "advanced_source": "advanced_gps",
+        "advanced_gps_source": "advanced_gps",
         "ion": "ion_params",
         "ion_params": "ion_params"
     },
@@ -11260,7 +11266,8 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     args.get('volume_link_id'),
                     args.get('source_type', 'gps'),
                     args.get('ion_params'),
-                    args.get('gps_command_sequence')
+                    args.get('gps_command_sequence'),
+                    args.get('advanced_gps')
                 )
                 if new_source:
                     return {
@@ -11290,7 +11297,8 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     args.get('volume_link_id'),
                     args.get('source_type'),
                     args.get('ion_params'),
-                    args.get('gps_command_sequence')
+                    args.get('gps_command_sequence'),
+                    args.get('advanced_gps')
                 )
                 if success:
                     return {"success": True, "message": f"Particle source '{source_id}' updated."}

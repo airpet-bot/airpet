@@ -156,6 +156,8 @@ function summarizeComponent(sceneObject, projectState, hiddenIds) {
         visual: summarizeVisualAttributes(sceneObject.vis_attributes || logicalVolume?.vis_attributes),
         source: sceneObject.is_source ? {
             gps_commands: asRecord(sceneObject.gps_commands),
+            gps_command_sequence: asArray(sceneObject.gps_command_sequence),
+            advanced_gps: sceneObject.advanced_gps || null,
             confine_to_pv: sceneObject.confine_to_pv || null,
             volume_link_id: sceneObject.volume_link_id || null,
         } : null,
@@ -173,6 +175,8 @@ function summarizeSources(projectState) {
         position: source.position || null,
         rotation: source.rotation || null,
         gps_commands: asRecord(source.gps_commands),
+        gps_command_sequence: asArray(source.gps_command_sequence),
+        advanced_gps: source.advanced_gps || null,
         ion_params: source.ion_params || null,
     }));
 }

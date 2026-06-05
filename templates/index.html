@@ -2620,6 +2620,152 @@
             /* Smaller label for X/Y/Z */
         }
 
+        #gpsEditorModal .modal-content {
+            width: min(920px, 96vw) !important;
+            max-height: 92vh;
+            height: auto !important;
+        }
+
+        .gps-advanced-panel {
+            border: 1px solid #d7dee8;
+            border-radius: 8px;
+            background: #f8fafc;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+
+        .gps-advanced-panel summary {
+            cursor: pointer;
+            padding: 10px 12px;
+            font-weight: 700;
+            color: #233142;
+            background: linear-gradient(135deg, #eef4f8, #f8fafc);
+        }
+
+        .gps-advanced-body {
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .gps-advanced-note {
+            color: #536171;
+            font-size: 12px;
+            line-height: 1.45;
+            margin: 0;
+        }
+
+        .gps-advanced-enable-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            font-size: 13px;
+            color: #233142;
+        }
+
+        .gps-advanced-enable-row input {
+            margin-top: 2px;
+        }
+
+        .gps-advanced-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .gps-advanced-card {
+            border: 1px solid #dfe7ef;
+            border-radius: 8px;
+            background: white;
+            padding: 10px;
+        }
+
+        .gps-advanced-card h5 {
+            margin: 0 0 8px 0;
+            color: #233142;
+            font-size: 13px;
+        }
+
+        .gps-advanced-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 8px 12px;
+        }
+
+        .gps-advanced-field {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .gps-advanced-field label {
+            font-size: 11px;
+            font-weight: 700;
+            color: #4b5563;
+        }
+
+        .gps-advanced-field input,
+        .gps-advanced-field select,
+        .gps-advanced-field textarea {
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 28px;
+        }
+
+        .gps-advanced-field textarea {
+            min-height: 76px;
+            resize: vertical;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+        }
+
+        .gps-advanced-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        .gps-advanced-table th,
+        .gps-advanced-table td {
+            border-bottom: 1px solid #e6edf4;
+            padding: 5px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .gps-advanced-table th {
+            color: #4b5563;
+            font-size: 11px;
+        }
+
+        .gps-advanced-table input,
+        .gps-advanced-table select,
+        .gps-advanced-table textarea {
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .gps-advanced-row-actions {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+
+        .gps-advanced-small-button {
+            border: 1px solid #b8c4d2;
+            background: #f3f7fb;
+            border-radius: 5px;
+            padding: 5px 8px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .gps-advanced-small-button:hover {
+            background: #e8f0f7;
+        }
+
         .modal-footer {
             padding: 10px 16px;
             background-color: #f1f1f1;
@@ -5757,6 +5903,10 @@
                         <label for="gpsIonE">Excitation Energy (keV):</label>
                         <input type="number" id="gpsIonE" value="0" step="0.1">
                     </div>
+                    <div class="property_item">
+                        <label for="gpsIonLevel">Metastable Level:</label>
+                        <input type="number" id="gpsIonLevel" value="" min="0" max="9" placeholder="optional 0-9">
+                    </div>
                 </div>
 
                 <hr>
@@ -5790,6 +5940,24 @@
                 <div id="gps-shape-params">
                     <!-- JS will populate this section -->
                 </div>
+
+                <details id="gpsAdvancedGpsPanel" class="gps-advanced-panel">
+                    <summary>Advanced GPS Source Modeling</summary>
+                    <div class="gps-advanced-body">
+                        <p class="gps-advanced-note">
+                            Use this for Geant4 GPS controls beyond the basic source form: source-list behavior,
+                            time/polarization, advanced position/angular/energy distributions, histograms, and
+                            ordered raw /gps commands.
+                        </p>
+                        <label class="gps-advanced-enable-row">
+                            <input type="checkbox" id="gpsAdvancedGpsEnabled">
+                            <span>Include advanced GPS settings in this source</span>
+                        </label>
+                        <div id="gps-advanced-gps-controls" class="gps-advanced-controls">
+                            <!-- JS renders the complete advanced GPS editor here. -->
+                        </div>
+                    </div>
+                </details>
 
             </div>
             <div class="modal-footer">
