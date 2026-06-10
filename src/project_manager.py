@@ -14,6 +14,7 @@ import itertools
 import random
 import time
 import threading
+import uuid
 
 from .geometry_types import GeometryState, Solid, Define, Material, Element, Isotope, \
                             LogicalVolume, PhysicalVolumePlacement, Assembly, ReplicaVolume, \
@@ -29,6 +30,30 @@ from .objective_formula import evaluate_objective_formula
 from .scoring_artifacts import build_run_manifest_summary, build_scoring_runtime_plan
 
 AUTOSAVE_VERSION_ID = "autosave"
+
+DETECTOR_STUDY_SCHEMA_VERSION = 2
+DETECTOR_STUDY_EXECUTION_MODES = {
+    "design_only",
+    "build_validate",
+    "full_study",
+}
+DETECTOR_STUDY_PHASES = {
+    "INTAKE",
+    "PLANNED",
+    "BUILDING",
+    "VISUAL_CHECK",
+    "PREFLIGHT",
+    "READY",
+    "RUNNING",
+    "ANALYZING",
+    "COMPLETE",
+    "NEEDS_ATTENTION",
+    "PAUSED",
+}
+DETECTOR_STUDY_TERMINAL_PHASES = {
+    "COMPLETE",
+    "NEEDS_ATTENTION",
+}
 
 GEANT4_PROCESS_PRESET_DEFINITIONS = {
     "em_low_energy_detector": {
@@ -588,6 +613,10 @@ class ProjectManager:
         self._pre_transaction_state = None
         self._pre_import_state_snapshot = None
         self.chat_history = [] # For AI conversation continuity
+        self.detector_studies = {}
+        self.active_detector_study_id = None
+        self._detector_studies_project_name = None
+        self._detector_studies_lock = threading.RLock()
 
         # --- Project Management ---
         self.project_name = "untitled"
@@ -782,6 +811,736 @@ class ProjectManager:
 
     def _get_project_path(self):
         return os.path.join(self.projects_dir, self.project_name)
+
+    def _detector_studies_path(self):
+        return os.path.join(self._get_project_path(), "detector_studies.json")
+
+    def _detector_study_checkpoints_path(self, study_id):
+        return os.path.join(
+            self._get_project_path(),
+            "study_checkpoints",
+            str(study_id),
+        )
+
+    @staticmethod
+    def _detector_study_timestamp():
+        return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+    @staticmethod
+    def _default_detector_study_coordinator(phase="INTAKE"):
+        normalized_phase = str(phase or "INTAKE").strip().upper()
+        status = "paused" if normalized_phase == "PAUSED" else "active"
+        if normalized_phase == "COMPLETE":
+            status = "complete"
+        elif normalized_phase == "NEEDS_ATTENTION":
+            status = "needs_attention"
+        return {
+            "status": status,
+            "geometry_revision": 0,
+            "visual_verified_revision": None,
+            "preflight_verified_revision": None,
+            "repair_attempts": 0,
+            "max_repair_attempts": 3,
+            "paused_from_phase": None,
+            "last_checkpoint_id": None,
+            "last_visual_verification": None,
+            "last_preflight": None,
+            "interpretation_status": "not_required",
+            "interpretation_error": None,
+        }
+
+    def _normalize_detector_study_record(self, study):
+        if not isinstance(study, dict):
+            return study
+        study["schema_version"] = DETECTOR_STUDY_SCHEMA_VERSION
+        study.setdefault("checkpoints", [])
+        study.setdefault("report", None)
+        coordinator = study.get("coordinator")
+        defaults = self._default_detector_study_coordinator(study.get("phase"))
+        if not isinstance(coordinator, dict):
+            coordinator = {}
+        for key, value in defaults.items():
+            coordinator.setdefault(key, deepcopy(value))
+        try:
+            coordinator["geometry_revision"] = max(
+                0, int(coordinator.get("geometry_revision", 0))
+            )
+        except (TypeError, ValueError):
+            coordinator["geometry_revision"] = 0
+        try:
+            coordinator["repair_attempts"] = max(
+                0, int(coordinator.get("repair_attempts", 0))
+            )
+        except (TypeError, ValueError):
+            coordinator["repair_attempts"] = 0
+        try:
+            coordinator["max_repair_attempts"] = max(
+                1, int(coordinator.get("max_repair_attempts", 3))
+            )
+        except (TypeError, ValueError):
+            coordinator["max_repair_attempts"] = 3
+        study["coordinator"] = coordinator
+        return study
+
+    @staticmethod
+    def _normalize_detector_study_string_list(value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            raise ValueError("Detector study list fields must be arrays of strings.")
+        normalized = []
+        seen = set()
+        for item in value:
+            text = str(item or "").strip()
+            if text and text not in seen:
+                normalized.append(text)
+                seen.add(text)
+        return normalized
+
+    def _ensure_detector_studies_loaded(self):
+        with self._detector_studies_lock:
+            if self._detector_studies_project_name == self.project_name:
+                return
+
+            self.detector_studies = {}
+            self.active_detector_study_id = None
+            path = self._detector_studies_path()
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as handle:
+                        payload = json.load(handle)
+                    raw_studies = payload.get("studies", {})
+                    if isinstance(raw_studies, list):
+                        raw_studies = {
+                            str(item.get("study_id")): item
+                            for item in raw_studies
+                            if isinstance(item, dict) and item.get("study_id")
+                        }
+                    if isinstance(raw_studies, dict):
+                        self.detector_studies = {
+                            str(study_id): self._normalize_detector_study_record(
+                                deepcopy(study)
+                            )
+                            for study_id, study in raw_studies.items()
+                            if isinstance(study, dict)
+                        }
+                    active_id = payload.get("active_study_id")
+                    if active_id in self.detector_studies:
+                        self.active_detector_study_id = active_id
+                except (OSError, ValueError, TypeError):
+                    self.detector_studies = {}
+                    self.active_detector_study_id = None
+
+            self._detector_studies_project_name = self.project_name
+
+    def _write_detector_studies(self):
+        with self._detector_studies_lock:
+            project_path = self._get_project_path()
+            os.makedirs(project_path, exist_ok=True)
+            path = self._detector_studies_path()
+            payload = {
+                "schema_version": DETECTOR_STUDY_SCHEMA_VERSION,
+                "active_study_id": self.active_detector_study_id,
+                "studies": self.detector_studies,
+            }
+            fd, temp_path = tempfile.mkstemp(
+                prefix=".detector_studies_",
+                suffix=".json",
+                dir=project_path,
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, indent=2)
+                os.replace(temp_path, path)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+    def create_detector_study(
+        self,
+        *,
+        goal,
+        execution_mode="full_study",
+        title=None,
+        attachments=None,
+        requirements=None,
+        assumptions=None,
+        success_criteria=None,
+    ):
+        self._ensure_detector_studies_loaded()
+        normalized_goal = str(goal or "").strip()
+        if not normalized_goal:
+            raise ValueError("Detector study goal is required.")
+        normalized_mode = str(execution_mode or "full_study").strip().lower()
+        if normalized_mode not in DETECTOR_STUDY_EXECUTION_MODES:
+            raise ValueError(
+                "execution_mode must be design_only, build_validate, or full_study."
+            )
+
+        created_at = self._detector_study_timestamp()
+        study_id = (
+            f"study_{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}_"
+            f"{uuid.uuid4().hex[:8]}"
+        )
+        normalized_title = str(title or "").strip()
+        if not normalized_title:
+            normalized_title = normalized_goal.splitlines()[0][:80]
+
+        study = {
+            "schema_version": DETECTOR_STUDY_SCHEMA_VERSION,
+            "study_id": study_id,
+            "title": normalized_title,
+            "execution_mode": normalized_mode,
+            "phase": "INTAKE",
+            "status_message": "Study brief created.",
+            "created_at": created_at,
+            "updated_at": created_at,
+            "brief": {
+                "goal": normalized_goal,
+                "requirements": self._normalize_detector_study_string_list(
+                    requirements
+                ),
+                "assumptions": self._normalize_detector_study_string_list(
+                    assumptions
+                ),
+                "success_criteria": self._normalize_detector_study_string_list(
+                    success_criteria
+                ),
+                "attachments": deepcopy(
+                    attachments if isinstance(attachments, list) else []
+                ),
+                "user_requests": [normalized_goal],
+            },
+            "simulation": None,
+            "analysis": None,
+            "coordinator": self._default_detector_study_coordinator("INTAKE"),
+            "checkpoints": [],
+            "report": None,
+            "events": [{
+                "timestamp": created_at,
+                "phase": "INTAKE",
+                "message": "Study brief created.",
+            }],
+        }
+        with self._detector_studies_lock:
+            self.detector_studies[study_id] = study
+            self.active_detector_study_id = study_id
+            self._write_detector_studies()
+        self.create_detector_study_checkpoint(
+            study_id,
+            label="Study intake baseline",
+            phase="INTAKE",
+        )
+        return self.get_detector_study(study_id)
+
+    def get_detector_study(self, study_id=None):
+        self._ensure_detector_studies_loaded()
+        resolved_id = str(
+            study_id or self.active_detector_study_id or ""
+        ).strip()
+        study = self.detector_studies.get(resolved_id)
+        return deepcopy(study) if isinstance(study, dict) else None
+
+    def list_detector_studies(self, limit=20):
+        self._ensure_detector_studies_loaded()
+        try:
+            normalized_limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError):
+            normalized_limit = 20
+        studies = sorted(
+            self.detector_studies.values(),
+            key=lambda study: str(study.get("updated_at") or ""),
+            reverse=True,
+        )
+        return deepcopy(studies[:normalized_limit])
+
+    def set_active_detector_study(self, study_id):
+        self._ensure_detector_studies_loaded()
+        if study_id is None:
+            self.active_detector_study_id = None
+            self._write_detector_studies()
+            return None
+        normalized_id = str(study_id).strip()
+        if normalized_id not in self.detector_studies:
+            raise ValueError(f"Detector study '{normalized_id}' was not found.")
+        self.active_detector_study_id = normalized_id
+        self._write_detector_studies()
+        return deepcopy(self.detector_studies[normalized_id])
+
+    def update_detector_study(
+        self,
+        study_id,
+        *,
+        phase=None,
+        status_message=None,
+        title=None,
+        goal=None,
+        requirements=None,
+        assumptions=None,
+        success_criteria=None,
+        attachments=None,
+        simulation=None,
+        analysis=None,
+        coordinator_updates=None,
+        report=None,
+        clear_results=False,
+        append_user_request=None,
+    ):
+        self._ensure_detector_studies_loaded()
+        normalized_id = str(study_id or "").strip()
+        with self._detector_studies_lock:
+            study = self.detector_studies.get(normalized_id)
+            if not isinstance(study, dict):
+                raise ValueError(f"Detector study '{normalized_id}' was not found.")
+
+            if phase is not None:
+                normalized_phase = str(phase).strip().upper()
+                if normalized_phase not in DETECTOR_STUDY_PHASES:
+                    raise ValueError(
+                        f"Unknown detector study phase '{normalized_phase}'."
+                    )
+                study["phase"] = normalized_phase
+            if status_message is not None:
+                study["status_message"] = str(status_message).strip()
+            if title is not None:
+                normalized_title = str(title).strip()
+                if normalized_title:
+                    study["title"] = normalized_title[:160]
+
+            brief = study.setdefault("brief", {})
+            if goal is not None:
+                normalized_goal = str(goal).strip()
+                if normalized_goal:
+                    brief["goal"] = normalized_goal
+            for key, value in (
+                ("requirements", requirements),
+                ("assumptions", assumptions),
+                ("success_criteria", success_criteria),
+            ):
+                if value is not None:
+                    brief[key] = self._normalize_detector_study_string_list(value)
+            if attachments is not None:
+                brief["attachments"] = deepcopy(
+                    attachments if isinstance(attachments, list) else []
+                )
+            if append_user_request is not None:
+                request_text = str(append_user_request).strip()
+                requests = brief.setdefault("user_requests", [])
+                if request_text and (
+                    not requests or requests[-1] != request_text
+                ):
+                    requests.append(request_text)
+                    brief["user_requests"] = requests[-20:]
+
+            if simulation is not None:
+                study["simulation"] = deepcopy(simulation)
+            if analysis is not None:
+                study["analysis"] = deepcopy(analysis)
+            if clear_results:
+                study["simulation"] = None
+                study["analysis"] = None
+                study["report"] = None
+            if isinstance(coordinator_updates, dict):
+                coordinator = study.setdefault(
+                    "coordinator",
+                    self._default_detector_study_coordinator(study.get("phase")),
+                )
+                coordinator.update(deepcopy(coordinator_updates))
+            if report is not None:
+                study["report"] = deepcopy(report)
+
+            coordinator = study.setdefault(
+                "coordinator",
+                self._default_detector_study_coordinator(study.get("phase")),
+            )
+            current_phase = study.get("phase")
+            if current_phase == "PAUSED":
+                coordinator["status"] = "paused"
+            elif current_phase == "COMPLETE":
+                coordinator["status"] = "complete"
+            elif current_phase == "NEEDS_ATTENTION":
+                coordinator["status"] = "needs_attention"
+            elif coordinator.get("status") != "paused":
+                coordinator["status"] = "active"
+
+            updated_at = self._detector_study_timestamp()
+            study["updated_at"] = updated_at
+            events = study.setdefault("events", [])
+            event_message = str(
+                status_message
+                or f"Study updated in phase {study.get('phase', 'PLANNED')}."
+            ).strip()
+            previous_event = events[-1] if events else {}
+            if (
+                previous_event.get("phase") != study.get("phase")
+                or previous_event.get("message") != event_message
+            ):
+                events.append({
+                    "timestamp": updated_at,
+                    "phase": study.get("phase"),
+                    "message": event_message,
+                })
+                study["events"] = events[-100:]
+
+            self.active_detector_study_id = normalized_id
+            self._write_detector_studies()
+            return deepcopy(study)
+
+    def create_detector_study_checkpoint(self, study_id, *, label, phase=None):
+        self._ensure_detector_studies_loaded()
+        normalized_id = str(study_id or "").strip()
+        with self._detector_studies_lock:
+            study = self.detector_studies.get(normalized_id)
+            if not isinstance(study, dict):
+                raise ValueError(f"Detector study '{normalized_id}' was not found.")
+            coordinator = study.setdefault(
+                "coordinator",
+                self._default_detector_study_coordinator(study.get("phase")),
+            )
+            checkpoint_id = (
+                f"checkpoint_{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}_"
+                f"{uuid.uuid4().hex[:8]}"
+            )
+            checkpoint_dir = self._detector_study_checkpoints_path(normalized_id)
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint_path = os.path.join(checkpoint_dir, f"{checkpoint_id}.json")
+            snapshot = self.current_geometry_state.to_dict()
+            fd, temp_path = tempfile.mkstemp(
+                prefix=".checkpoint_",
+                suffix=".json",
+                dir=checkpoint_dir,
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(snapshot, handle, indent=2)
+                os.replace(temp_path, checkpoint_path)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+            relative_path = os.path.relpath(
+                checkpoint_path,
+                self._get_project_path(),
+            )
+            checkpoint = {
+                "checkpoint_id": checkpoint_id,
+                "label": str(label or "Study checkpoint").strip(),
+                "phase": str(phase or study.get("phase") or "BUILDING").upper(),
+                "geometry_revision": int(
+                    coordinator.get("geometry_revision", 0) or 0
+                ),
+                "created_at": self._detector_study_timestamp(),
+                "path": relative_path,
+            }
+            checkpoints = study.setdefault("checkpoints", [])
+            checkpoints.append(checkpoint)
+            study["checkpoints"] = checkpoints[-24:]
+            coordinator["last_checkpoint_id"] = checkpoint_id
+            study["updated_at"] = checkpoint["created_at"]
+            self._write_detector_studies()
+            return deepcopy(checkpoint)
+
+    def restore_detector_study_checkpoint(self, study_id, checkpoint_id=None):
+        self._ensure_detector_studies_loaded()
+        normalized_id = str(study_id or "").strip()
+        with self._detector_studies_lock:
+            study = self.detector_studies.get(normalized_id)
+            if not isinstance(study, dict):
+                raise ValueError(f"Detector study '{normalized_id}' was not found.")
+            checkpoints = study.get("checkpoints") or []
+            checkpoint = None
+            if checkpoint_id:
+                checkpoint = next(
+                    (
+                        item for item in checkpoints
+                        if item.get("checkpoint_id") == checkpoint_id
+                    ),
+                    None,
+                )
+            elif checkpoints:
+                checkpoint = checkpoints[-1]
+            if not isinstance(checkpoint, dict):
+                raise ValueError("No detector study checkpoint is available.")
+
+            checkpoint_path = os.path.join(
+                self._get_project_path(),
+                str(checkpoint.get("path") or ""),
+            )
+            if not os.path.isfile(checkpoint_path):
+                raise ValueError("The detector study checkpoint file is missing.")
+            with open(checkpoint_path, "r", encoding="utf-8") as handle:
+                snapshot = json.load(handle)
+
+            previous_state = self.current_geometry_state
+            self.current_geometry_state = GeometryState.from_dict(snapshot)
+            success, error_msg = self.recalculate_geometry_state()
+            if not success:
+                self.current_geometry_state = previous_state
+                self.recalculate_geometry_state()
+                raise ValueError(f"Checkpoint restore failed: {error_msg}")
+
+            self._capture_history_state(
+                f"Restore detector study checkpoint: {checkpoint.get('label')}"
+            )
+            coordinator = study.setdefault(
+                "coordinator",
+                self._default_detector_study_coordinator(study.get("phase")),
+            )
+            coordinator["geometry_revision"] = (
+                int(coordinator.get("geometry_revision", 0) or 0) + 1
+            )
+            coordinator["visual_verified_revision"] = None
+            coordinator["preflight_verified_revision"] = None
+            coordinator["last_checkpoint_id"] = checkpoint.get("checkpoint_id")
+            coordinator["status"] = "active"
+            coordinator["interpretation_status"] = "not_required"
+            study["phase"] = str(checkpoint.get("phase") or "BUILDING").upper()
+            study["status_message"] = (
+                f"Restored checkpoint: {checkpoint.get('label', 'Study checkpoint')}."
+            )
+            study["simulation"] = None
+            study["analysis"] = None
+            study["report"] = None
+            study["updated_at"] = self._detector_study_timestamp()
+            study.setdefault("events", []).append({
+                "timestamp": study["updated_at"],
+                "phase": study["phase"],
+                "message": study["status_message"],
+            })
+            self.active_detector_study_id = normalized_id
+            self._write_detector_studies()
+            return deepcopy(study)
+
+    def record_detector_study_geometry_change(self, study_id, message=None):
+        study = self.get_detector_study(study_id)
+        if not study:
+            raise ValueError(f"Detector study '{study_id}' was not found.")
+        coordinator = study.get("coordinator") or {}
+        revision = int(coordinator.get("geometry_revision", 0) or 0) + 1
+        return self.update_detector_study(
+            study_id,
+            phase="BUILDING",
+            status_message=message or "AI updated the detector study configuration.",
+            coordinator_updates={
+                "geometry_revision": revision,
+                "visual_verified_revision": None,
+                "preflight_verified_revision": None,
+                "status": "active",
+                "interpretation_status": "not_required",
+                "interpretation_error": None,
+            },
+            clear_results=True,
+        )
+
+    def record_detector_study_visual_verification(self, study_id, result):
+        study = self.get_detector_study(study_id)
+        if not study:
+            raise ValueError(f"Detector study '{study_id}' was not found.")
+        coordinator = study.get("coordinator") or {}
+        revision = int(coordinator.get("geometry_revision", 0) or 0)
+        public_result = {
+            "request_id": result.get("request_id"),
+            "reason": result.get("reason"),
+            "questions": deepcopy(result.get("questions") or []),
+            "packet_metadata": deepcopy(result.get("packet_metadata") or {}),
+            "attachments": [
+                {
+                    "artifact_id": item.get("artifact_id"),
+                    "original_filename": item.get("original_filename"),
+                    "visual_verification_view": item.get(
+                        "visual_verification_view"
+                    ),
+                }
+                for item in result.get("ai_attachments") or []
+                if isinstance(item, dict)
+            ],
+            "geometry_revision": revision,
+            "verified_at": self._detector_study_timestamp(),
+        }
+        updated = self.update_detector_study(
+            study_id,
+            phase="VISUAL_CHECK",
+            status_message="AI inspected the current detector geometry.",
+            coordinator_updates={
+                "visual_verified_revision": revision,
+                "preflight_verified_revision": None,
+                "last_visual_verification": public_result,
+            },
+        )
+        self.create_detector_study_checkpoint(
+            study_id,
+            label=f"Visual verification revision {revision}",
+            phase="VISUAL_CHECK",
+        )
+        return updated
+
+    def record_detector_study_preflight(self, study_id, report):
+        study = self.get_detector_study(study_id)
+        if not study:
+            raise ValueError(f"Detector study '{study_id}' was not found.")
+        coordinator = study.get("coordinator") or {}
+        revision = int(coordinator.get("geometry_revision", 0) or 0)
+        summary = deepcopy((report or {}).get("summary") or {})
+        can_run = bool(summary.get("can_run"))
+        attempts = int(coordinator.get("repair_attempts", 0) or 0)
+        max_attempts = int(coordinator.get("max_repair_attempts", 3) or 3)
+        if can_run:
+            updated = self.update_detector_study(
+                study_id,
+                phase="READY",
+                status_message="Preflight passed; the study is ready to run.",
+                coordinator_updates={
+                    "preflight_verified_revision": revision,
+                    "repair_attempts": 0,
+                    "last_preflight": {
+                        "geometry_revision": revision,
+                        "checked_at": self._detector_study_timestamp(),
+                        "summary": summary,
+                    },
+                },
+            )
+            self.create_detector_study_checkpoint(
+                study_id,
+                label=f"Preflight-ready revision {revision}",
+                phase="READY",
+            )
+            return updated
+
+        attempts += 1
+        exhausted = attempts >= max_attempts
+        return self.update_detector_study(
+            study_id,
+            phase="NEEDS_ATTENTION" if exhausted else "PREFLIGHT",
+            status_message=(
+                f"Preflight repair budget exhausted after {attempts} attempts."
+                if exhausted
+                else f"Preflight found issues; repair attempt {attempts} of {max_attempts}."
+            ),
+            coordinator_updates={
+                "preflight_verified_revision": None,
+                "repair_attempts": attempts,
+                "last_preflight": {
+                    "geometry_revision": revision,
+                    "checked_at": self._detector_study_timestamp(),
+                    "summary": summary,
+                },
+            },
+        )
+
+    def pause_detector_study(self, study_id):
+        study = self.get_detector_study(study_id)
+        if not study:
+            raise ValueError(f"Detector study '{study_id}' was not found.")
+        if study.get("phase") in {"RUNNING", "ANALYZING"}:
+            raise ValueError(
+                "A detector study cannot be paused while its simulation is running or being analyzed."
+            )
+        if study.get("phase") == "PAUSED":
+            return study
+        return self.update_detector_study(
+            study_id,
+            phase="PAUSED",
+            status_message="Study orchestration paused by the user.",
+            coordinator_updates={
+                "status": "paused",
+                "paused_from_phase": study.get("phase") or "BUILDING",
+            },
+        )
+
+    def resume_detector_study(self, study_id):
+        study = self.get_detector_study(study_id)
+        if not study:
+            raise ValueError(f"Detector study '{study_id}' was not found.")
+        if study.get("phase") != "PAUSED":
+            return study
+        coordinator = study.get("coordinator") or {}
+        resume_phase = str(
+            coordinator.get("paused_from_phase") or "BUILDING"
+        ).upper()
+        if resume_phase not in DETECTOR_STUDY_PHASES or resume_phase == "PAUSED":
+            resume_phase = "BUILDING"
+        return self.update_detector_study(
+            study_id,
+            phase=resume_phase,
+            status_message="Study orchestration resumed.",
+            coordinator_updates={
+                "status": "active",
+                "paused_from_phase": None,
+            },
+        )
+
+    def claim_detector_study_interpretation(self, study_id):
+        study = self.get_detector_study(study_id)
+        if not study:
+            raise ValueError(f"Detector study '{study_id}' was not found.")
+        coordinator = study.get("coordinator") or {}
+        status = str(coordinator.get("interpretation_status") or "")
+        if status not in {"pending", "failed"}:
+            return None
+        return self.update_detector_study(
+            study_id,
+            status_message="AI is interpreting the completed study.",
+            coordinator_updates={
+                "interpretation_status": "running",
+                "interpretation_error": None,
+            },
+        )
+
+    def complete_detector_study_interpretation(
+        self,
+        study_id,
+        *,
+        conclusion=None,
+        error=None,
+    ):
+        study = self.get_detector_study(study_id)
+        if not study:
+            raise ValueError(f"Detector study '{study_id}' was not found.")
+        report = deepcopy(study.get("report") or {})
+        if conclusion is not None:
+            report["ai_conclusion"] = str(conclusion).strip()
+            report["interpretation_completed_at"] = (
+                self._detector_study_timestamp()
+            )
+        failed = bool(error)
+        return self.update_detector_study(
+            study_id,
+            phase="COMPLETE",
+            status_message=(
+                "Study complete and interpreted against its success criteria."
+                if not failed
+                else "Study complete; AI interpretation is available for retry."
+            ),
+            coordinator_updates={
+                "interpretation_status": "failed" if failed else "complete",
+                "interpretation_error": str(error) if failed else None,
+            },
+            report=report,
+        )
+
+    def attach_simulation_to_detector_study(
+        self,
+        study_id,
+        *,
+        job_id,
+        version_id,
+        total_events,
+    ):
+        return self.update_detector_study(
+            study_id,
+            phase="RUNNING",
+            status_message="Simulation is running.",
+            simulation={
+                "job_id": str(job_id),
+                "version_id": str(version_id),
+                "status": "Running",
+                "progress": 0,
+                "total_events": int(total_events),
+            },
+            analysis=None,
+        )
 
     def _get_next_untitled_name(self):
         base = "untitled"
@@ -3534,7 +4293,7 @@ class ProjectManager:
         return max_copy_no + 1
 
     def get_summarized_context(self) -> str:
-        """Returns a compact string summary of the geometry for AI context."""
+        """Returns a bounded workspace summary for AI planning and tool selection."""
         state = self.current_geometry_state
         summary = [f"Project: {self.project_name}", f"World Volume: {state.world_volume_ref}"]
         
@@ -3550,14 +4309,75 @@ class ProjectManager:
         if state.logical_volumes:
             lv_info = []
             for name, lv in list(state.logical_volumes.items())[:30]:
-                lv_info.append(f"{name}({lv.solid_ref})")
+                lv_info.append(
+                    f"{name}({lv.solid_ref})"
+                    f"[material={lv.material_ref},sensitive={'yes' if lv.is_sensitive else 'no'}]"
+                )
             summary.append(f"Logical Volumes: {', '.join(lv_info)}" + ("..." if len(state.logical_volumes) > 30 else ""))
+
+        placements = []
+        for parent_lv in state.logical_volumes.values():
+            if parent_lv.content_type != "physvol":
+                continue
+            for pv in parent_lv.content:
+                pos = getattr(pv, "_evaluated_position", {}) or {}
+                placements.append(
+                    f"{pv.name}[id={pv.id[:8]},lv={pv.volume_ref},parent={parent_lv.name},"
+                    f"pos=({float(pos.get('x', 0)):.6g},{float(pos.get('y', 0)):.6g},"
+                    f"{float(pos.get('z', 0)):.6g})]"
+                )
+                if len(placements) >= 40:
+                    break
+            if len(placements) >= 40:
+                break
+        if placements:
+            total_placements = sum(
+                len(lv.content)
+                for lv in state.logical_volumes.values()
+                if lv.content_type == "physvol" and isinstance(lv.content, list)
+            )
+            summary.append(
+                f"Physical Placements: {', '.join(placements)}"
+                + ("..." if total_placements > len(placements) else "")
+            )
             
         if state.assemblies:
             summary.append(f"Assemblies: {', '.join(list(state.assemblies.keys()))}")
             
         if state.sources:
-            summary.append(f"Sources: {', '.join(list(state.sources.keys()))}")
+            source_info = []
+            active_ids = set(state.active_source_ids or [])
+            for source in list(state.sources.values())[:20]:
+                gps_commands = source.gps_commands or {}
+                source_info.append(
+                    f"{source.name}[id={source.id[:8]},"
+                    f"active={'yes' if source.id in active_ids else 'no'},"
+                    f"particle={gps_commands.get('particle', '?')},"
+                    f"energy={gps_commands.get('energy', '?')}]"
+                )
+            summary.append(
+                f"Sources: {', '.join(source_info)}"
+                + ("..." if len(state.sources) > 20 else "")
+            )
+        else:
+            summary.append("Sources: (none)")
+
+        run_defaults = state.scoring.run_manifest_defaults
+        readout_targets = (
+            list(run_defaults.get("hit_target_sensitive_detectors", []))
+            + list(run_defaults.get("hit_target_logical_volumes", []))
+            + list(run_defaults.get("hit_target_physical_volumes", []))
+        )
+        summary.append(
+            "Run Defaults: "
+            f"events={run_defaults.get('events', 1000)}, "
+            f"threads={run_defaults.get('threads', 1)}, "
+            f"save_hits={run_defaults.get('save_hits', True)}, "
+            f"hit_threshold={run_defaults.get('hit_energy_threshold', '1 eV')}, "
+            f"readout={run_defaults.get('hit_selection_mode', 'all_hits')}, "
+            f"targets={readout_targets or '(none)'}, "
+            f"minimum_hits={run_defaults.get('hit_minimum_multiplicity', 1)}"
+        )
 
         return "\n".join(summary)
 
@@ -9118,6 +9938,168 @@ class ProjectManager:
         self.is_changed = True
         return True, msg
 
+    @staticmethod
+    def _normalize_detector_readout_names(raw_names, field_name):
+        if raw_names is None:
+            return []
+        if not isinstance(raw_names, list):
+            raise ValueError(f"{field_name} must be an array.")
+        result = []
+        seen = set()
+        for raw_name in raw_names:
+            name = str(raw_name or "").strip()
+            if not name:
+                raise ValueError(f"{field_name} entries must be non-empty strings.")
+            if name in seen:
+                continue
+            seen.add(name)
+            result.append(name)
+        return result
+
+    def configure_detector_readout(
+        self,
+        *,
+        hit_selection_mode="all_hits",
+        target_sensitive_detectors=None,
+        target_logical_volumes=None,
+        target_physical_volumes=None,
+        minimum_hit_count=1,
+        hit_energy_threshold=None,
+        mark_targets_sensitive=True,
+    ):
+        """Persist and validate detector-specific hit/event selection settings."""
+        if not self.current_geometry_state:
+            return None, "No project loaded."
+
+        mode = str(hit_selection_mode or "all_hits").strip()
+        if mode not in {"all_hits", "target_hits_only", "triggered_events"}:
+            return None, (
+                "hit_selection_mode must be one of: all_hits, target_hits_only, "
+                "triggered_events."
+            )
+
+        try:
+            detector_names = self._normalize_detector_readout_names(
+                target_sensitive_detectors,
+                "target_sensitive_detectors",
+            )
+            logical_names = self._normalize_detector_readout_names(
+                target_logical_volumes,
+                "target_logical_volumes",
+            )
+            physical_identifiers = self._normalize_detector_readout_names(
+                target_physical_volumes,
+                "target_physical_volumes",
+            )
+            multiplicity = int(minimum_hit_count)
+        except (TypeError, ValueError) as exc:
+            return None, str(exc)
+
+        if multiplicity < 1:
+            return None, "minimum_hit_count must be at least 1."
+
+        state = self.current_geometry_state
+        missing_lvs = [name for name in logical_names if name not in state.logical_volumes]
+        if missing_lvs:
+            return None, "Unknown logical volume(s): " + ", ".join(missing_lvs)
+
+        resolved_pv_names = []
+        resolved_pv_lvs = []
+        missing_pvs = []
+        for identifier in physical_identifiers:
+            matches = []
+            for lv in state.logical_volumes.values():
+                if lv.content_type != "physvol":
+                    continue
+                matches.extend(
+                    pv for pv in lv.content
+                    if pv.id == identifier or pv.name == identifier
+                )
+            for assembly in state.assemblies.values():
+                matches.extend(
+                    pv for pv in assembly.placements
+                    if pv.id == identifier or pv.name == identifier
+                )
+            if not matches:
+                missing_pvs.append(identifier)
+                continue
+            for pv in matches:
+                if pv.name not in resolved_pv_names:
+                    resolved_pv_names.append(pv.name)
+                if pv.volume_ref not in resolved_pv_lvs:
+                    resolved_pv_lvs.append(pv.volume_ref)
+        if missing_pvs:
+            return None, "Unknown physical volume(s): " + ", ".join(missing_pvs)
+
+        inferred_detector_lvs = []
+        for detector_name in detector_names:
+            if detector_name.endswith("_SD"):
+                candidate_lv = detector_name[:-3]
+                if candidate_lv in state.logical_volumes:
+                    inferred_detector_lvs.append(candidate_lv)
+
+        resolved_target_lvs = []
+        for lv_name in logical_names + resolved_pv_lvs + inferred_detector_lvs:
+            if lv_name in state.logical_volumes and lv_name not in resolved_target_lvs:
+                resolved_target_lvs.append(lv_name)
+
+        if mode != "all_hits" and not (
+            detector_names or logical_names or resolved_pv_names
+        ):
+            return None, (
+                "At least one sensitive-detector, logical-volume, or physical-volume "
+                "target is required for this hit selection mode."
+            )
+
+        candidate_scoring = state.scoring.to_dict()
+        defaults = dict(candidate_scoring.get("run_manifest_defaults") or {})
+        defaults.update({
+            "save_hits": True,
+            "save_hit_metadata": True,
+            "hit_selection_mode": mode,
+            "hit_target_sensitive_detectors": detector_names,
+            "hit_target_logical_volumes": logical_names,
+            "hit_target_physical_volumes": resolved_pv_names,
+            "hit_minimum_multiplicity": multiplicity,
+        })
+        if hit_energy_threshold is not None:
+            threshold = str(hit_energy_threshold).strip()
+            if not threshold:
+                return None, "hit_energy_threshold must be a non-empty Geant4 value."
+            defaults["hit_energy_threshold"] = threshold
+        candidate_scoring["run_manifest_defaults"] = defaults
+
+        valid, error = ScoringState.validate(candidate_scoring)
+        if not valid:
+            return None, error
+
+        if mark_targets_sensitive:
+            for lv_name in resolved_target_lvs:
+                state.logical_volumes[lv_name].is_sensitive = True
+
+        state.scoring = ScoringState.from_dict(candidate_scoring)
+        self._capture_history_state(f"Configured detector readout ({mode})")
+        success, error_msg = self.recalculate_geometry_state()
+        if not success:
+            return None, f"Readout update failed during recalculation: {error_msg}"
+
+        readout = {
+            "hit_selection_mode": mode,
+            "target_sensitive_detectors": detector_names,
+            "target_logical_volumes": logical_names,
+            "target_physical_volumes": resolved_pv_names,
+            "minimum_hit_count": multiplicity,
+            "hit_energy_threshold": state.scoring.run_manifest_defaults[
+                "hit_energy_threshold"
+            ],
+            "resolved_sensitive_logical_volumes": resolved_target_lvs,
+            "mark_targets_sensitive": bool(mark_targets_sensitive),
+        }
+        return {
+            "readout": readout,
+            "run_manifest_defaults": deepcopy(state.scoring.run_manifest_defaults),
+        }, None
+
     def _find_pv_by_name(self, pv_name):
         """Helper to find a PV object by its Name across the entire geometry."""
         state = self.current_geometry_state
@@ -11660,6 +12642,36 @@ class ProjectManager:
         # Keep the default low enough that low-energy studies still produce hits.
         hit_threshold = str(resolved_run_manifest.get('hit_energy_threshold') or '1 eV').strip()
         macro_content.append(f"/g4pet/run/hitEnergyThreshold {hit_threshold}")
+        hit_selection_mode = resolved_run_manifest.get('hit_selection_mode', 'all_hits')
+        macro_content.append(f"/g4pet/run/hitSelectionMode {hit_selection_mode}")
+        target_sensitive_detectors = resolved_run_manifest.get(
+            'hit_target_sensitive_detectors', []
+        )
+        if target_sensitive_detectors:
+            macro_content.append(
+                "/g4pet/run/hitTargetSensitiveDetectors "
+                + ",".join(target_sensitive_detectors)
+            )
+        target_logical_volumes = resolved_run_manifest.get(
+            'hit_target_logical_volumes', []
+        )
+        if target_logical_volumes:
+            macro_content.append(
+                "/g4pet/run/hitTargetLogicalVolumes "
+                + ",".join(target_logical_volumes)
+            )
+        target_physical_volumes = resolved_run_manifest.get(
+            'hit_target_physical_volumes', []
+        )
+        if target_physical_volumes:
+            macro_content.append(
+                "/g4pet/run/hitTargetPhysicalVolumes "
+                + ",".join(target_physical_volumes)
+            )
+        macro_content.append(
+            "/g4pet/run/hitMinimumMultiplicity "
+            f"{resolved_run_manifest.get('hit_minimum_multiplicity', 1)}"
+        )
         macro_content.append("")
 
         # --- ADD VERBOSITY FOR DEBUGGING ---

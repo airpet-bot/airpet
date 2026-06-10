@@ -449,6 +449,25 @@ def _normalize_particle_production_cuts(raw_cuts):
     return normalized_cuts
 
 
+def _normalize_readout_target_names(raw_names, field_name):
+    if raw_names is None:
+        return []
+    if not isinstance(raw_names, list):
+        raise ValueError(f"{field_name} must be an array.")
+
+    normalized = []
+    seen = set()
+    for index, raw_name in enumerate(raw_names):
+        name = _normalize_non_empty_string(raw_name)
+        if not name:
+            raise ValueError(f"{field_name}[{index}] must be a non-empty string.")
+        if name in seen:
+            continue
+        seen.add(name)
+        normalized.append(name)
+    return normalized
+
+
 def _default_scoring_run_manifest_defaults():
     return {
         "events": 1000,
@@ -461,6 +480,11 @@ def _default_scoring_run_manifest_defaults():
         "save_particles": False,
         "production_cut": "1.0 mm",
         "hit_energy_threshold": "1 eV",
+        "hit_selection_mode": "all_hits",
+        "hit_target_sensitive_detectors": [],
+        "hit_target_logical_volumes": [],
+        "hit_target_physical_volumes": [],
+        "hit_minimum_multiplicity": 1,
         "tracking_verbose": 0,
         "hits_verbose": 0,
         "run_verbose": 0,
@@ -1007,7 +1031,16 @@ def _normalize_scoring_run_manifest_defaults(raw_defaults):
     if not isinstance(raw_defaults, dict):
         raise ValueError("scoring.run_manifest_defaults must be an object.")
 
-    return {
+    hit_selection_mode = _normalize_non_empty_string(
+        raw_defaults.get("hit_selection_mode", defaults["hit_selection_mode"])
+    ) or defaults["hit_selection_mode"]
+    if hit_selection_mode not in {"all_hits", "target_hits_only", "triggered_events"}:
+        raise ValueError(
+            "scoring.run_manifest_defaults.hit_selection_mode must be one of: "
+            "all_hits, target_hits_only, triggered_events."
+        )
+
+    normalized = {
         "events": _normalize_positive_int(
             raw_defaults.get("events", defaults["events"]),
             "scoring.run_manifest_defaults.events",
@@ -1056,6 +1089,26 @@ def _normalize_scoring_run_manifest_defaults(raw_defaults):
             defaults["hit_energy_threshold"],
             "scoring.run_manifest_defaults.hit_energy_threshold",
         ),
+        "hit_selection_mode": hit_selection_mode,
+        "hit_target_sensitive_detectors": _normalize_readout_target_names(
+            raw_defaults.get("hit_target_sensitive_detectors"),
+            "scoring.run_manifest_defaults.hit_target_sensitive_detectors",
+        ),
+        "hit_target_logical_volumes": _normalize_readout_target_names(
+            raw_defaults.get("hit_target_logical_volumes"),
+            "scoring.run_manifest_defaults.hit_target_logical_volumes",
+        ),
+        "hit_target_physical_volumes": _normalize_readout_target_names(
+            raw_defaults.get("hit_target_physical_volumes"),
+            "scoring.run_manifest_defaults.hit_target_physical_volumes",
+        ),
+        "hit_minimum_multiplicity": _normalize_positive_int(
+            raw_defaults.get(
+                "hit_minimum_multiplicity",
+                defaults["hit_minimum_multiplicity"],
+            ),
+            "scoring.run_manifest_defaults.hit_minimum_multiplicity",
+        ),
         "tracking_verbose": _normalize_non_negative_int(
             raw_defaults.get("tracking_verbose", defaults["tracking_verbose"]),
             defaults["tracking_verbose"],
@@ -1095,6 +1148,20 @@ def _normalize_scoring_run_manifest_defaults(raw_defaults):
             raw_defaults.get("particle_production_cuts")
         ),
     }
+    has_targets = any(
+        normalized[key]
+        for key in (
+            "hit_target_sensitive_detectors",
+            "hit_target_logical_volumes",
+            "hit_target_physical_volumes",
+        )
+    )
+    if hit_selection_mode != "all_hits" and not has_targets:
+        raise ValueError(
+            "scoring.run_manifest_defaults requires at least one detector, logical-volume, "
+            "or physical-volume target when hit_selection_mode is not all_hits."
+        )
+    return normalized
 
 
 def _normalize_detector_feature_generator_entry(raw_entry):

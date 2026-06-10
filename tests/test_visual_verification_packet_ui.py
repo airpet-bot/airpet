@@ -46,6 +46,7 @@ def test_visual_verification_packet_hook_captures_views_and_metadata():
         page.goto(_AIRPET_UI_TEST_URL, wait_until="networkidle")
         page.locator("#ai_visual_check_button").wait_for(state="visible")
         assert page.locator("#ai_visual_check_button").inner_text() == "Visual Check"
+        page.locator("#ai_advanced_settings").evaluate("(element) => { element.open = true; }")
         page.locator("#ai_auto_visual_check_toggle").wait_for(state="visible")
         assert not page.locator("#ai_auto_visual_check_toggle").is_checked()
         page.get_by_role("button", name="File").click()

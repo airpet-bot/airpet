@@ -1,7 +1,12 @@
 import pytest
 import json
 from unittest.mock import MagicMock, patch
-from app import app, dispatch_ai_tool, LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY
+from app import (
+    app,
+    dispatch_ai_tool,
+    LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY,
+    _select_ai_tools_for_conversation,
+)
 from src.project_manager import ProjectManager
 from src.expression_evaluator import ExpressionEvaluator
 from src.ai_tools import AI_GEOMETRY_TOOLS
@@ -32,6 +37,11 @@ def test_run_simulation_ai_schema_exposes_advanced_simulation_options():
     for key in (
         "production_cut",
         "hit_energy_threshold",
+        "hit_selection_mode",
+        "hit_target_sensitive_detectors",
+        "hit_target_logical_volumes",
+        "hit_target_physical_volumes",
+        "hit_minimum_multiplicity",
         "save_hits",
         "save_hit_metadata",
         "save_particles",
@@ -47,6 +57,40 @@ def test_run_simulation_ai_schema_exposes_advanced_simulation_options():
     assert properties["save_hits"]["type"] == "boolean"
     assert properties["seed1"]["type"] == "integer"
     assert properties["physics_list"]["type"] == "string"
+
+    tool_dict = {tool["name"]: tool for tool in AI_GEOMETRY_TOOLS}
+    assert "configure_detector_readout" in tool_dict
+    assert "run_detector_study" in tool_dict
+    assert "manage_detector_study" in tool_dict
+    assert tool_dict["configure_detector_readout"]["parameters"]["properties"][
+        "hit_selection_mode"
+    ]["enum"] == ["all_hits", "target_hits_only", "triggered_events"]
+
+
+def test_ai_tool_routing_keeps_detector_study_tools_without_full_catalog():
+    selected = _select_ai_tools_for_conversation(
+        [],
+        "Run 1000 events and save only hits in SensorLV above 100 keV.",
+    )
+    selected_names = {tool["name"] for tool in selected}
+
+    assert "run_detector_study" in selected_names
+    assert "configure_detector_readout" in selected_names
+    assert "configure_incident_beam" in selected_names
+    assert "get_simulation_analysis" in selected_names
+    assert "run_optimization" not in selected_names
+    assert len(selected) < len(AI_GEOMETRY_TOOLS)
+
+
+def test_ai_tool_routing_uses_recent_context_for_short_followup():
+    selected = _select_ai_tools_for_conversation(
+        [{"role": "user", "content": "Configure a gamma source and simulate the detector."}],
+        "Yes, do it.",
+    )
+    selected_names = {tool["name"] for tool in selected}
+
+    assert "run_detector_study" in selected_names
+    assert "configure_incident_beam" in selected_names
 
 
 def test_get_simulation_analysis_ai_schema_exposes_sensitive_detector_filter():

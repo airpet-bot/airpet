@@ -169,6 +169,8 @@ const ITEMS_PER_GROUP = 100;
 let simEventsInput, runSimButton, stopSimButton, preflightButton, simOptionsButton, simConsole,
     simStatusDisplay, simOptionsModal, saveSimOptionsButton, simThreadsInput, simSeed1Input, simSeed2Input,
     simSaveHitsCheckbox, simSaveHitMetadataCheckbox, simHitEnergyThresholdInput, simProductionCutInput, simSaveParticlesCheckbox, simSaveTracksRangeInput, simPrintProgressInput,
+    simHitSelectionModeSelect, simHitTargetSensitiveDetectorsInput, simHitTargetLogicalVolumesInput,
+    simHitTargetPhysicalVolumesInput, simHitMinimumMultiplicityInput,
     drawTracksCheckbox, drawTracksRangeInput,
     simPhysicsListSelect, simOpticalPhysicsCheckbox,
     preflightPanel, preflightSummaryLine, preflightScopeLine, preflightDeltaLine, preflightScopeHintLine,
@@ -445,6 +447,11 @@ export function initUI(cb) {
     simSaveHitsCheckbox = document.getElementById('simSaveHits');
     simSaveHitMetadataCheckbox = document.getElementById('simSaveHitMetadata');
     simHitEnergyThresholdInput = document.getElementById('simHitEnergyThreshold');
+    simHitSelectionModeSelect = document.getElementById('simHitSelectionMode');
+    simHitTargetSensitiveDetectorsInput = document.getElementById('simHitTargetSensitiveDetectors');
+    simHitTargetLogicalVolumesInput = document.getElementById('simHitTargetLogicalVolumes');
+    simHitTargetPhysicalVolumesInput = document.getElementById('simHitTargetPhysicalVolumes');
+    simHitMinimumMultiplicityInput = document.getElementById('simHitMinimumMultiplicity');
     simProductionCutInput = document.getElementById('simProductionCut');
     simSaveParticlesCheckbox = document.getElementById('simSaveParticles');
     simSaveTracksRangeInput = document.getElementById('simSaveTracksRange');
@@ -2711,6 +2718,88 @@ function renderScoringPanel(projectState) {
         },
     });
     runControlsBody.appendChild(thresholdRow);
+
+    const readoutModeRow = document.createElement('div');
+    readoutModeRow.className = 'property_item';
+    const readoutModeLabel = document.createElement('label');
+    readoutModeLabel.htmlFor = 'scoring_run_defaults_hit_selection_mode';
+    readoutModeLabel.textContent = 'Detector Readout';
+    readoutModeRow.appendChild(readoutModeLabel);
+    const readoutModeSelect = document.createElement('select');
+    readoutModeSelect.id = 'scoring_run_defaults_hit_selection_mode';
+    [
+        ['all_hits', 'All detector hits'],
+        ['target_hits_only', 'Selected detector hits only'],
+        ['triggered_events', 'Triggered events (retain all hits)'],
+    ].forEach(([value, label]) => {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        readoutModeSelect.appendChild(option);
+    });
+    readoutModeSelect.value = scoringState.run_manifest_defaults.hit_selection_mode;
+    readoutModeSelect.addEventListener('change', () => {
+        persistRunManifestDefaults({ hit_selection_mode: readoutModeSelect.value });
+    });
+    readoutModeRow.appendChild(readoutModeSelect);
+    runControlsBody.appendChild(readoutModeRow);
+
+    const readoutTargetSpecs = [
+        {
+            key: 'hit_target_sensitive_detectors',
+            label: 'Sensitive Detectors',
+            placeholder: 'SensorLV_SD',
+        },
+        {
+            key: 'hit_target_logical_volumes',
+            label: 'Logical Volumes',
+            placeholder: 'SensorLV, TriggerLV',
+        },
+        {
+            key: 'hit_target_physical_volumes',
+            label: 'Physical Volumes',
+            placeholder: 'SensorPV_0, SensorPV_1',
+        },
+    ];
+    readoutTargetSpecs.forEach(({ key, label, placeholder }) => {
+        const row = document.createElement('div');
+        row.className = 'property_item';
+        const labelEl = document.createElement('label');
+        const inputId = `scoring_run_defaults_${key}`;
+        labelEl.htmlFor = inputId;
+        labelEl.textContent = label;
+        row.appendChild(labelEl);
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.id = inputId;
+        input.value = scoringState.run_manifest_defaults[key].join(', ');
+        input.placeholder = placeholder;
+        input.addEventListener('change', () => {
+            persistRunManifestDefaults({
+                [key]: input.value.split(',').map((entry) => entry.trim()).filter(Boolean),
+            });
+        });
+        row.appendChild(input);
+        runControlsBody.appendChild(row);
+    });
+
+    const multiplicityRow = document.createElement('div');
+    multiplicityRow.className = 'environment-vector-row';
+    createScoringIntegerInput(multiplicityRow, {
+        labelText: 'Minimum Trigger Hits',
+        id: 'scoring_run_defaults_hit_minimum_multiplicity',
+        value: scoringState.run_manifest_defaults.hit_minimum_multiplicity,
+        fieldLabel: 'Detector readout',
+        onChange: (nextValue) => {
+            persistRunManifestDefaults({ hit_minimum_multiplicity: nextValue });
+        },
+    });
+    runControlsBody.appendChild(multiplicityRow);
+
+    const readoutNote = document.createElement('p');
+    readoutNote.className = 'scoring-note';
+    readoutNote.textContent = 'Triggered events retain all above-threshold hits from events satisfying the selected-detector multiplicity.';
+    runControlsBody.appendChild(readoutNote);
 
     const outputToggleSpecs = [
         {
@@ -5548,6 +5637,21 @@ export function setSimOptions(options) {
         simSaveHitMetadataCheckbox.checked = options.save_hit_metadata !== false;
     }
     simHitEnergyThresholdInput.value = options.hit_energy_threshold || '1 eV';
+    if (simHitSelectionModeSelect) {
+        simHitSelectionModeSelect.value = options.hit_selection_mode || 'all_hits';
+    }
+    if (simHitTargetSensitiveDetectorsInput) {
+        simHitTargetSensitiveDetectorsInput.value = (options.hit_target_sensitive_detectors || []).join(', ');
+    }
+    if (simHitTargetLogicalVolumesInput) {
+        simHitTargetLogicalVolumesInput.value = (options.hit_target_logical_volumes || []).join(', ');
+    }
+    if (simHitTargetPhysicalVolumesInput) {
+        simHitTargetPhysicalVolumesInput.value = (options.hit_target_physical_volumes || []).join(', ');
+    }
+    if (simHitMinimumMultiplicityInput) {
+        simHitMinimumMultiplicityInput.value = options.hit_minimum_multiplicity || 1;
+    }
     if (simProductionCutInput) {
         simProductionCutInput.value = options.production_cut || '1.0 mm';
     }
@@ -5563,6 +5667,10 @@ export function setSimOptions(options) {
 }
 
 export function getSimOptions() {
+    const parseNameList = (input) => String(input?.value || '')
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
     return {
         threads: parseInt(simThreadsInput.value || 1, 10),
         seed1: parseInt(simSeed1Input.value, 10),
@@ -5571,6 +5679,13 @@ export function getSimOptions() {
         save_hits: simSaveHitsCheckbox.checked,
         save_hit_metadata: simSaveHitMetadataCheckbox ? simSaveHitMetadataCheckbox.checked : true,
         hit_energy_threshold: (simHitEnergyThresholdInput.value || '1 eV').trim(),
+        hit_selection_mode: simHitSelectionModeSelect ? simHitSelectionModeSelect.value : 'all_hits',
+        hit_target_sensitive_detectors: parseNameList(simHitTargetSensitiveDetectorsInput),
+        hit_target_logical_volumes: parseNameList(simHitTargetLogicalVolumesInput),
+        hit_target_physical_volumes: parseNameList(simHitTargetPhysicalVolumesInput),
+        hit_minimum_multiplicity: simHitMinimumMultiplicityInput
+            ? Math.max(1, parseInt(simHitMinimumMultiplicityInput.value || 1, 10))
+            : 1,
         production_cut: (simProductionCutInput && simProductionCutInput.value ? simProductionCutInput.value : '1.0 mm').trim(),
         save_particles: simSaveParticlesCheckbox.checked,
         save_tracks_range: simSaveTracksRangeInput.value,

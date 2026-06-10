@@ -5,13 +5,31 @@
 #include "G4RunManager.hh"
 #include "G4SystemOfUnits.hh"
 #include "G4UIcmdWithADoubleAndUnit.hh"
+#include "G4UIcmdWithAnInteger.hh"
 #include "G4UIcommand.hh"
 #include "G4UIdirectory.hh"
 #include "G4UIparameter.hh"
+#include <sstream>
+
+namespace {
+std::set<G4String> ParseCommaSeparatedNames(const G4String& rawValue) {
+  std::set<G4String> names;
+  std::stringstream stream(rawValue);
+  std::string item;
+  while (std::getline(stream, item, ',')) {
+    const auto first = item.find_first_not_of(" \t");
+    if (first == std::string::npos) continue;
+    const auto last = item.find_last_not_of(" \t");
+    names.insert(item.substr(first, last - first + 1));
+  }
+  return names;
+}
+}
 
 RunAction::RunAction()
     : G4UserRunAction(), fSaveParticles(false), fSaveHits(true), fSaveHitMetadata(true),
-      fHitEnergyThreshold(0.0) {
+      fHitEnergyThreshold(0.0), fHitSelectionMode("all_hits"),
+      fHitMinimumMultiplicity(1) {
   auto analysisManager = G4AnalysisManager::Instance();
   analysisManager->SetDefaultFileType("hdf5");
   analysisManager->SetVerboseLevel(1);
@@ -31,6 +49,26 @@ RunAction::RunAction()
   fHitEnergyThresholdCmd->SetDefaultValue(0.0);
   fHitEnergyThresholdCmd->SetUnitCategory("Energy");
   fHitEnergyThresholdCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+  fHitSelectionModeCmd = new G4UIcommand("/g4pet/run/hitSelectionMode", this);
+  fHitSelectionModeCmd->SetParameter(new G4UIparameter("mode", 's', false));
+  fHitSelectionModeCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+  fHitTargetSensitiveDetectorsCmd =
+      new G4UIcommand("/g4pet/run/hitTargetSensitiveDetectors", this);
+  fHitTargetSensitiveDetectorsCmd->SetParameter(new G4UIparameter("names", 's', true));
+  fHitTargetSensitiveDetectorsCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+  fHitTargetLogicalVolumesCmd =
+      new G4UIcommand("/g4pet/run/hitTargetLogicalVolumes", this);
+  fHitTargetLogicalVolumesCmd->SetParameter(new G4UIparameter("names", 's', true));
+  fHitTargetLogicalVolumesCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+  fHitTargetPhysicalVolumesCmd =
+      new G4UIcommand("/g4pet/run/hitTargetPhysicalVolumes", this);
+  fHitTargetPhysicalVolumesCmd->SetParameter(new G4UIparameter("names", 's', true));
+  fHitTargetPhysicalVolumesCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+  fHitMinimumMultiplicityCmd =
+      new G4UIcmdWithAnInteger("/g4pet/run/hitMinimumMultiplicity", this);
+  fHitMinimumMultiplicityCmd->SetParameterName("count", false);
+  fHitMinimumMultiplicityCmd->SetRange("count>=1");
+  fHitMinimumMultiplicityCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 }
 
 RunAction::~RunAction() {}
@@ -44,6 +82,22 @@ void RunAction::SetNewValue(G4UIcommand *command, G4String newValue) {
     fSaveHitMetadata = G4UIcommand::ConvertToBool(newValue);
   } else if (command == fHitEnergyThresholdCmd) {
     fHitEnergyThreshold = fHitEnergyThresholdCmd->GetNewDoubleValue(newValue);
+  } else if (command == fHitSelectionModeCmd) {
+    if (newValue == "all_hits" || newValue == "target_hits_only" ||
+        newValue == "triggered_events") {
+      fHitSelectionMode = newValue;
+    } else {
+      G4cerr << "--> WARNING: Unknown hit selection mode '" << newValue
+             << "'. Keeping '" << fHitSelectionMode << "'." << G4endl;
+    }
+  } else if (command == fHitTargetSensitiveDetectorsCmd) {
+    fHitTargetSensitiveDetectors = ParseCommaSeparatedNames(newValue);
+  } else if (command == fHitTargetLogicalVolumesCmd) {
+    fHitTargetLogicalVolumes = ParseCommaSeparatedNames(newValue);
+  } else if (command == fHitTargetPhysicalVolumesCmd) {
+    fHitTargetPhysicalVolumes = ParseCommaSeparatedNames(newValue);
+  } else if (command == fHitMinimumMultiplicityCmd) {
+    fHitMinimumMultiplicity = fHitMinimumMultiplicityCmd->GetNewIntValue(newValue);
   }
 }
 

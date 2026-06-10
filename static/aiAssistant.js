@@ -16,9 +16,17 @@ import {
     buildVisualSelfCritiqueMetadata,
     buildVisualSelfCritiquePrompt,
 } from './visualSelfCritique.js?v=2';
+import {
+    detectorStudySummaryText,
+    normalizeDetectorStudy,
+} from './detectorStudyUi.js';
 
 let messageList, promptInput, generateButton, clearButton, modelSelect, contextStatsEl;
 let attachmentInput, attachButton, visualCheckButton, autoVisualCheckToggle, attachmentTray;
+let executionModeSelect, studyCard, studyTitle, studyPhase, studyProgress;
+let studyGoal, studySummary, studyQuietStatus, studyRefreshButton, studyNewButton;
+let studyPauseButton, studyUndoPhaseButton, studyInterpretButton;
+let studyReportToggle, studyReportPanel;
 let isProcessing = false;
 let onGeometryUpdateCallback = () => {};
 let onVisualVerificationPacketRequested = null;
@@ -34,8 +42,13 @@ let runtimeConfigReloadBtn, runtimeConfigClearBtn, runtimeConfigCancelBtn, runti
 let runtimeConfigFormEls = {};
 let runtimeConfigLoaded = false;
 let historyLoaded = false;
+let activeDetectorStudy = null;
+let detectorStudyPollTimer = null;
+let detectorStudyInterpretationInFlight = false;
+const detectorStudyInterpretationAttemptedIds = new Set();
 
 const AUTO_VISUAL_CHECK_STORAGE_KEY = 'airpet_auto_visual_check_enabled';
+const AI_EXECUTION_MODE_STORAGE_KEY = 'airpet_ai_execution_mode';
 
 const VISUAL_CHECK_TRIGGER_TOOLS = new Set([
     'create_primitive_solid',
@@ -79,6 +92,21 @@ export function init(callbacks) {
     visualCheckButton = document.getElementById('ai_visual_check_button');
     autoVisualCheckToggle = document.getElementById('ai_auto_visual_check_toggle');
     attachmentTray = document.getElementById('ai_attachment_tray');
+    executionModeSelect = document.getElementById('ai_execution_mode');
+    studyCard = document.getElementById('ai_study_card');
+    studyTitle = document.getElementById('ai_study_title');
+    studyPhase = document.getElementById('ai_study_phase');
+    studyProgress = document.getElementById('ai_study_progress');
+    studyGoal = document.getElementById('ai_study_goal');
+    studySummary = document.getElementById('ai_study_summary');
+    studyQuietStatus = document.getElementById('ai_study_quiet_status');
+    studyRefreshButton = document.getElementById('ai_study_refresh');
+    studyNewButton = document.getElementById('ai_study_new');
+    studyPauseButton = document.getElementById('ai_study_pause');
+    studyUndoPhaseButton = document.getElementById('ai_study_undo_phase');
+    studyInterpretButton = document.getElementById('ai_study_interpret');
+    studyReportToggle = document.getElementById('ai_study_report_toggle');
+    studyReportPanel = document.getElementById('ai_study_report_panel');
 
     initRuntimeConfigUi();
 
@@ -117,6 +145,67 @@ export function init(callbacks) {
         });
     }
 
+    if (executionModeSelect) {
+        const savedMode = localStorage.getItem(AI_EXECUTION_MODE_STORAGE_KEY);
+        if (['design_only', 'build_validate', 'full_study'].includes(savedMode)) {
+            executionModeSelect.value = savedMode;
+        }
+        executionModeSelect.addEventListener('change', () => {
+            localStorage.setItem(
+                AI_EXECUTION_MODE_STORAGE_KEY,
+                executionModeSelect.value,
+            );
+            updateExecutionModeHint();
+        });
+        updateExecutionModeHint();
+    }
+
+    if (studyRefreshButton) {
+        studyRefreshButton.addEventListener('click', () => {
+            refreshActiveDetectorStudy({ scheduleNext: true });
+        });
+    }
+
+    if (studyNewButton) {
+        studyNewButton.addEventListener('click', async () => {
+            try {
+                await APIService.clearActiveDetectorStudy();
+                renderActiveDetectorStudy(null);
+                if (promptInput) promptInput.focus();
+            } catch (err) {
+                UIManager.showError(`Could not start a new study: ${err.message || err}`);
+            }
+        });
+    }
+
+    if (studyPauseButton) {
+        studyPauseButton.addEventListener('click', handleDetectorStudyPauseToggle);
+    }
+
+    if (studyUndoPhaseButton) {
+        studyUndoPhaseButton.addEventListener('click', handleDetectorStudyPhaseUndo);
+    }
+
+    if (studyReportToggle) {
+        studyReportToggle.addEventListener('click', () => {
+            if (!studyReportPanel) return;
+            studyReportPanel.hidden = !studyReportPanel.hidden;
+            studyReportToggle.textContent = studyReportPanel.hidden
+                ? 'View report'
+                : 'Hide report';
+        });
+    }
+
+    if (studyInterpretButton) {
+        studyInterpretButton.addEventListener('click', () => {
+            if (!activeDetectorStudy) return;
+            detectorStudyInterpretationAttemptedIds.delete(
+                activeDetectorStudy.study_id,
+            );
+            runDetectorStudyInterpretation({ force: true });
+        });
+    }
+
     if (modelSelect) {
         modelSelect.addEventListener('change', () => {
             refreshContextStats();
@@ -127,6 +216,275 @@ export function init(callbacks) {
     // Load existing history
     loadHistory();
     loadRuntimeConfigProfile({ quiet: true });
+    refreshActiveDetectorStudy({ scheduleNext: true });
+}
+
+function getExecutionMode() {
+    const mode = executionModeSelect?.value;
+    return ['design_only', 'build_validate', 'full_study'].includes(mode)
+        ? mode
+        : 'build_validate';
+}
+
+function updateExecutionModeHint() {
+    if (!studyQuietStatus || activeDetectorStudy) return;
+    const hints = {
+        design_only: 'AIRPET will design and edit, but will not create a managed study.',
+        build_validate: 'AIRPET will build, visually inspect, and preflight the detector.',
+        full_study: 'AIRPET will build, validate, run, monitor, and summarize the study.',
+    };
+    studyQuietStatus.textContent = hints[getExecutionMode()];
+}
+
+function renderActiveDetectorStudy(study) {
+    activeDetectorStudy = normalizeDetectorStudy(study);
+    if (!studyCard) return;
+    if (!activeDetectorStudy) {
+        studyCard.hidden = true;
+        studyCard.classList.remove('complete', 'needs-attention');
+        if (studyReportPanel) {
+            studyReportPanel.hidden = true;
+            studyReportPanel.textContent = '';
+        }
+        updateExecutionModeHint();
+        return;
+    }
+
+    studyCard.hidden = false;
+    studyCard.classList.toggle(
+        'complete',
+        activeDetectorStudy.phase === 'COMPLETE',
+    );
+    studyCard.classList.toggle(
+        'needs-attention',
+        activeDetectorStudy.phase === 'NEEDS_ATTENTION',
+    );
+    if (studyTitle) {
+        studyTitle.textContent = activeDetectorStudy.title || 'Detector study';
+    }
+    if (studyPhase) {
+        studyPhase.textContent = activeDetectorStudy.phaseLabel;
+    }
+    if (studyProgress) {
+        studyProgress.style.width = `${activeDetectorStudy.progress}%`;
+    }
+    if (studyGoal) {
+        studyGoal.textContent = activeDetectorStudy.goal;
+        studyGoal.title = activeDetectorStudy.goal;
+    }
+    const summaryText = detectorStudySummaryText(activeDetectorStudy);
+    if (studySummary) studySummary.textContent = summaryText;
+    if (studyQuietStatus) {
+        studyQuietStatus.textContent = `${activeDetectorStudy.phaseLabel}: ${summaryText}`;
+    }
+    if (studyPauseButton) {
+        studyPauseButton.textContent = activeDetectorStudy.paused ? 'Resume' : 'Pause';
+        studyPauseButton.disabled = ['RUNNING', 'ANALYZING', 'COMPLETE'].includes(
+            activeDetectorStudy.phase,
+        );
+    }
+    if (studyUndoPhaseButton) {
+        studyUndoPhaseButton.disabled = (
+            activeDetectorStudy.phase === 'RUNNING'
+            || activeDetectorStudy.phase === 'ANALYZING'
+            || activeDetectorStudy.checkpoints.length === 0
+        );
+    }
+    if (studyReportToggle) {
+        studyReportToggle.hidden = !activeDetectorStudy.report;
+    }
+    if (studyInterpretButton) {
+        studyInterpretButton.hidden = (
+            activeDetectorStudy.coordinator?.interpretation_status !== 'failed'
+        );
+    }
+    if (studyReportPanel) {
+        studyReportPanel.textContent = formatDetectorStudyReport(
+            activeDetectorStudy.report,
+        );
+        if (!activeDetectorStudy.report) studyReportPanel.hidden = true;
+    }
+}
+
+function formatDetectorStudyReport(report) {
+    if (!report || typeof report !== 'object') return '';
+    const brief = report.brief || {};
+    const simulation = report.simulation || {};
+    const analysis = report.analysis || {};
+    const summary = analysis.summary || {};
+    const criteria = Array.isArray(brief.success_criteria)
+        ? brief.success_criteria
+        : [];
+    const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+    return [
+        `Goal: ${brief.goal || '(not recorded)'}`,
+        `Success criteria: ${criteria.length ? criteria.join('; ') : '(not recorded)'}`,
+        `Simulation: ${simulation.status || 'Unknown'}`
+            + (simulation.total_events ? `, ${simulation.total_events} events` : ''),
+        `Recorded hits: ${Number.isFinite(Number(summary.total_hits)) ? Number(summary.total_hits) : 'unavailable'}`,
+        `Warnings: ${warnings.length ? warnings.join('; ') : 'none'}`,
+        '',
+        'AI conclusion:',
+        report.ai_conclusion || 'Pending model interpretation.',
+    ].join('\n');
+}
+
+async function handleDetectorStudyPauseToggle() {
+    if (!activeDetectorStudy || isProcessing) return;
+    try {
+        const action = activeDetectorStudy.paused ? 'resume' : 'pause';
+        const response = await APIService.updateDetectorStudy(
+            activeDetectorStudy.study_id,
+            { action },
+        );
+        renderActiveDetectorStudy(response?.study || null);
+        scheduleDetectorStudyPoll();
+    } catch (err) {
+        UIManager.showError(`Could not update study orchestration: ${err.message || err}`);
+    }
+}
+
+async function handleDetectorStudyPhaseUndo() {
+    if (!activeDetectorStudy || isProcessing) return;
+    if (!confirm('Restore the latest AIRPET study checkpoint? Later geometry and run results will be discarded.')) {
+        return;
+    }
+    try {
+        const response = await APIService.updateDetectorStudy(
+            activeDetectorStudy.study_id,
+            { action: 'restore_checkpoint' },
+        );
+        renderActiveDetectorStudy(response?.study || null);
+        if (onGeometryUpdateCallback) {
+            await onGeometryUpdateCallback(response);
+        }
+        await loadHistory(true);
+        scheduleDetectorStudyPoll();
+    } catch (err) {
+        UIManager.showError(`Could not restore the study checkpoint: ${err.message || err}`);
+    }
+}
+
+function scheduleDetectorStudyPoll() {
+    if (detectorStudyPollTimer) {
+        clearTimeout(detectorStudyPollTimer);
+        detectorStudyPollTimer = null;
+    }
+    if (!activeDetectorStudy || activeDetectorStudy.terminal) return;
+    const delay = ['RUNNING', 'ANALYZING'].includes(activeDetectorStudy.phase)
+        ? 1500
+        : 6000;
+    detectorStudyPollTimer = setTimeout(() => {
+        refreshActiveDetectorStudy({ scheduleNext: true });
+    }, delay);
+}
+
+async function refreshActiveDetectorStudy({ scheduleNext = false } = {}) {
+    try {
+        const response = await APIService.getActiveDetectorStudy();
+        renderActiveDetectorStudy(response?.study || null);
+        queueDetectorStudyInterpretation();
+    } catch (err) {
+        if (studyQuietStatus) {
+            studyQuietStatus.textContent = 'Study status is temporarily unavailable.';
+        }
+    } finally {
+        if (scheduleNext) scheduleDetectorStudyPoll();
+    }
+}
+
+function queueDetectorStudyInterpretation() {
+    if (
+        detectorStudyInterpretationInFlight
+        || isProcessing
+        || activeDetectorStudy?.coordinator?.interpretation_status !== 'pending'
+        || detectorStudyInterpretationAttemptedIds.has(activeDetectorStudy?.study_id)
+    ) {
+        return;
+    }
+    window.setTimeout(() => {
+        runDetectorStudyInterpretation();
+    }, 0);
+}
+
+async function runDetectorStudyInterpretation({ force = false } = {}) {
+    const interpretationStatus = (
+        activeDetectorStudy?.coordinator?.interpretation_status
+    );
+    if (
+        detectorStudyInterpretationInFlight
+        || isProcessing
+        || (
+            interpretationStatus !== 'pending'
+            && !(force && interpretationStatus === 'failed')
+        )
+        || detectorStudyInterpretationAttemptedIds.has(activeDetectorStudy?.study_id)
+    ) {
+        return;
+    }
+    const model = UIManager.getAiSelectedModel();
+    if (!model || model === '--export--') return;
+
+    const studyId = activeDetectorStudy.study_id;
+    detectorStudyInterpretationAttemptedIds.add(studyId);
+    detectorStudyInterpretationInFlight = true;
+    setLoading(true);
+    if (studyQuietStatus) {
+        studyQuietStatus.textContent = 'Interpreting the completed study against its success criteria...';
+    }
+    try {
+        const prompt = [
+            'Interpret the completed AIRPET detector study report.',
+            'Judge the result explicitly against every recorded success criterion.',
+            'Distinguish measured evidence from assumptions, mention important warnings,',
+            'and give a concise conclusion plus the most useful next action.',
+            'Do not call tools or claim evidence that is not present in the report.',
+            '',
+            JSON.stringify(activeDetectorStudy.report || {}, null, 2),
+        ].join('\n');
+        const result = await APIService.streamAiChatMessage(
+            prompt,
+            model,
+            1,
+            null,
+            [],
+            {
+                detectorStudyId: studyId,
+                studyInterpretationId: studyId,
+                disableTools: true,
+                requireJsonMode: false,
+                clientDisplayMessage: 'AIRPET automatic detector study interpretation',
+            },
+        );
+        if (result?.message) {
+            addMessageToUI('model', `**Detector study conclusion**\n\n${result.message}`);
+        }
+    } catch (err) {
+        console.warn('Automatic detector study interpretation failed:', err);
+    } finally {
+        detectorStudyInterpretationInFlight = false;
+        setLoading(false);
+        await refreshActiveDetectorStudy({ scheduleNext: false });
+    }
+}
+
+async function ensureDetectorStudyForTurn(message, attachments) {
+    const executionMode = getExecutionMode();
+    if (executionMode === 'design_only') return null;
+    const response = await APIService.ensureDetectorStudy({
+        goal: message,
+        execution_mode: executionMode,
+        study_id: activeDetectorStudy?.study_id || null,
+        continue_active: true,
+        attachments: (attachments || []).map((attachment) => ({
+            artifact_id: attachment.artifact_id || null,
+            original_filename: attachment.original_filename || null,
+            mime_type: attachment.mime_type || null,
+        })),
+    });
+    renderActiveDetectorStudy(response?.study || null);
+    scheduleDetectorStudyPoll();
+    return response?.study || null;
 }
 
 function initRuntimeConfigUi() {
@@ -645,6 +1003,10 @@ async function handleSend() {
     const thinkingIndicator = createThinkingIndicator();
     
     try {
+        const study = await ensureDetectorStudyForTurn(
+            message,
+            attachmentsForTurn,
+        );
         const result = await APIService.streamAiChatMessage(message, model, turnLimit, (progress) => {
             if (progress?.type === 'tool_calls' && Array.isArray(progress.tools)) {
                 progress.tools.forEach((toolName) => toolsUsed.add(toolName));
@@ -652,6 +1014,8 @@ async function handleSend() {
             updateThinkingIndicator(thinkingIndicator, progress);
         }, attachmentIds, {
             onVisualVerificationRequest: handleDynamicVisualVerificationRequest,
+            detectorStudyId: study?.study_id || null,
+            executionMode: getExecutionMode(),
         });
         removeThinkingIndicator(thinkingIndicator);
         addMessageToUI('model', result.message);
@@ -665,6 +1029,7 @@ async function handleSend() {
             }
         }
         await loadHistory(true);
+        await refreshActiveDetectorStudy({ scheduleNext: true });
         if (shouldRunAutoVisualCheckAfterTools(toolsUsed)) {
             await runVisualSelfCritique({
                 automatic: true,
@@ -685,6 +1050,7 @@ async function handleSend() {
         });
     } finally {
         setLoading(false);
+        queueDetectorStudyInterpretation();
         scrollToBottom();
         refreshContextStats();
     }
@@ -1019,6 +1385,7 @@ function setLoading(loading) {
     promptInput.disabled = loading;
     if (attachButton) attachButton.disabled = loading;
     if (visualCheckButton) visualCheckButton.disabled = loading;
+    if (executionModeSelect) executionModeSelect.disabled = loading;
 }
 
 function scrollToBottom() {

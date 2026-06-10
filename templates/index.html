@@ -1560,6 +1560,225 @@
             gap: 8px;
         }
 
+        .ai-primary-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0 5px;
+        }
+
+        .ai-mode-control {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            color: #334155;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        #ai_execution_mode {
+            border: 1px solid #cbd5e1;
+            border-radius: 999px;
+            background: #f8fafc;
+            color: #0f172a;
+            padding: 5px 10px;
+            font: inherit;
+        }
+
+        #ai_study_quiet_status {
+            flex: 1;
+            color: #64748b;
+            font-size: 11px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .ai-advanced-settings {
+            position: relative;
+        }
+
+        .ai-advanced-settings > summary {
+            cursor: pointer;
+            list-style: none;
+            border: 1px solid #cbd5e1;
+            border-radius: 999px;
+            padding: 5px 10px;
+            color: #475569;
+            background: #fff;
+            font-size: 11px;
+            user-select: none;
+        }
+
+        .ai-advanced-settings > summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .ai-advanced-settings[open] {
+            width: 100%;
+        }
+
+        .ai-advanced-settings[open] > summary {
+            width: max-content;
+            margin-left: auto;
+        }
+
+        .ai-advanced-settings .ai-status-bar {
+            margin-top: 8px;
+            padding: 9px;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            background: #f8fafc;
+        }
+
+        .ai-study-card {
+            margin: 0 5px;
+            padding: 10px 12px;
+            border: 1px solid #bae6fd;
+            border-left: 4px solid #0284c7;
+            border-radius: 10px;
+            background:
+                linear-gradient(135deg, rgba(224, 242, 254, 0.92), rgba(248, 250, 252, 0.96)),
+                repeating-linear-gradient(90deg, transparent 0 20px, rgba(14, 116, 144, 0.04) 20px 21px);
+            color: #0f172a;
+        }
+
+        .ai-study-card[hidden] {
+            display: none;
+        }
+
+        .ai-study-card.needs-attention {
+            border-color: #fed7aa;
+            border-left-color: #ea580c;
+            background: #fff7ed;
+        }
+
+        .ai-study-card.complete {
+            border-color: #bbf7d0;
+            border-left-color: #16a34a;
+            background: #f0fdf4;
+        }
+
+        .ai-study-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        #ai_study_title {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        #ai_study_phase {
+            border-radius: 999px;
+            padding: 2px 7px;
+            background: rgba(255, 255, 255, 0.8);
+            color: #075985;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        #ai_study_refresh {
+            border: none;
+            background: transparent;
+            color: #0369a1;
+            cursor: pointer;
+            font-size: 11px;
+            padding: 2px 4px;
+        }
+
+        #ai_study_new {
+            border: 1px solid rgba(3, 105, 161, 0.25);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.65);
+            color: #0369a1;
+            cursor: pointer;
+            font-size: 10px;
+            padding: 2px 7px;
+        }
+
+        .ai-study-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 7px;
+        }
+
+        .ai-study-actions button {
+            border: 1px solid rgba(3, 105, 161, 0.22);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.72);
+            color: #075985;
+            cursor: pointer;
+            font-size: 10px;
+            padding: 3px 8px;
+        }
+
+        .ai-study-actions button:disabled {
+            cursor: default;
+            opacity: 0.45;
+        }
+
+        #ai_study_report_panel {
+            max-height: 180px;
+            margin: 8px 0 0;
+            padding: 8px;
+            overflow: auto;
+            border: 1px solid rgba(14, 116, 144, 0.18);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.72);
+            color: #334155;
+            font: 10px/1.45 "IBM Plex Mono", "Courier New", monospace;
+            white-space: pre-wrap;
+        }
+
+        #ai_study_report_panel[hidden] {
+            display: none;
+        }
+
+        .ai-study-progress-track {
+            height: 4px;
+            margin: 8px 0 6px;
+            overflow: hidden;
+            border-radius: 999px;
+            background: rgba(148, 163, 184, 0.3);
+        }
+
+        #ai_study_progress {
+            width: 0;
+            height: 100%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #0e7490, #38bdf8);
+            transition: width 240ms ease;
+        }
+
+        #ai_study_goal,
+        #ai_study_summary {
+            margin: 0;
+            font-size: 11px;
+            line-height: 1.35;
+        }
+
+        #ai_study_goal {
+            color: #334155;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        #ai_study_summary {
+            margin-top: 3px;
+            color: #64748b;
+        }
+
         #ai_input_row {
             display: flex;
             gap: 10px;
@@ -4013,22 +4232,56 @@
                         <!-- Chat messages will be added here -->
                     </div>
                     <div id="ai_input_area">
-                        <div class="ai-status-bar">
-                            <div class="ai-status-left">
-                                <span class="ai-model-info">Model: <select id="ai_model_select"></select></span>
-                                <span class="ai-model-info ai-backend-status" id="ai_backend_status" title="Local backend readiness status">Backend: n/a</span>
-                                <span class="ai-model-info">Max turns: <input type="number" id="ai_turn_limit" value="50" min="1" max="50" style="width: 44px; font-size: 11px;"></span>
-                                <span class="ai-model-info" id="ai_context_stats">Context: n/a</span>
-                                <label class="ai-model-info ai-auto-visual-check" title="After geometry-changing AI tool calls, automatically send AIRPET screenshots and metadata back to the model for one critique/repair pass.">
-                                    <input type="checkbox" id="ai_auto_visual_check_toggle">
-                                    Auto visual check
-                                </label>
+                        <div id="ai_study_card" class="ai-study-card" hidden>
+                            <div class="ai-study-card-header">
+                                <span id="ai_study_title">Detector study</span>
+                                <span id="ai_study_phase">Planning</span>
+                                <button id="ai_study_refresh" type="button" title="Refresh detector study status">Refresh</button>
+                                <button id="ai_study_new" type="button" title="Finish following this study and start a new one with the next prompt">New study</button>
                             </div>
-                            <div class="ai-status-right">
-                                <button id="ai_runtime_config_btn" class="ai-runtime-config-btn" title="Edit session runtime profile for local backends">Local backends ⚙</button>
-                                <span class="ai-model-info ai-runtime-config-status" id="ai_runtime_config_status">Runtime profile: loading…</span>
-                                <button id="clear_chat_btn">Clear History</button>
+                            <div class="ai-study-progress-track">
+                                <div id="ai_study_progress"></div>
                             </div>
+                            <p id="ai_study_goal"></p>
+                            <p id="ai_study_summary"></p>
+                            <div class="ai-study-actions">
+                                <button id="ai_study_pause" type="button">Pause</button>
+                                <button id="ai_study_undo_phase" type="button">Undo phase</button>
+                                <button id="ai_study_interpret" type="button" hidden>Retry interpretation</button>
+                                <button id="ai_study_report_toggle" type="button" hidden>View report</button>
+                            </div>
+                            <pre id="ai_study_report_panel" hidden></pre>
+                        </div>
+                        <div class="ai-primary-controls">
+                            <label class="ai-mode-control" for="ai_execution_mode">
+                                AI mode
+                                <select id="ai_execution_mode">
+                                    <option value="design_only">Design only</option>
+                                    <option value="build_validate" selected>Build and validate</option>
+                                    <option value="full_study">Full study</option>
+                                </select>
+                            </label>
+                            <span id="ai_study_quiet_status">Describe what you want AIRPET to build.</span>
+                            <details id="ai_advanced_settings" class="ai-advanced-settings">
+                                <summary>Advanced</summary>
+                                <div class="ai-status-bar">
+                                    <div class="ai-status-left">
+                                        <span class="ai-model-info">Model: <select id="ai_model_select"></select></span>
+                                        <span class="ai-model-info ai-backend-status" id="ai_backend_status" title="Local backend readiness status">Backend: n/a</span>
+                                        <span class="ai-model-info">Max turns: <input type="number" id="ai_turn_limit" value="50" min="1" max="50" style="width: 44px; font-size: 11px;"></span>
+                                        <span class="ai-model-info" id="ai_context_stats">Context: n/a</span>
+                                        <label class="ai-model-info ai-auto-visual-check" title="After geometry-changing AI tool calls, automatically send AIRPET screenshots and metadata back to the model for one critique/repair pass.">
+                                            <input type="checkbox" id="ai_auto_visual_check_toggle">
+                                            Auto visual check
+                                        </label>
+                                    </div>
+                                    <div class="ai-status-right">
+                                        <button id="ai_runtime_config_btn" class="ai-runtime-config-btn" title="Edit session runtime profile for local backends">Local backends</button>
+                                        <span class="ai-model-info ai-runtime-config-status" id="ai_runtime_config_status">Runtime profile: loading...</span>
+                                        <button id="clear_chat_btn">Clear History</button>
+                                    </div>
+                                </div>
+                            </details>
                         </div>
                         <div id="ai_attachment_tray" class="ai-attachment-tray" aria-live="polite"></div>
                         <div id="ai_input_row">
@@ -6055,6 +6308,36 @@
                 <div class="sim-options-hint field">
                     Sensitive hits below this deposited-energy threshold are not written to the HDF5 output.
                 </div>
+                <hr>
+                <h5>Detector Readout</h5>
+                <div class="property_item">
+                    <label for="simHitSelectionMode">Hit Selection:</label>
+                    <select id="simHitSelectionMode">
+                        <option value="all_hits" selected>All detector hits</option>
+                        <option value="target_hits_only">Selected detector hits only</option>
+                        <option value="triggered_events">Triggered events (retain all hits)</option>
+                    </select>
+                </div>
+                <div class="property_item">
+                    <label for="simHitTargetSensitiveDetectors">Sensitive Detectors:</label>
+                    <input type="text" id="simHitTargetSensitiveDetectors" placeholder="SensorLV_SD">
+                </div>
+                <div class="property_item">
+                    <label for="simHitTargetLogicalVolumes">Logical Volumes:</label>
+                    <input type="text" id="simHitTargetLogicalVolumes" placeholder="SensorLV, TriggerLV">
+                </div>
+                <div class="property_item">
+                    <label for="simHitTargetPhysicalVolumes">Physical Volumes:</label>
+                    <input type="text" id="simHitTargetPhysicalVolumes" placeholder="SensorPV_0, SensorPV_1">
+                </div>
+                <div class="property_item">
+                    <label for="simHitMinimumMultiplicity">Minimum Trigger Hits:</label>
+                    <input type="number" id="simHitMinimumMultiplicity" value="1" min="1" step="1">
+                </div>
+                <div class="sim-options-hint field">
+                    Target-only mode writes matching hits. Triggered-event mode retains all above-threshold hits from events that meet the selected-detector multiplicity.
+                </div>
+                <hr>
                 <div class="property_item">
                     <label for="simProductionCut">Production Cut:</label>
                     <input type="text" id="simProductionCut" value="1.0 mm" placeholder="e.g., 1 mm, 100 um, 1 um">

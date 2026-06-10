@@ -246,6 +246,36 @@ export async function getProjectState() {
     return handleResponse(response);
 }
 
+export async function ensureDetectorStudy(payload) {
+    const response = await fetch(`${API_BASE_URL}/api/ai/studies/ensure`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+    });
+    return handleResponse(response);
+}
+
+export async function getActiveDetectorStudy() {
+    const response = await fetch(`${API_BASE_URL}/api/ai/studies/active`);
+    return handleResponse(response);
+}
+
+export async function clearActiveDetectorStudy() {
+    const response = await fetch(`${API_BASE_URL}/api/ai/studies/active`, {
+        method: 'DELETE',
+    });
+    return handleResponse(response);
+}
+
+export async function updateDetectorStudy(studyId, payload) {
+    const response = await fetch(`${API_BASE_URL}/api/ai/studies/${encodeURIComponent(studyId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+    });
+    return handleResponse(response);
+}
+
 /**
  * Gets detailed information for a single object.
  * @param {string} objectType e.g., 'physical_volume', 'solid', 'define'
@@ -942,6 +972,15 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
     }
     if (typeof options.clientDisplayMessage === 'string' && options.clientDisplayMessage.trim()) {
         payload.client_display_message = options.clientDisplayMessage.trim();
+    }
+    if (typeof options.detectorStudyId === 'string' && options.detectorStudyId.trim()) {
+        payload.detector_study_id = options.detectorStudyId.trim();
+    }
+    if (typeof options.executionMode === 'string' && options.executionMode.trim()) {
+        payload.execution_mode = options.executionMode.trim();
+    }
+    if (typeof options.studyInterpretationId === 'string' && options.studyInterpretationId.trim()) {
+        payload.study_interpretation_id = options.studyInterpretationId.trim();
     }
     const hasAttachments = Array.isArray(attachmentIds) && attachmentIds.length > 0;
     const disableTools = options.disableTools === true;

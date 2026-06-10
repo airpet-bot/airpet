@@ -46,7 +46,10 @@ from PIL import Image
 from google.genai import client # For type hinting
 
 from src.expression_evaluator import ExpressionEvaluator 
-from src.project_manager import ProjectManager, AUTOSAVE_VERSION_ID
+from src.project_manager import (
+    ProjectManager,
+    AUTOSAVE_VERSION_ID,
+)
 from src.geometry_types import get_unit_value
 from src.geometry_types import Material, Solid, LogicalVolume
 from src.geometry_types import EnvironmentState, GeometryState
@@ -1653,46 +1656,58 @@ def run_g4_simulation(job_id, run_dir, executable_path, sim_params):
             if t_files:
                 try: t_files.sort(key=lambda x: int(os.path.basename(x).split('_t')[1].split('.')[0]))
                 except: t_files.sort()
+
+                def thread_index_from_path(path):
+                    try:
+                        return int(os.path.basename(path).split('_t')[1].split('.')[0])
+                    except Exception:
+                        return 0
+
+                def thread_event_offset(thread_index):
+                    base_events = total_events // num_threads
+                    extra_events = total_events % num_threads
+                    return thread_index * base_events + min(thread_index, extra_events)
+
+                def ntuple_entry_count(group):
+                    if 'entries' not in group:
+                        return 0
+                    entries = group['entries']
+                    return int(entries[0]) if entries.shape != () else int(entries[()])
+
                 target_path = os.path.join(run_dir, "output.hdf5")
                 shutil.copyfile(t_files[0], target_path)
                 try:
                     with h5py.File(target_path, 'r+') as f:
                         if 'default_ntuples/Hits' in f:
                             hits = f['default_ntuples/Hits']
-                            lim_t0 = 0
-                            if 'EventID' in hits and 'pages' in hits['EventID']:
-                                ev = hits['EventID']['pages'][:]
-                                nz = np.nonzero(ev)[0]
-                                lim_t0 = nz[-1] + 1 if len(nz) > 0 else 0
+                            first_entry_count = ntuple_entry_count(hits)
+                            first_event_offset = thread_event_offset(
+                                thread_index_from_path(t_files[0])
+                            )
                             for c in hits:
                                 if isinstance(hits[c], h5py.Group) and 'pages' in hits[c]:
                                     dset = hits[c]['pages']
-                                    data = dset[:lim_t0]
+                                    data = dset[:first_entry_count]
+                                    if c == "EventID" and first_event_offset > 0:
+                                        data = data.astype(np.int64)
+                                        data += first_event_offset
                                     attrs = dict(dset.attrs)
                                     del hits[c]['pages']
                                     dn = hits[c].create_dataset('pages', data=data, maxshape=(None,)+data.shape[1:], chunks=True, compression="gzip")
                                     for k,v in attrs.items(): dn.attrs[k] = v
                 except Exception as e: logger.error(f"T0 Clean Error: {e}")
-                evt_per_thread = total_events // num_threads
                 try:
                     with h5py.File(target_path, 'r+') as f_dst:
                         if 'default_ntuples/Hits' in f_dst:
                             grp_dst_hits = f_dst['default_ntuples/Hits']
                             for src_path in t_files[1:]:
-                                fname = os.path.basename(src_path)
-                                current_offset = 0
-                                try:
-                                    t_idx = int(fname.split('_t')[1].split('.')[0])
-                                    current_offset = t_idx * evt_per_thread
-                                except: pass
+                                current_offset = thread_event_offset(
+                                    thread_index_from_path(src_path)
+                                )
                                 with h5py.File(src_path, 'r') as f_src:
                                     if 'default_ntuples/Hits' not in f_src: continue
                                     grp_src_hits = f_src['default_ntuples/Hits']
-                                    lim_src = 0
-                                    if 'EventID' in grp_src_hits:
-                                            ev = grp_src_hits['EventID']['pages'][:]
-                                            nz = np.nonzero(ev)[0]
-                                            if len(nz)>0: lim_src = nz[-1]+1
+                                    source_entry_count = ntuple_entry_count(grp_src_hits)
                                     for col in grp_dst_hits:
                                         if col not in grp_src_hits: continue
                                         dst_node = grp_dst_hits[col]
@@ -1700,7 +1715,7 @@ def run_g4_simulation(job_id, run_dir, executable_path, sim_params):
                                         if isinstance(dst_node, h5py.Group) and 'pages' in dst_node:
                                             dst_d = dst_node['pages']
                                             src_d = src_node['pages']
-                                            data = src_d[:lim_src]
+                                            data = src_d[:source_entry_count]
                                             if col == "EventID":
                                                 data = data.astype(np.int64)
                                                 if current_offset > 0: data += current_offset
@@ -1740,6 +1755,23 @@ def run_g4_simulation(job_id, run_dir, executable_path, sim_params):
             else:
                 SIMULATION_STATUS[job_id]['status'] = 'Error'
             SIMULATION_PROCESSES.pop(job_id, None)
+        try:
+            metadata_path = os.path.join(run_dir, "metadata.json")
+            metadata = {}
+            if os.path.exists(metadata_path):
+                with open(metadata_path, "r") as metadata_file:
+                    metadata = json.load(metadata_file)
+            metadata["status"] = "Completed" if final_return_code == 0 else "Error"
+            metadata["return_code"] = int(final_return_code)
+            metadata["completed_at"] = datetime.utcnow().isoformat() + "Z"
+            with open(metadata_path, "w") as metadata_file:
+                json.dump(metadata, metadata_file, indent=2)
+        except Exception as metadata_error:
+            logger.warning(
+                "Failed to persist simulation completion metadata for %s: %s",
+                job_id,
+                metadata_error,
+            )
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -1747,6 +1779,19 @@ def run_g4_simulation(job_id, run_dir, executable_path, sim_params):
             SIMULATION_STATUS[job_id]['status'] = 'Error'
             SIMULATION_STATUS[job_id]['stderr'].append(str(e))
         SIMULATION_PROCESSES.pop(job_id, None)
+        try:
+            metadata_path = os.path.join(run_dir, "metadata.json")
+            metadata = {}
+            if os.path.exists(metadata_path):
+                with open(metadata_path, "r") as metadata_file:
+                    metadata = json.load(metadata_file)
+            metadata["status"] = "Error"
+            metadata["error"] = str(e)
+            metadata["completed_at"] = datetime.utcnow().isoformat() + "Z"
+            with open(metadata_path, "w") as metadata_file:
+                json.dump(metadata, metadata_file, indent=2)
+        except Exception:
+            pass
 
 atexit.register(cleanup_processes)
 
@@ -3668,6 +3713,23 @@ def run_simulation():
         macro_path = pm.generate_macro_file(
             job_id, sim_params, GEANT4_BUILD_DIR, run_dir, version_dir
         )
+        detector_study_id = str(
+            sim_params.get("detector_study_id")
+            or pm.active_detector_study_id
+            or ""
+        ).strip()
+        if detector_study_id:
+            metadata_path = os.path.join(run_dir, "metadata.json")
+            try:
+                metadata = {}
+                if os.path.exists(metadata_path):
+                    with open(metadata_path, "r", encoding="utf-8") as handle:
+                        metadata = json.load(handle)
+                metadata["detector_study_id"] = detector_study_id
+                with open(metadata_path, "w", encoding="utf-8") as handle:
+                    json.dump(metadata, handle, indent=2)
+            except (OSError, ValueError, TypeError):
+                pass
 
         def run_g4_simulation_for_http(job_id, run_dir, executable_path, sim_params):
             global LATEST_COMPLETED_JOB_ID
@@ -3683,12 +3745,29 @@ def run_simulation():
         )
         thread.start()
 
+        linked_study = None
+        if detector_study_id:
+            try:
+                linked_study = pm.attach_simulation_to_detector_study(
+                    detector_study_id,
+                    job_id=job_id,
+                    version_id=version_id,
+                    total_events=int(sim_params.get("events", 1)),
+                )
+            except ValueError:
+                linked_study = None
+
         return jsonify({
             "success": True,
             "message": "Simulation started.",
             "job_id": job_id,
             "version_id": version_id,
             "preflight_summary": preflight_report.get('summary', {}),
+            "detector_study_id": (
+                linked_study.get("study_id")
+                if isinstance(linked_study, dict)
+                else None
+            ),
         })
 
     except Exception as e:
@@ -6579,6 +6658,10 @@ def new_project_route():
 
     # Call the helper function for creating an empty project.
     pm = get_project_manager_for_session()
+    try:
+        pm.set_active_detector_study(None)
+    except (OSError, ValueError):
+        pass
     pm.create_empty_project()
 
     return create_success_response(pm, "New project created.",exclude_unchanged_tessellated=False)
@@ -9245,6 +9328,31 @@ AI_TOOL_ARG_ALIASES = {
         "record_hits": "mark_target_sensitive",
         "set_target_sensitive": "mark_target_sensitive",
     },
+    "configure_detector_readout": {
+        "mode": "hit_selection_mode",
+        "readout_mode": "hit_selection_mode",
+        "detectors": "target_sensitive_detectors",
+        "logical_volumes": "target_logical_volumes",
+        "physical_volumes": "target_physical_volumes",
+        "multiplicity": "minimum_hit_count",
+        "threshold": "hit_energy_threshold",
+        "make_sensitive": "mark_targets_sensitive",
+    },
+    "run_detector_study": {
+        "mode": "hit_selection_mode",
+        "readout_mode": "hit_selection_mode",
+        "detectors": "target_sensitive_detectors",
+        "logical_volumes": "target_logical_volumes",
+        "physical_volumes": "target_physical_volumes",
+        "multiplicity": "minimum_hit_count",
+        "threshold": "hit_energy_threshold",
+        "beam": "incident_beam",
+        "study_id": "detector_study_id",
+    },
+    "manage_detector_study": {
+        "id": "study_id",
+        "criteria": "success_criteria",
+    },
     "set_active_source": {
         "id": "source_id"
     },
@@ -9302,6 +9410,17 @@ AI_TOOL_DEFAULTS = {
         "ring_spacing": "0"
     },
     "run_simulation": {"events": 1000, "threads": 1},
+    "configure_detector_readout": {
+        "action": "set",
+        "hit_selection_mode": "all_hits",
+        "minimum_hit_count": 1,
+        "mark_targets_sensitive": True,
+    },
+    "run_detector_study": {
+        "events": 1000,
+        "threads": 1,
+    },
+    "manage_detector_study": {"action": "get"},
     "get_simulation_status": {"include_logs": True, "include_log_summary": True, "include_log_entries": False, "tail_lines": 20, "log_source": "both"},
     "manage_ui_group": {"item_ids": []},
     "manage_particle_source": {
@@ -9873,6 +9992,583 @@ def _validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
         return _validate_create_boolean_solid_args(args)
 
     return None
+
+
+def _start_ai_simulation_job(
+    pm: ProjectManager,
+    args: Dict[str, Any],
+    *,
+    version_description_prefix: str = "AI_Sim_Run",
+) -> Dict[str, Any]:
+    detector_study_id = str(
+        args.get("detector_study_id")
+        or pm.active_detector_study_id
+        or ""
+    ).strip()
+    launch_gate = _detector_study_launch_gate(
+        pm,
+        detector_study_id=detector_study_id,
+    )
+    if not launch_gate.get("allowed"):
+        return {
+            "success": False,
+            "error": launch_gate.get(
+                "message", "Detector study launch is currently blocked."
+            ),
+            "error_type": launch_gate.get("reason"),
+            "launch_gate": launch_gate,
+        }
+
+    preflight_report = pm.run_preflight_checks()
+    preflight_summary = preflight_report.get("summary", {})
+    if detector_study_id:
+        try:
+            pm.record_detector_study_preflight(
+                detector_study_id,
+                preflight_report,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Could not record preflight for detector study %s: %s",
+                detector_study_id,
+                exc,
+            )
+    if not preflight_summary.get("can_run", False):
+        return {
+            "success": False,
+            "error": "Preflight checks failed. Resolve errors before running simulation.",
+            "preflight_report": preflight_report,
+            "preflight_summary": preflight_summary,
+        }
+
+    job_id = str(uuid.uuid4())
+    try:
+        events = int(args.get("events", 1000))
+    except Exception:
+        events = 1000
+    try:
+        threads = int(args.get("threads", 1))
+    except Exception:
+        threads = 1
+
+    sim_params = {
+        "events": events,
+        "threads": threads,
+    }
+    for key in RUN_SIMULATION_OPTION_KEYS:
+        value = args.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        sim_params[key] = value
+    sim_params = _merge_project_sim_params(pm, sim_params)
+
+    version_id = pm.current_version_id
+    if pm.is_changed or not version_id:
+        version_id, _ = pm.save_project_version(
+            f"{version_description_prefix}_{job_id[:8]}"
+        )
+
+    version_dir = pm._get_version_dir(version_id)
+    run_dir = os.path.join(version_dir, "sim_runs", job_id)
+    os.makedirs(run_dir, exist_ok=True)
+    pm.generate_macro_file(
+        job_id,
+        sim_params,
+        GEANT4_BUILD_DIR,
+        run_dir,
+        version_dir,
+    )
+
+    if detector_study_id:
+        metadata_path = os.path.join(run_dir, "metadata.json")
+        try:
+            metadata = {}
+            if os.path.exists(metadata_path):
+                with open(metadata_path, "r", encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+            metadata["detector_study_id"] = detector_study_id
+            with open(metadata_path, "w", encoding="utf-8") as handle:
+                json.dump(metadata, handle, indent=2)
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning(
+                "Could not persist detector study linkage for simulation %s: %s",
+                job_id,
+                exc,
+            )
+
+    thread = threading.Thread(
+        target=run_g4_simulation,
+        args=(job_id, run_dir, GEANT4_EXECUTABLE, sim_params),
+    )
+    thread.start()
+
+    linked_study = None
+    if detector_study_id:
+        try:
+            linked_study = pm.attach_simulation_to_detector_study(
+                detector_study_id,
+                job_id=job_id,
+                version_id=version_id,
+                total_events=events,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Could not attach simulation %s to detector study %s: %s",
+                job_id,
+                detector_study_id,
+                exc,
+            )
+
+    return {
+        "success": True,
+        "job_id": job_id,
+        "version_id": version_id,
+        "message": f"Simulation started (ID: {job_id}).",
+        "preflight_summary": preflight_summary,
+        "resolved_simulation_options": sim_params,
+        "detector_study_id": (
+            linked_study.get("study_id")
+            if isinstance(linked_study, dict)
+            else None
+        ),
+    }
+
+
+def _detector_study_launch_gate(
+    pm: ProjectManager,
+    *,
+    detector_study_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    study = pm.get_detector_study(detector_study_id)
+    if not study or study.get("execution_mode") != "full_study":
+        return {"allowed": True, "reason": None}
+
+    coordinator = study.get("coordinator") or {}
+    phase = str(study.get("phase") or "").upper()
+    if phase == "PAUSED" or coordinator.get("status") == "paused":
+        return {
+            "allowed": False,
+            "reason": "study_paused",
+            "message": "Resume the detector study before launching a simulation.",
+            "study_id": study.get("study_id"),
+        }
+
+    attempts = int(coordinator.get("repair_attempts", 0) or 0)
+    max_attempts = int(coordinator.get("max_repair_attempts", 3) or 3)
+    if attempts >= max_attempts:
+        return {
+            "allowed": False,
+            "reason": "repair_budget_exhausted",
+            "message": (
+                f"The detector study exhausted its {max_attempts}-attempt "
+                "preflight repair budget."
+            ),
+            "study_id": study.get("study_id"),
+            "repair_attempts": attempts,
+            "max_repair_attempts": max_attempts,
+        }
+
+    revision = int(coordinator.get("geometry_revision", 0) or 0)
+    verified_revision = coordinator.get("visual_verified_revision")
+    if verified_revision != revision:
+        return {
+            "allowed": False,
+            "reason": "visual_verification_required",
+            "message": (
+                "The current detector study revision must be visually verified "
+                "before simulation launch."
+            ),
+            "study_id": study.get("study_id"),
+            "geometry_revision": revision,
+            "visual_verified_revision": verified_revision,
+        }
+
+    return {
+        "allowed": True,
+        "reason": None,
+        "study_id": study.get("study_id"),
+        "geometry_revision": revision,
+    }
+
+
+def _list_persisted_simulation_runs(pm: ProjectManager) -> List[Dict[str, Any]]:
+    project_path = pm._get_project_path()
+    versions_path = os.path.join(project_path, "versions")
+    if not os.path.isdir(versions_path):
+        return []
+
+    runs = []
+    for version_id in os.listdir(versions_path):
+        sim_runs_path = os.path.join(versions_path, version_id, "sim_runs")
+        if not os.path.isdir(sim_runs_path):
+            continue
+        for job_id in os.listdir(sim_runs_path):
+            run_dir = os.path.join(sim_runs_path, job_id)
+            if not os.path.isdir(run_dir):
+                continue
+            metadata_path = os.path.join(run_dir, "metadata.json")
+            metadata = {}
+            try:
+                if os.path.exists(metadata_path):
+                    with open(metadata_path, "r") as metadata_file:
+                        metadata = json.load(metadata_file)
+            except Exception:
+                metadata = {}
+
+            output_exists = os.path.exists(os.path.join(run_dir, "output.hdf5"))
+            status = str(metadata.get("status") or "").strip()
+            if not status:
+                status = "Completed" if output_exists else "Unknown"
+            timestamp = (
+                metadata.get("completed_at")
+                or metadata.get("timestamp")
+                or datetime.fromtimestamp(os.path.getmtime(run_dir)).isoformat()
+            )
+            runs.append({
+                "job_id": job_id,
+                "version_id": version_id,
+                "status": status,
+                "progress": int(metadata.get("total_events", 0) or 0)
+                if status == "Completed"
+                else 0,
+                "total_events": int(metadata.get("total_events", 0) or 0),
+                "timestamp": timestamp,
+                "output_available": output_exists,
+                "metadata_available": os.path.exists(metadata_path),
+            })
+    runs.sort(key=lambda entry: str(entry.get("timestamp") or ""), reverse=True)
+    return runs
+
+
+def _find_persisted_simulation_run(
+    pm: ProjectManager,
+    job_id: str,
+) -> Optional[Dict[str, Any]]:
+    for run in _list_persisted_simulation_runs(pm):
+        if run.get("job_id") == job_id:
+            return run
+    return None
+
+
+def _build_detector_study_report(
+    study: Dict[str, Any],
+    *,
+    simulation: Dict[str, Any],
+    analysis: Dict[str, Any],
+) -> Dict[str, Any]:
+    brief = deepcopy(study.get("brief") or {})
+    coordinator = deepcopy(study.get("coordinator") or {})
+    warnings = []
+    if analysis.get("status") != "Completed":
+        warnings.append(
+            analysis.get("error")
+            or "The simulation produced no analyzable hit output."
+        )
+    last_preflight = coordinator.get("last_preflight") or {}
+    preflight_summary = deepcopy(last_preflight.get("summary") or {})
+    if preflight_summary and not preflight_summary.get("can_run", False):
+        warnings.append("The last recorded preflight did not pass.")
+
+    return {
+        "schema_version": 1,
+        "study_id": study.get("study_id"),
+        "title": study.get("title"),
+        "execution_mode": study.get("execution_mode"),
+        "completed_at": ProjectManager._detector_study_timestamp(),
+        "brief": {
+            "goal": brief.get("goal", ""),
+            "requirements": deepcopy(brief.get("requirements") or []),
+            "assumptions": deepcopy(brief.get("assumptions") or []),
+            "success_criteria": deepcopy(
+                brief.get("success_criteria") or []
+            ),
+            "attachments": deepcopy(brief.get("attachments") or []),
+        },
+        "validation": {
+            "geometry_revision": coordinator.get("geometry_revision"),
+            "visual_verification": deepcopy(
+                coordinator.get("last_visual_verification")
+            ),
+            "preflight": deepcopy(coordinator.get("last_preflight")),
+            "repair_attempts": coordinator.get("repair_attempts", 0),
+        },
+        "simulation": deepcopy(simulation),
+        "analysis": deepcopy(analysis),
+        "warnings": warnings,
+        "ai_conclusion": None,
+    }
+
+
+def _reconcile_detector_study(
+    pm: ProjectManager,
+    study: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(study, dict):
+        return None
+
+    simulation = study.get("simulation")
+    if not isinstance(simulation, dict) or not simulation.get("job_id"):
+        return study
+
+    job_id = str(simulation["job_id"])
+    version_id = str(simulation.get("version_id") or "")
+    with SIMULATION_LOCK:
+        live_status = deepcopy(SIMULATION_STATUS.get(job_id))
+
+    if live_status:
+        run_status = str(live_status.get("status") or "Unknown")
+        progress = int(live_status.get("progress", 0) or 0)
+        total_events = int(live_status.get("total_events", 0) or 0)
+    else:
+        persisted = _find_persisted_simulation_run(pm, job_id)
+        if not persisted:
+            return study
+        run_status = str(persisted.get("status") or "Unknown")
+        progress = int(persisted.get("progress", 0) or 0)
+        total_events = int(persisted.get("total_events", 0) or 0)
+        version_id = str(persisted.get("version_id") or version_id)
+
+    next_simulation = {
+        **simulation,
+        "job_id": job_id,
+        "version_id": version_id,
+        "status": run_status,
+        "progress": progress,
+        "total_events": total_events,
+    }
+
+    if run_status == "Completed":
+        existing_analysis = study.get("analysis")
+        if isinstance(existing_analysis, dict) and existing_analysis.get(
+            "source_job_id"
+        ) == job_id:
+            existing_report = study.get("report")
+            report_payload = (
+                existing_report if isinstance(existing_report, dict) else {}
+            )
+            coordinator = study.get("coordinator") or {}
+            interpretation_updates = None
+            if (
+                study.get("execution_mode") == "full_study"
+                and not report_payload.get("ai_conclusion")
+                and coordinator.get("interpretation_status")
+                not in {"pending", "running", "complete"}
+            ):
+                interpretation_updates = {
+                    "interpretation_status": "pending",
+                    "interpretation_error": None,
+                }
+            if (
+                simulation != next_simulation
+                or not existing_report
+                or interpretation_updates
+            ):
+                report = study.get("report") or _build_detector_study_report(
+                    study,
+                    simulation=next_simulation,
+                    analysis=existing_analysis,
+                )
+                return pm.update_detector_study(
+                    study["study_id"],
+                    simulation=next_simulation,
+                    coordinator_updates=interpretation_updates,
+                    report=report,
+                )
+            return study
+
+        pm.update_detector_study(
+            study["study_id"],
+            phase="ANALYZING",
+            status_message="Simulation completed. Building analysis summary.",
+            simulation=next_simulation,
+        )
+        analysis_result = dispatch_ai_tool(
+            pm,
+            "get_analysis_summary",
+            {"job_id": job_id},
+        )
+        if analysis_result.get("success"):
+            summary = analysis_result.get("summary") or {}
+            total_hits = int(summary.get("total_hits", 0) or 0)
+            status_message = (
+                f"Study complete with {total_hits} recorded hit"
+                f"{'s' if total_hits != 1 else ''}."
+            )
+            analysis = {
+                "status": "Completed",
+                "source_job_id": job_id,
+                "version_id": version_id,
+                "summary": summary,
+            }
+        else:
+            status_message = (
+                "Study complete. The simulation produced no analyzable hit output."
+            )
+            analysis = {
+                "status": "Unavailable",
+                "source_job_id": job_id,
+                "version_id": version_id,
+                "error": analysis_result.get(
+                    "error", "Analysis summary was unavailable."
+                ),
+            }
+        report = _build_detector_study_report(
+            study,
+            simulation=next_simulation,
+            analysis=analysis,
+        )
+        interpretation_status = (
+            "pending"
+            if study.get("execution_mode") == "full_study"
+            else "not_required"
+        )
+        return pm.update_detector_study(
+            study["study_id"],
+            phase="COMPLETE",
+            status_message=status_message,
+            simulation=next_simulation,
+            analysis=analysis,
+            coordinator_updates={
+                "interpretation_status": interpretation_status,
+                "interpretation_error": None,
+            },
+            report=report,
+        )
+
+    if run_status in {"Error", "Stopped", "Failed"}:
+        return pm.update_detector_study(
+            study["study_id"],
+            phase="NEEDS_ATTENTION",
+            status_message=f"Simulation ended with status {run_status}.",
+            simulation=next_simulation,
+        )
+
+    if simulation != next_simulation or study.get("phase") != "RUNNING":
+        return pm.update_detector_study(
+            study["study_id"],
+            phase="RUNNING",
+            status_message=(
+                f"Simulation running: {progress}/{total_events} events."
+                if total_events
+                else "Simulation is running."
+            ),
+            simulation=next_simulation,
+        )
+    return study
+
+
+def _active_detector_study_context(pm: ProjectManager) -> str:
+    study = pm.get_detector_study()
+    if not study:
+        return ""
+    brief = study.get("brief") if isinstance(study.get("brief"), dict) else {}
+    coordinator = study.get("coordinator") or {}
+    analysis = study.get("analysis") or {}
+    report = study.get("report") or {}
+    success_criteria = brief.get("success_criteria") or []
+    return (
+        "\n\n## Active AIRPET Detector Study\n"
+        f"Study ID: {study.get('study_id')}\n"
+        f"Execution mode: {study.get('execution_mode')}\n"
+        f"Workflow phase: {study.get('phase')}\n"
+        f"Goal: {brief.get('goal', '')}\n"
+        f"Success criteria: {json.dumps(success_criteria)}\n"
+        f"Geometry revision: {coordinator.get('geometry_revision', 0)}\n"
+        f"Visual verified revision: {coordinator.get('visual_verified_revision')}\n"
+        f"Preflight repair attempts: {coordinator.get('repair_attempts', 0)}"
+        f"/{coordinator.get('max_repair_attempts', 3)}\n"
+        f"Analysis: {json.dumps(analysis, default=str)}\n"
+        f"Report warnings: {json.dumps(report.get('warnings') or [])}\n"
+        "Keep this study brief current with manage_detector_study. "
+        "AIRPET owns the phase gates, will require visual verification of the "
+        "current revision before a full-study launch, will run preflight, and "
+        "will automatically link, monitor, analyze, and report the simulation."
+    )
+
+
+_DETECTOR_STUDY_BUILD_TOOLS = {
+    "update_property",
+    "manage_define",
+    "manage_material",
+    "create_primitive_solid",
+    "modify_solid",
+    "create_boolean_solid",
+    "manage_logical_volume",
+    "place_volume",
+    "modify_physical_volume",
+    "create_detector_ring",
+    "delete_objects",
+    "batch_geometry_update",
+    "insert_physics_template",
+    "manage_assembly",
+    "manage_detector_feature_generator",
+    "manage_particle_source",
+    "configure_incident_beam",
+    "configure_detector_readout",
+    "manage_simulation_control",
+}
+
+
+def _record_detector_study_tool_activity(
+    pm: ProjectManager,
+    tool_name: str,
+    result: Any,
+) -> None:
+    study = pm.get_detector_study()
+    if not study or not isinstance(result, dict) or not result.get("success"):
+        return
+    if tool_name in {"manage_detector_study", "run_detector_study", "run_simulation"}:
+        return
+
+    phase = None
+    message = None
+    if tool_name == AI_VISUAL_VERIFICATION_TOOL_NAME:
+        try:
+            pm.record_detector_study_visual_verification(
+                study["study_id"],
+                result,
+            )
+        except ValueError:
+            pass
+        return
+    elif tool_name in {"run_preflight_checks", "run_preflight_scope"}:
+        summary = (
+            result.get("summary")
+            or (result.get("preflight_report") or {}).get("summary")
+            or {}
+        )
+        can_run = bool(summary.get("can_run"))
+        preflight_report = result.get("preflight_report") or result
+        try:
+            pm.record_detector_study_preflight(
+                study["study_id"],
+                preflight_report,
+            )
+        except ValueError:
+            pass
+        return
+    elif tool_name in _DETECTOR_STUDY_BUILD_TOOLS:
+        message = f"AI applied {tool_name.replace('_', ' ')}."
+        try:
+            pm.record_detector_study_geometry_change(
+                study["study_id"],
+                message,
+            )
+        except ValueError:
+            pass
+        return
+
+    if phase:
+        try:
+            pm.update_detector_study(
+                study["study_id"],
+                phase=phase,
+                status_message=message,
+            )
+        except ValueError:
+            pass
 
 
 def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -10861,59 +11557,228 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             }
 
         elif tool_name == "run_simulation":
-            preflight_report = pm.run_preflight_checks()
-            preflight_summary = preflight_report.get("summary", {})
-            if not preflight_summary.get("can_run", False):
+            return _start_ai_simulation_job(pm, args)
+
+        elif tool_name == "manage_detector_study":
+            action = str(args.get("action") or "get").strip().lower()
+            study_id = args.get("study_id") or pm.active_detector_study_id
+            if action == "get":
+                study = _reconcile_detector_study(
+                    pm,
+                    pm.get_detector_study(study_id),
+                )
+                if not study:
+                    return {
+                        "success": False,
+                        "error": "No active detector study is available.",
+                    }
+                return {"success": True, "study": study}
+            if not study_id:
                 return {
                     "success": False,
-                    "error": "Preflight checks failed. Resolve errors before running simulation.",
-                    "preflight_report": preflight_report,
-                    "preflight_summary": preflight_summary,
+                    "error": "No active detector study is available.",
                 }
-
-            job_id = str(uuid.uuid4())
             try:
-                events = int(args.get("events", 1000))
-            except Exception:
-                events = 1000
-            try:
-                threads = int(args.get("threads", 1))
-            except Exception:
-                threads = 1
-
-            sim_params = {
-                "events": events,
-                "threads": threads,
-            }
-            for key in RUN_SIMULATION_OPTION_KEYS:
-                value = args.get(key)
-                if value is None:
-                    continue
-                if isinstance(value, str) and not value.strip():
-                    continue
-                sim_params[key] = value
-            sim_params = _merge_project_sim_params(pm, sim_params)
-            version_id = pm.current_version_id
-            if pm.is_changed or not version_id:
-                version_id, _ = pm.save_project_version(f"AI_Sim_Run_{job_id[:8]}")
-
-            version_dir = pm._get_version_dir(version_id)
-            run_dir = os.path.join(version_dir, "sim_runs", job_id)
-            os.makedirs(run_dir, exist_ok=True)
-
-            pm.generate_macro_file(
-                job_id, sim_params, GEANT4_BUILD_DIR, run_dir, version_dir
-            )
-
-            thread = threading.Thread(target=run_g4_simulation, args=(job_id, run_dir, GEANT4_EXECUTABLE, sim_params))
-            thread.start()
-
+                if action == "pause":
+                    study = pm.pause_detector_study(study_id)
+                elif action == "resume":
+                    study = pm.resume_detector_study(study_id)
+                elif action == "restore_checkpoint":
+                    study = pm.restore_detector_study_checkpoint(
+                        study_id,
+                        args.get("checkpoint_id"),
+                    )
+                elif action == "update":
+                    study = pm.update_detector_study(
+                        study_id,
+                        phase=args.get("phase"),
+                        status_message=args.get("status_message"),
+                        title=args.get("title"),
+                        goal=args.get("goal"),
+                        requirements=args.get("requirements"),
+                        assumptions=args.get("assumptions"),
+                        success_criteria=args.get("success_criteria"),
+                    )
+                else:
+                    return {
+                        "success": False,
+                        "error": (
+                            "action must be get, update, pause, resume, "
+                            "or restore_checkpoint."
+                        ),
+                    }
+            except ValueError as exc:
+                return {"success": False, "error": str(exc)}
             return {
                 "success": True,
-                "job_id": job_id,
-                "message": f"Simulation started (ID: {job_id}).",
-                "preflight_summary": preflight_summary,
+                "message": f"Detector study action '{action}' completed.",
+                "study": study,
             }
+
+        elif tool_name == "configure_detector_readout":
+            action = str(args.get("action") or "set").strip().lower()
+            if action == "get":
+                defaults = deepcopy(
+                    pm.current_geometry_state.scoring.run_manifest_defaults
+                )
+                return {
+                    "success": True,
+                    "readout": {
+                        "hit_selection_mode": defaults.get(
+                            "hit_selection_mode", "all_hits"
+                        ),
+                        "target_sensitive_detectors": defaults.get(
+                            "hit_target_sensitive_detectors", []
+                        ),
+                        "target_logical_volumes": defaults.get(
+                            "hit_target_logical_volumes", []
+                        ),
+                        "target_physical_volumes": defaults.get(
+                            "hit_target_physical_volumes", []
+                        ),
+                        "minimum_hit_count": defaults.get(
+                            "hit_minimum_multiplicity", 1
+                        ),
+                        "hit_energy_threshold": defaults.get(
+                            "hit_energy_threshold", "1 eV"
+                        ),
+                    },
+                    "run_manifest_defaults": defaults,
+                }
+            if action != "set":
+                return {"success": False, "error": "action must be get or set."}
+
+            result, error = pm.configure_detector_readout(
+                hit_selection_mode=args.get("hit_selection_mode", "all_hits"),
+                target_sensitive_detectors=args.get(
+                    "target_sensitive_detectors", []
+                ),
+                target_logical_volumes=args.get("target_logical_volumes", []),
+                target_physical_volumes=args.get("target_physical_volumes", []),
+                minimum_hit_count=args.get("minimum_hit_count", 1),
+                hit_energy_threshold=args.get("hit_energy_threshold"),
+                mark_targets_sensitive=args.get("mark_targets_sensitive", True),
+            )
+            if not result:
+                return {"success": False, "error": error}
+            return {
+                "success": True,
+                "message": "Detector readout policy configured.",
+                **result,
+            }
+
+        elif tool_name == "run_detector_study":
+            detector_study_id = str(
+                args.get("detector_study_id")
+                or pm.active_detector_study_id
+                or ""
+            ).strip()
+            launch_gate = _detector_study_launch_gate(
+                pm,
+                detector_study_id=detector_study_id,
+            )
+            if not launch_gate.get("allowed"):
+                return {
+                    "success": False,
+                    "error": launch_gate.get(
+                        "message", "Detector study launch is currently blocked."
+                    ),
+                    "error_type": launch_gate.get("reason"),
+                    "launch_gate": launch_gate,
+                }
+
+            beam_result = None
+            beam = args.get("incident_beam")
+            inferred_physical_targets = list(
+                args.get("target_physical_volumes") or []
+            )
+            if isinstance(beam, dict):
+                beam_result, error = pm.configure_incident_beam(
+                    target=beam.get("target"),
+                    source_name=beam.get("source_name", "incident_beam"),
+                    particle=beam.get("particle"),
+                    energy=beam.get("energy"),
+                    incident_axis=beam.get("incident_axis", "+z"),
+                    offset=beam.get("offset", "1*mm"),
+                    activity=beam.get("activity", 1.0),
+                    mark_target_sensitive=args.get("mark_targets_sensitive", True),
+                    activate=True,
+                    exclusive_activation=True,
+                )
+                if not beam_result:
+                    return {"success": False, "error": error}
+                if (
+                    args.get("hit_selection_mode") != "all_hits"
+                    and not args.get("target_sensitive_detectors")
+                    and not args.get("target_logical_volumes")
+                    and not inferred_physical_targets
+                ):
+                    inferred_physical_targets = [beam_result["target_pv_name"]]
+            elif args.get("source_id"):
+                source_id = str(args.get("source_id")).strip()
+                source_exists = any(
+                    source.id == source_id
+                    for source in pm.current_geometry_state.sources.values()
+                )
+                if not source_exists:
+                    return {
+                        "success": False,
+                        "error": f"Source with ID {source_id} not found.",
+                    }
+                pm.current_geometry_state.active_source_ids = [source_id]
+                pm.is_changed = True
+
+            readout_result = None
+            readout_keys = {
+                "hit_selection_mode",
+                "target_sensitive_detectors",
+                "target_logical_volumes",
+                "target_physical_volumes",
+                "minimum_hit_count",
+                "hit_energy_threshold",
+                "mark_targets_sensitive",
+            }
+            if any(key in args for key in readout_keys) or inferred_physical_targets:
+                readout_result, error = pm.configure_detector_readout(
+                    hit_selection_mode=args.get(
+                        "hit_selection_mode",
+                        pm.current_geometry_state.scoring.run_manifest_defaults.get(
+                            "hit_selection_mode", "all_hits"
+                        ),
+                    ),
+                    target_sensitive_detectors=args.get(
+                        "target_sensitive_detectors", []
+                    ),
+                    target_logical_volumes=args.get(
+                        "target_logical_volumes", []
+                    ),
+                    target_physical_volumes=inferred_physical_targets,
+                    minimum_hit_count=args.get("minimum_hit_count", 1),
+                    hit_energy_threshold=args.get("hit_energy_threshold"),
+                    mark_targets_sensitive=args.get("mark_targets_sensitive", True),
+                )
+                if not readout_result:
+                    return {"success": False, "error": error}
+
+            run_result = _start_ai_simulation_job(
+                pm,
+                args,
+                version_description_prefix="AI_Detector_Study",
+            )
+            if not run_result.get("success"):
+                return run_result
+            run_result["detector_study"] = {
+                "incident_beam": beam_result,
+                "readout": (
+                    readout_result.get("readout")
+                    if isinstance(readout_result, dict)
+                    else None
+                ),
+                "active_source_ids": list(
+                    pm.current_geometry_state.active_source_ids
+                ),
+            }
+            return run_result
 
         elif tool_name == "get_simulation_status":
             job_id = args['job_id']
@@ -10943,6 +11808,17 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             with SIMULATION_LOCK:
                 status = SIMULATION_STATUS.get(job_id)
                 if not status:
+                    persisted = _find_persisted_simulation_run(pm, job_id)
+                    if persisted:
+                        return {
+                            "success": True,
+                            "status": persisted["status"],
+                            "progress": persisted["progress"],
+                            "total": persisted["total_events"],
+                            "version_id": persisted["version_id"],
+                            "output_available": persisted["output_available"],
+                            "persisted": True,
+                        }
                     return {"success": False, "error": "Job ID not found."}
 
                 stdout_lines = list(status.get("stdout") or [])
@@ -11129,6 +12005,7 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             all_jobs.reverse()
 
             jobs = []
+            seen_job_ids = set()
             for job_id, status in all_jobs:
                 if len(jobs) >= limit:
                     break
@@ -11138,7 +12015,10 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     "job_id": job_id,
                     "status": status.get('status', 'Unknown'),
                     "progress": status.get('progress', 0),
+                    "total_events": status.get('total_events', 0),
+                    "persisted": False,
                 })
+                seen_job_ids.add(job_id)
 
             # Also check LATEST_COMPLETED_JOB_ID
             if LATEST_COMPLETED_JOB_ID:
@@ -11152,7 +12032,23 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                         "job_id": LATEST_COMPLETED_JOB_ID,
                         "status": "Completed",
                         "progress": 0,
+                        "total_events": 0,
+                        "persisted": False,
                     })
+                    seen_job_ids.add(LATEST_COMPLETED_JOB_ID)
+
+            for persisted in _list_persisted_simulation_runs(pm):
+                if len(jobs) >= limit:
+                    break
+                if persisted["job_id"] in seen_job_ids:
+                    continue
+                if status_filter and persisted["status"] != status_filter:
+                    continue
+                jobs.append({
+                    **persisted,
+                    "persisted": True,
+                })
+                seen_job_ids.add(persisted["job_id"])
 
             return {
                 "success": True,
@@ -11807,9 +12703,175 @@ def _coerce_optional_int(value: Any) -> Optional[int]:
     return None
 
 
-def _build_openai_tool_schema_from_ai_tools() -> List[Dict[str, Any]]:
+AI_TOOL_BUNDLES = {
+    "core": {
+        "request_visual_verification",
+        "manage_detector_study",
+        "get_project_summary",
+        "get_component_details",
+        "search_components",
+        "evaluate_expression",
+    },
+    "geometry": {
+        "update_property",
+        "manage_define",
+        "manage_material",
+        "create_primitive_solid",
+        "modify_solid",
+        "create_boolean_solid",
+        "manage_logical_volume",
+        "place_volume",
+        "modify_physical_volume",
+        "create_detector_ring",
+        "delete_objects",
+        "set_volume_appearance",
+        "delete_detector_ring",
+        "batch_geometry_update",
+        "insert_physics_template",
+        "manage_optical_surface",
+        "manage_surface_link",
+        "manage_assembly",
+        "manage_ui_group",
+        "rename_ui_group",
+        "manage_detector_feature_generator",
+    },
+    "simulation": {
+        "manage_detector_study",
+        "manage_particle_source",
+        "configure_incident_beam",
+        "set_active_source",
+        "configure_detector_readout",
+        "run_detector_study",
+        "run_simulation",
+        "stop_simulation",
+        "get_simulation_status",
+        "list_simulations",
+        "get_simulation_metadata",
+        "get_analysis_summary",
+        "get_scoring_summary",
+        "get_simulation_analysis",
+        "run_preflight_checks",
+        "run_preflight_scope",
+        "manage_simulation_control",
+    },
+    "analysis": {
+        "get_analysis_summary",
+        "get_scoring_summary",
+        "get_simulation_analysis",
+        "get_simulation_metadata",
+        "list_simulations",
+        "process_lors",
+        "get_lor_status",
+        "check_lor_file",
+        "run_reconstruction",
+        "compute_sensitivity",
+        "get_sensitivity_status",
+    },
+    "optimization": {
+        "create_parameter_registry",
+        "setup_param_study",
+        "run_optimization",
+        "apply_best_result",
+        "list_optimizer_runs",
+        "verify_best_candidate",
+    },
+    "preflight": {
+        name
+        for name in (
+            "run_preflight_checks",
+            "run_preflight_scope",
+            "compare_preflight_summaries",
+            "compare_preflight_versions",
+            "compare_latest_preflight_versions",
+            "compare_autosave_preflight_vs_latest_saved",
+            "compare_autosave_preflight_vs_previous_manual_saved",
+            "compare_autosave_preflight_vs_manual_saved_index",
+            "compare_autosave_preflight_vs_manual_saved_for_simulation_run",
+            "compare_autosave_preflight_vs_manual_saved_for_simulation_run_index",
+            "list_manual_saved_versions_for_simulation_run",
+            "compare_manual_preflight_versions_for_simulation_run_indices",
+            "compare_autosave_preflight_vs_saved_version",
+            "compare_autosave_preflight_vs_snapshot_version",
+            "compare_autosave_preflight_vs_latest_snapshot",
+            "compare_autosave_preflight_vs_previous_snapshot",
+            "compare_autosave_snapshot_preflight_versions",
+            "compare_latest_autosave_snapshot_preflight_versions",
+            "list_preflight_versions",
+        )
+    },
+}
+
+
+def _select_ai_tools_for_conversation(
+    chat_history: List[Dict[str, Any]],
+    user_message: str,
+) -> List[Dict[str, Any]]:
+    recent_text = [str(user_message or "")]
+    for message in (chat_history or [])[-6:]:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            recent_text.append(content)
+    intent_text = " ".join(recent_text).lower()
+
+    keyword_groups = {
+        "geometry": (
+            "geometry", "build", "create", "place", "move", "rotate", "align",
+            "volume", "solid", "material", "cad", "gdml", "array", "detector",
+            "sensitive", "import", "assembly",
+        ),
+        "simulation": (
+            "simulate", "simulation", "run ", "beam", "source", "gps", "particle",
+            "event", "hit", "readout", "trigger", "geant4", "physics", "field",
+            "overlap", "macro",
+        ),
+        "analysis": (
+            "analysis", "analyze", "result", "spectrum", "histogram", "hdf5",
+            "reconstruct", "reconstruction", "lor", "sensitivity", "scoring",
+        ),
+        "optimization": (
+            "optimize", "optimization", "parameter study", "sweep", "candidate",
+            "objective", "best result",
+        ),
+        "preflight": (
+            "preflight", "audit", "compare version", "saved version", "autosave",
+        ),
+    }
+
+    selected_bundle_names = {
+        bundle_name
+        for bundle_name, keywords in keyword_groups.items()
+        if any(keyword in intent_text for keyword in keywords)
+    }
+    if not selected_bundle_names:
+        return list(AI_GEOMETRY_TOOLS)
+
+    selected_names = set(AI_TOOL_BUNDLES["core"])
+    for bundle_name in selected_bundle_names:
+        selected_names.update(AI_TOOL_BUNDLES[bundle_name])
+
+    # Simulation setup commonly needs to inspect or adjust detector geometry.
+    if "simulation" in selected_bundle_names:
+        selected_names.update({
+            "update_property",
+            "manage_logical_volume",
+            "modify_physical_volume",
+            "batch_geometry_update",
+        })
+
+    return [
+        tool
+        for tool in AI_GEOMETRY_TOOLS
+        if tool.get("name") in selected_names
+    ]
+
+
+def _build_openai_tool_schema_from_ai_tools(
+    ai_tools: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     tool_schemas: List[Dict[str, Any]] = []
-    for tool in AI_GEOMETRY_TOOLS:
+    for tool in ai_tools if ai_tools is not None else AI_GEOMETRY_TOOLS:
         tool_schemas.append({
             "type": "function",
             "function": {
@@ -12188,6 +13250,30 @@ def _persist_final_stream_reply(
     if metadata:
         reply_entry["metadata"] = dict(metadata)
     chat_history.append(reply_entry)
+
+
+def _finish_detector_study_interpretation(
+    pm: ProjectManager,
+    study_id: Optional[str],
+    *,
+    conclusion: Optional[str] = None,
+    error: Optional[str] = None,
+) -> None:
+    normalized_id = str(study_id or "").strip()
+    if not normalized_id:
+        return
+    try:
+        pm.complete_detector_study_interpretation(
+            normalized_id,
+            conclusion=conclusion,
+            error=error,
+        )
+    except ValueError as exc:
+        logger.warning(
+            "Could not persist detector study interpretation for %s: %s",
+            normalized_id,
+            exc,
+        )
 
 
 def _build_executable_tool_calls(parsed_tool_calls: List[Dict[str, Any]], turn: int) -> List[Dict[str, Any]]:
@@ -14362,9 +15448,26 @@ def _stream_ai_chat_response(
     client_instance=None,
     chat_attachments: Optional[List[Dict[str, Any]]] = None,
     client_display_message: Optional[str] = None,
+    study_interpretation_id: Optional[str] = None,
 ):
     """Generator function for streaming AI chat progress via SSE."""
     import time
+
+    if study_interpretation_id:
+        try:
+            claimed_study = pm.claim_detector_study_interpretation(
+                study_interpretation_id
+            )
+        except ValueError as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+            return
+        if not claimed_study:
+            yield (
+                "data: "
+                f"{json.dumps({'type': 'error', 'message': 'This detector study interpretation is no longer pending.'})}"
+                "\n\n"
+            )
+            return
     
     display_user_message = (
         str(client_display_message).strip()
@@ -14374,8 +15477,16 @@ def _stream_ai_chat_response(
     context_summary = pm.get_summarized_context()
     attachment_notice = _build_ai_chat_attachment_notice(chat_attachments or [])
     attachment_metadata = _public_ai_chat_attachment_metadata(chat_attachments or [])
-    formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nUser Message: {user_message}{attachment_notice}"
+    study_context = _active_detector_study_context(pm)
+    formatted_user_msg = (
+        f"[System Context Update]\n{context_summary}{study_context}"
+        f"\n\nUser Message: {user_message}{attachment_notice}"
+    )
     artifact_store = _get_ai_artifact_store_for_session(pm) if attachment_metadata else None
+    selected_ai_tools = _select_ai_tools_for_conversation(
+        pm.chat_history,
+        user_message,
+    )
 
     if use_local_text_adapter:
         selected_backend_id = backend_selection_payload.get("resolved_backend_id") if backend_selection_payload else None
@@ -14407,7 +15518,9 @@ def _stream_ai_chat_response(
                     TextMessage(role="user", content=formatted_user_msg),
                 ]
 
-            openai_tool_schemas = tuple(_build_openai_tool_schema_from_ai_tools())
+            openai_tool_schemas = tuple(
+                _build_openai_tool_schema_from_ai_tools(selected_ai_tools)
+            )
             use_native_tool_loop = bool(selected_backend_id == "llama_cpp")
             effective_require_tools = False if disable_tools else bool(require_tools or use_native_tool_loop)
 
@@ -14505,6 +15618,11 @@ def _stream_ai_chat_response(
                             "provider_model": adapter_response.model,
                         },
                     )
+                    _finish_detector_study_interpretation(
+                        pm,
+                        study_interpretation_id,
+                        conclusion=final_text,
+                    )
 
                     pm.end_transaction(f"AI: {user_message[:50]}")
                     if APP_MODE != 'production':
@@ -14532,7 +15650,74 @@ def _stream_ai_chat_response(
 
                     args = tool_call.get("arguments", {})
                     visual_feedback_msg = None
-                    if tool_name == AI_VISUAL_VERIFICATION_TOOL_NAME:
+                    launch_gate = (
+                        _detector_study_launch_gate(pm)
+                        if tool_name in {"run_detector_study", "run_simulation"}
+                        else {"allowed": True}
+                    )
+                    if (
+                        not launch_gate.get("allowed")
+                        and launch_gate.get("reason")
+                        == "visual_verification_required"
+                    ):
+                        tool_call_id = str(
+                            tool_call.get("id")
+                            or f"call_{turn}_{tool_name}_visual_gate"
+                        )
+                        request_payload = _create_visual_verification_request(
+                            {
+                                "reason": (
+                                    "AIRPET requires a visual checkpoint of the "
+                                    "current detector revision before launching "
+                                    "this full study."
+                                ),
+                                "questions": [
+                                    "Does the geometry match the detector study goal?",
+                                    "Are any components visibly missing, duplicated, overlapping, or misaligned?",
+                                    "If the geometry is sound, retry the requested simulation launch.",
+                                ],
+                            },
+                            tool_call_id=tool_call_id,
+                        )
+                        yield (
+                            "data: "
+                            f"{json.dumps(_build_visual_verification_request_sse_payload(pm, request_payload))}"
+                            "\n\n"
+                        )
+                        visual_result = _wait_for_visual_verification_result(
+                            request_payload["request_id"]
+                        )
+                        visual_feedback_msg = (
+                            _build_visual_verification_chat_message(visual_result)
+                        )
+                        if visual_result.get("success"):
+                            study = pm.get_detector_study()
+                            if study:
+                                pm.record_detector_study_visual_verification(
+                                    study["study_id"],
+                                    visual_result,
+                                )
+                            result = {
+                                "success": True,
+                                "launch_deferred": True,
+                                "message": (
+                                    "Simulation launch was deferred so the current "
+                                    "revision could be visually inspected. Review "
+                                    "the attached evidence, repair any issue you "
+                                    "find, or retry the launch if it is sound."
+                                ),
+                                "launch_gate": launch_gate,
+                            }
+                        else:
+                            result = {
+                                "success": False,
+                                "error": visual_result.get(
+                                    "error",
+                                    "Visual verification capture failed.",
+                                ),
+                                "launch_gate": launch_gate,
+                            }
+                    elif tool_name == AI_VISUAL_VERIFICATION_TOOL_NAME:
                         tool_call_id = str(tool_call.get("id") or f"call_{turn}_{tool_name}")
                         request_payload = _create_visual_verification_request(args, tool_call_id=tool_call_id)
                         yield (
@@ -14544,6 +15729,11 @@ def _stream_ai_chat_response(
                         visual_feedback_msg = _build_visual_verification_chat_message(result)
                     else:
                         result = dispatch_ai_tool(pm, tool_name, args)
+                    _record_detector_study_tool_activity(
+                        pm,
+                        tool_name,
+                        result,
+                    )
 
                     if isinstance(result, dict):
                         if "job_id" in result:
@@ -14587,6 +15777,11 @@ def _stream_ai_chat_response(
                     "resolved_backend_id": selected_backend_id,
                 } if selected_backend_id else None),
             )
+            _finish_detector_study_interpretation(
+                pm,
+                study_interpretation_id,
+                error=turn_limit_text,
+            )
             pm.end_transaction(f"AI: {user_message[:50]}")
             if APP_MODE != "production":
                 logger.info("Stream Complete (turn limit)")
@@ -14608,6 +15803,11 @@ def _stream_ai_chat_response(
             import traceback
             traceback.print_exc()
             pm.end_transaction(f"AI Error: {user_message[:50]}")
+            _finish_detector_study_interpretation(
+                pm,
+                study_interpretation_id,
+                error=str(stream_err),
+            )
 
             err_payload = {
                 "type": "error",
@@ -14638,6 +15838,11 @@ def _stream_ai_chat_response(
         from google.genai import types
         
         if client_instance is None:
+            _finish_detector_study_interpretation(
+                pm,
+                study_interpretation_id,
+                error="Gemini client is not configured.",
+            )
             yield f"data: {json.dumps({'type': 'error', 'message': 'Gemini client not configured. Check your API key.'})}\n\n"
             return
         
@@ -14674,7 +15879,7 @@ def _stream_ai_chat_response(
                         model=model_id,
                         contents=sanitized_history,
                         config=types.GenerateContentConfig(
-                            tools=[{"function_declarations": AI_GEOMETRY_TOOLS}]
+                            tools=[{"function_declarations": selected_ai_tools}]
                         )
                     )
                 except Exception as api_err:
@@ -14690,6 +15895,11 @@ def _stream_ai_chat_response(
                     fallback_text = getattr(response, 'text', None)
                     if fallback_text:
                         pm.chat_history.append({"role": "model", "parts": [{"text": fallback_text}]})
+                        _finish_detector_study_interpretation(
+                            pm,
+                            study_interpretation_id,
+                            conclusion=fallback_text,
+                        )
                         pm.end_transaction(f"AI: {user_message[:50]}")
                         yield f"data: {json.dumps({'type': 'complete', 'message': fallback_text, 'extra_payload': chat_extra_payload, 'job_id': job_id, 'version_id': version_id or pm.current_version_id})}\n\n"
                         return
@@ -14734,7 +15944,71 @@ def _stream_ai_chat_response(
                         tool_names.append(tool_name)
                         
                         print(f"  Stream Tool Calls: {tool_name}", flush=True)
-                        if tool_name == AI_VISUAL_VERIFICATION_TOOL_NAME:
+                        launch_gate = (
+                            _detector_study_launch_gate(pm)
+                            if tool_name in {"run_detector_study", "run_simulation"}
+                            else {"allowed": True}
+                        )
+                        if (
+                            not launch_gate.get("allowed")
+                            and launch_gate.get("reason")
+                            == "visual_verification_required"
+                        ):
+                            request_payload = _create_visual_verification_request(
+                                {
+                                    "reason": (
+                                        "AIRPET requires a visual checkpoint of the "
+                                        "current detector revision before launching "
+                                        "this full study."
+                                    ),
+                                    "questions": [
+                                        "Does the geometry match the detector study goal?",
+                                        "Are any components visibly missing, duplicated, overlapping, or misaligned?",
+                                        "If the geometry is sound, retry the requested simulation launch.",
+                                    ],
+                                },
+                                tool_call_id=f"gemini_turn_{turn}_{tool_name}_visual_gate",
+                            )
+                            yield (
+                                "data: "
+                                f"{json.dumps(_build_visual_verification_request_sse_payload(pm, request_payload))}"
+                                "\n\n"
+                            )
+                            visual_result = _wait_for_visual_verification_result(
+                                request_payload["request_id"]
+                            )
+                            visual_feedback_messages.append(
+                                _build_visual_verification_chat_message(
+                                    visual_result
+                                )
+                            )
+                            if visual_result.get("success"):
+                                study = pm.get_detector_study()
+                                if study:
+                                    pm.record_detector_study_visual_verification(
+                                        study["study_id"],
+                                        visual_result,
+                                    )
+                                result = {
+                                    "success": True,
+                                    "launch_deferred": True,
+                                    "message": (
+                                        "Simulation launch was deferred for the "
+                                        "required visual inspection. Review the "
+                                        "evidence, repair if needed, or retry the launch."
+                                    ),
+                                    "launch_gate": launch_gate,
+                                }
+                            else:
+                                result = {
+                                    "success": False,
+                                    "error": visual_result.get(
+                                        "error",
+                                        "Visual verification capture failed.",
+                                    ),
+                                    "launch_gate": launch_gate,
+                                }
+                        elif tool_name == AI_VISUAL_VERIFICATION_TOOL_NAME:
                             request_payload = _create_visual_verification_request(
                                 args,
                                 tool_call_id=f"gemini_turn_{turn}_{tool_name}",
@@ -14748,6 +16022,11 @@ def _stream_ai_chat_response(
                             visual_feedback_messages.append(_build_visual_verification_chat_message(result))
                         else:
                             result = dispatch_ai_tool(pm, tool_name, args)
+                        _record_detector_study_tool_activity(
+                            pm,
+                            tool_name,
+                            result,
+                        )
                         
                         if "job_id" in result: job_id = result["job_id"]
                         if "version_id" in result: version_id = result["version_id"]
@@ -14770,6 +16049,11 @@ def _stream_ai_chat_response(
                         pm.chat_history,
                         role=response_role,
                         final_text=final_text,
+                    )
+                    _finish_detector_study_interpretation(
+                        pm,
+                        study_interpretation_id,
+                        conclusion=final_text,
                     )
                     pm.end_transaction(f"AI: {user_message[:50]}")
                     
@@ -14809,6 +16093,11 @@ def _stream_ai_chat_response(
                 role="model",
                 final_text=turn_limit_text,
             )
+            _finish_detector_study_interpretation(
+                pm,
+                study_interpretation_id,
+                error=turn_limit_text,
+            )
             pm.end_transaction(f"AI: {user_message[:50]}")
             if APP_MODE != "production":
                 logger.info("Stream Complete (turn limit)")
@@ -14830,11 +16119,21 @@ def _stream_ai_chat_response(
             import traceback
             traceback.print_exc()
             pm.end_transaction(f"AI Error: {user_message[:50]}")
+            _finish_detector_study_interpretation(
+                pm,
+                study_interpretation_id,
+                error=str(stream_err),
+            )
             yield f"data: {json.dumps({'type': 'error', 'message': f'Stream processing error: {str(stream_err)}'})}\n\n"
         finally:
             if pm._is_transaction_open:
                 pm.end_transaction(f"AI: {user_message[:50]}")
     else:
+        _finish_detector_study_interpretation(
+            pm,
+            study_interpretation_id,
+            error="Streaming is not supported for the selected backend.",
+        )
         yield f"data: {json.dumps({'type': 'error', 'message': 'Streaming not supported for this backend'})}\n\n"
 
 
@@ -14848,6 +16147,10 @@ def ai_chat_stream_route():
     model_id = data.get('model', 'models/gemini-3.1-flash-lite-preview')
     turn_limit = _normalize_ai_turn_limit(data.get('turn_limit', 50))
     raw_attachments = data.get("attachment_ids", data.get("attachments"))
+    requested_study_id = str(data.get("detector_study_id") or "").strip()
+    study_interpretation_id = str(
+        data.get("study_interpretation_id") or ""
+    ).strip()
 
     if not user_message:
         return Response(f"data: {json.dumps({'type': 'error', 'message': 'No message provided.'})}\n\n", mimetype='text/event-stream')
@@ -14856,6 +16159,15 @@ def ai_chat_stream_route():
         chat_attachments = _resolve_ai_chat_attachments(pm, raw_attachments)
     except AIArtifactValidationError as exc:
         return Response(f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n", mimetype='text/event-stream')
+
+    if requested_study_id:
+        try:
+            pm.set_active_detector_study(requested_study_id)
+        except ValueError as exc:
+            return Response(
+                f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n",
+                mimetype='text/event-stream',
+            )
 
     backend_selection_payload = None
     selector_runtime_config = None
@@ -14961,7 +16273,11 @@ def ai_chat_stream_route():
     else:
         is_gemini = model_id.startswith("models/")
 
-    chat_extra_payload = {"backend_selection": backend_selection_payload} if backend_selection_payload else None
+    chat_extra_payload = {}
+    if backend_selection_payload:
+        chat_extra_payload["backend_selection"] = backend_selection_payload
+    if pm.active_detector_study_id:
+        chat_extra_payload["detector_study_id"] = pm.active_detector_study_id
     attachment_error = _validate_ai_chat_attachment_backend_support(
         chat_attachments,
         is_gemini=is_gemini,
@@ -15001,6 +16317,7 @@ def ai_chat_stream_route():
             gemini_client,
             chat_attachments,
             client_display_message,
+            study_interpretation_id,
         )
 
     return Response(generate(), mimetype='text/event-stream')
@@ -15015,6 +16332,7 @@ def ai_chat_route():
     model_id = data.get('model', 'models/gemini-3.1-flash-lite-preview')
     turn_limit = _normalize_ai_turn_limit(data.get('turn_limit', 50))
     raw_attachments = data.get("attachment_ids", data.get("attachments"))
+    requested_study_id = str(data.get("detector_study_id") or "").strip()
     if APP_MODE != "production":
         logger.debug(f"Received turn_limit: {turn_limit}")
 
@@ -15031,6 +16349,11 @@ def ai_chat_route():
         chat_attachments = _resolve_ai_chat_attachments(pm, raw_attachments)
     except AIArtifactValidationError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
+    if requested_study_id:
+        try:
+            pm.set_active_detector_study(requested_study_id)
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
 
     backend_selection_payload = None
     selector_runtime_config = None
@@ -15179,7 +16502,11 @@ def ai_chat_route():
     else:
         is_gemini = model_id.startswith("models/")
 
-    chat_extra_payload = {"backend_selection": backend_selection_payload} if backend_selection_payload else None
+    chat_extra_payload = {}
+    if backend_selection_payload:
+        chat_extra_payload["backend_selection"] = backend_selection_payload
+    if pm.active_detector_study_id:
+        chat_extra_payload["detector_study_id"] = pm.active_detector_study_id
     attachment_error = _validate_ai_chat_attachment_backend_support(
         chat_attachments,
         is_gemini=is_gemini,
@@ -15205,8 +16532,16 @@ def ai_chat_route():
     context_summary = pm.get_summarized_context()
     attachment_notice = _build_ai_chat_attachment_notice(chat_attachments)
     attachment_metadata = _public_ai_chat_attachment_metadata(chat_attachments)
-    formatted_user_msg = f"[System Context Update]\n{context_summary}\n\nUser Message: {user_message}{attachment_notice}"
+    study_context = _active_detector_study_context(pm)
+    formatted_user_msg = (
+        f"[System Context Update]\n{context_summary}{study_context}"
+        f"\n\nUser Message: {user_message}{attachment_notice}"
+    )
     artifact_store = _get_ai_artifact_store_for_session(pm) if attachment_metadata else None
+    selected_ai_tools = _select_ai_tools_for_conversation(
+        pm.chat_history,
+        user_message,
+    )
 
     if use_local_text_adapter:
         pm.chat_history.append({
@@ -15239,7 +16574,9 @@ def ai_chat_route():
                     TextMessage(role="user", content=formatted_user_msg),
                 ]
 
-            openai_tool_schemas: Tuple[Dict[str, Any], ...] = tuple(_build_openai_tool_schema_from_ai_tools())
+            openai_tool_schemas: Tuple[Dict[str, Any], ...] = tuple(
+                _build_openai_tool_schema_from_ai_tools(selected_ai_tools)
+            )
             use_native_tool_loop = bool(selected_backend_id == "llama_cpp")
             effective_require_tools = False if disable_tools else bool(require_tools or use_native_tool_loop)
 
@@ -15357,6 +16694,7 @@ def ai_chat_route():
                     if APP_MODE != "production":
                         logger.info(f"Local Adapter AI Calling Tool: {tool_name}")
                     result = dispatch_ai_tool(pm, tool_name, args)
+                    _record_detector_study_tool_activity(pm, tool_name, result)
 
                     if isinstance(result, dict):
                         if "job_id" in result:
@@ -15451,7 +16789,7 @@ def ai_chat_route():
                         model=model_id,
                         contents=sanitized_history,
                         config=types.GenerateContentConfig(
-                            tools=[{"function_declarations": AI_GEOMETRY_TOOLS}]
+                            tools=[{"function_declarations": selected_ai_tools}]
                         )
                     )
                 except Exception as api_err:
@@ -15519,6 +16857,7 @@ def ai_chat_route():
                         if APP_MODE != "production":
                             logger.info(f"AI Calling Tool: {tool_name}")
                         result = dispatch_ai_tool(pm, tool_name, args)
+                        _record_detector_study_tool_activity(pm, tool_name, result)
                         
                         # Capture simulation metadata for the frontend
                         if "job_id" in result: job_id = result["job_id"]
@@ -15697,6 +17036,7 @@ def ai_chat_route():
                     if APP_MODE != "production":
                         logger.info(f"Ollama AI Calling Tool: {f_name}")
                     result = dispatch_ai_tool(pm, f_name, f_args)
+                    _record_detector_study_tool_activity(pm, f_name, result)
                     
                     if "job_id" in result: job_id = result["job_id"]
                     if "version_id" in result: version_id = result["version_id"]
@@ -15764,6 +17104,178 @@ def get_ai_history():
 
     serializable_history = [sanitize_for_json(msg) for msg in pm.chat_history]
     return jsonify({"history": serializable_history})
+
+
+@app.route('/api/ai/studies', methods=['GET'])
+def list_detector_studies_route():
+    pm = get_project_manager_for_session()
+    limit = request.args.get("limit", default=20, type=int)
+    studies = [
+        _reconcile_detector_study(pm, study)
+        for study in pm.list_detector_studies(limit=limit)
+    ]
+    return jsonify({
+        "success": True,
+        "active_study_id": pm.active_detector_study_id,
+        "studies": studies,
+    })
+
+
+@app.route('/api/ai/studies/ensure', methods=['POST'])
+def ensure_detector_study_route():
+    pm = get_project_manager_for_session()
+    data = request.get_json(silent=True) or {}
+    goal = str(data.get("goal") or "").strip()
+    execution_mode = str(
+        data.get("execution_mode") or "full_study"
+    ).strip().lower()
+    if execution_mode == "design_only":
+        return jsonify({"success": True, "study": None})
+    if not goal:
+        return jsonify({
+            "success": False,
+            "error": "A detector study goal is required.",
+        }), 400
+
+    requested_study_id = str(data.get("study_id") or "").strip()
+    study = (
+        pm.get_detector_study(requested_study_id)
+        if requested_study_id
+        else pm.get_detector_study()
+    )
+    continue_active = _coerce_bool(data.get("continue_active"), True)
+    if (
+        study
+        and continue_active
+        and study.get("execution_mode") == execution_mode
+    ):
+        incoming_attachments = data.get("attachments")
+        merged_attachments = None
+        if isinstance(incoming_attachments, list) and incoming_attachments:
+            existing_attachments = (
+                (study.get("brief") or {}).get("attachments")
+                if isinstance(study.get("brief"), dict)
+                else []
+            )
+            merged_by_key = {}
+            for attachment in [
+                *(existing_attachments or []),
+                *incoming_attachments,
+            ]:
+                if not isinstance(attachment, dict):
+                    continue
+                key = (
+                    attachment.get("artifact_id")
+                    or attachment.get("original_filename")
+                    or str(len(merged_by_key))
+                )
+                merged_by_key[str(key)] = attachment
+            merged_attachments = list(merged_by_key.values())
+        study = pm.update_detector_study(
+            study["study_id"],
+            append_user_request=goal,
+            attachments=merged_attachments,
+            phase=(
+                "BUILDING"
+                if study.get("phase") in {"INTAKE", "PLANNED"}
+                else study.get("phase")
+            ),
+            status_message="Continuing detector study from the latest user request.",
+        )
+    else:
+        try:
+            study = pm.create_detector_study(
+                goal=goal,
+                execution_mode=execution_mode,
+                title=data.get("title"),
+                attachments=data.get("attachments"),
+                requirements=data.get("requirements"),
+                assumptions=data.get("assumptions"),
+                success_criteria=data.get("success_criteria"),
+            )
+            study = pm.update_detector_study(
+                study["study_id"],
+                phase="PLANNED",
+                status_message="Study brief is ready for AI planning.",
+            )
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
+
+    return jsonify({"success": True, "study": study})
+
+
+@app.route('/api/ai/studies/active', methods=['GET'])
+def get_active_detector_study_route():
+    pm = get_project_manager_for_session()
+    study = _reconcile_detector_study(pm, pm.get_detector_study())
+    return jsonify({"success": True, "study": study})
+
+
+@app.route('/api/ai/studies/active', methods=['DELETE'])
+def clear_active_detector_study_route():
+    pm = get_project_manager_for_session()
+    pm.set_active_detector_study(None)
+    return jsonify({"success": True, "study": None})
+
+
+@app.route('/api/ai/studies/<study_id>', methods=['GET', 'PATCH'])
+def detector_study_route(study_id):
+    pm = get_project_manager_for_session()
+    study = pm.get_detector_study(study_id)
+    if not study:
+        return jsonify({
+            "success": False,
+            "error": f"Detector study '{study_id}' was not found.",
+        }), 404
+
+    if request.method == 'GET':
+        return jsonify({
+            "success": True,
+            "study": _reconcile_detector_study(pm, study),
+        })
+
+    data = request.get_json(silent=True) or {}
+    action = str(data.get("action") or "update").strip().lower()
+    try:
+        if action == "pause":
+            study = pm.pause_detector_study(study_id)
+        elif action == "resume":
+            study = pm.resume_detector_study(study_id)
+        elif action == "restore_checkpoint":
+            study = pm.restore_detector_study_checkpoint(
+                study_id,
+                data.get("checkpoint_id"),
+            )
+        elif action == "update":
+            study = pm.update_detector_study(
+                study_id,
+                phase=data.get("phase"),
+                status_message=data.get("status_message"),
+                title=data.get("title"),
+                goal=data.get("goal"),
+                requirements=data.get("requirements"),
+                assumptions=data.get("assumptions"),
+                success_criteria=data.get("success_criteria"),
+            )
+        else:
+            return jsonify({
+                "success": False,
+                "error": (
+                    "action must be update, pause, resume, or restore_checkpoint."
+                ),
+            }), 400
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    payload = {"success": True, "study": study}
+    if action == "restore_checkpoint":
+        payload.update(build_success_payload(
+            pm,
+            message="Detector study checkpoint restored.",
+            exclude_unchanged_tessellated=True,
+        ))
+        payload["study"] = study
+    return jsonify(payload)
+
 
 @app.route('/api/ai/context_stats', methods=['GET'])
 def get_ai_context_stats():

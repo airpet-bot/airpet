@@ -16,6 +16,18 @@
 #include "G4UIdirectory.hh"
 #include "G4UIparameter.hh"
 #include <fstream>
+#include <vector>
+
+namespace {
+G4bool HitMatchesReadoutTarget(const AirPetHit* hit, const RunAction* runAction) {
+  const auto& detectors = runAction->GetHitTargetSensitiveDetectors();
+  const auto& logicalVolumes = runAction->GetHitTargetLogicalVolumes();
+  const auto& physicalVolumes = runAction->GetHitTargetPhysicalVolumes();
+  return detectors.count(hit->GetSensitiveDetectorName()) > 0 ||
+         logicalVolumes.count(hit->GetVolumeName()) > 0 ||
+         physicalVolumes.count(hit->GetPhysicalVolumeName()) > 0;
+}
+}
 
 EventAction::EventAction()
     : G4UserEventAction(), fTrackOutputDir("."), fStartEventToTrack(0),
@@ -56,9 +68,10 @@ void EventAction::EndOfEventAction(const G4Event *event) {
   auto runAction = static_cast<const RunAction *>(G4RunManager::GetRunManager()->GetUserRunAction());
   if (!runAction) return;
 
-  if (runAction->GetSaveHits()) {
-    G4int hits_ntuple_ID = runAction->GetSaveParticles() ? 1 : 0;
-    if (fHitsCollectionIDs[0] == -1) {
+  std::vector<AirPetHit*> qualifyingHits;
+  if (runAction->GetSaveHits() ||
+      runAction->GetHitSelectionMode() == "triggered_events") {
+    if (fHitsCollectionIDs.empty() || fHitsCollectionIDs[0] == -1) {
       fHitsCollectionIDs.clear();
       G4SDManager *sdManager = G4SDManager::GetSDMpointer();
       G4HCtable *hcTable = sdManager->GetHCtable();
@@ -75,30 +88,50 @@ void EventAction::EndOfEventAction(const G4Event *event) {
           for (size_t i = 0; i < hitsCollection->GetSize(); ++i) {
             auto hit = static_cast<AirPetHit *>(hitsCollection->GetHit(i));
             if (hit->GetEdep() < runAction->GetHitEnergyThreshold()) continue;
-            G4int col = 0;
-            analysisManager->FillNtupleIColumn(hits_ntuple_ID, col++, event->GetEventID());
-            analysisManager->FillNtupleDColumn(hits_ntuple_ID, col++, hit->GetEdep());
-            analysisManager->FillNtupleDColumn(hits_ntuple_ID, col++, hit->GetPosition().x());
-            analysisManager->FillNtupleDColumn(hits_ntuple_ID, col++, hit->GetPosition().y());
-            analysisManager->FillNtupleDColumn(hits_ntuple_ID, col++, hit->GetPosition().z());
-            analysisManager->FillNtupleDColumn(hits_ntuple_ID, col++, hit->GetTime());
-            if (runAction->GetSaveHitMetadata()) {
-              analysisManager->FillNtupleSColumn(hits_ntuple_ID, col++, hit->GetSensitiveDetectorName());
-              analysisManager->FillNtupleSColumn(hits_ntuple_ID, col++, hit->GetVolumeName());
-              analysisManager->FillNtupleSColumn(hits_ntuple_ID, col++, hit->GetPhysicalVolumeName());
-              analysisManager->FillNtupleIColumn(hits_ntuple_ID, col++, hit->GetCopyNo());
-              analysisManager->FillNtupleSColumn(hits_ntuple_ID, col++, hit->GetParticleName());
-              analysisManager->FillNtupleIColumn(hits_ntuple_ID, col++, hit->GetTrackID());
-              analysisManager->FillNtupleIColumn(hits_ntuple_ID, col++, hit->GetParentID());
-            }
-            analysisManager->AddNtupleRow(hits_ntuple_ID);
+            qualifyingHits.push_back(hit);
           }
         }
       }
     }
   }
 
-  if (runAction->GetSaveParticles()) {
+  const G4String& selectionMode = runAction->GetHitSelectionMode();
+  G4int targetHitCount = 0;
+  for (const auto* hit : qualifyingHits) {
+    if (HitMatchesReadoutTarget(hit, runAction)) ++targetHitCount;
+  }
+  const G4bool eventTriggered =
+      selectionMode != "triggered_events" ||
+      targetHitCount >= runAction->GetHitMinimumMultiplicity();
+
+  if (runAction->GetSaveHits() && eventTriggered) {
+    G4int hits_ntuple_ID = runAction->GetSaveParticles() ? 1 : 0;
+    for (auto* hit : qualifyingHits) {
+      if (selectionMode == "target_hits_only" &&
+          !HitMatchesReadoutTarget(hit, runAction)) {
+        continue;
+      }
+      G4int col = 0;
+      analysisManager->FillNtupleIColumn(hits_ntuple_ID, col++, event->GetEventID());
+      analysisManager->FillNtupleDColumn(hits_ntuple_ID, col++, hit->GetEdep());
+      analysisManager->FillNtupleDColumn(hits_ntuple_ID, col++, hit->GetPosition().x());
+      analysisManager->FillNtupleDColumn(hits_ntuple_ID, col++, hit->GetPosition().y());
+      analysisManager->FillNtupleDColumn(hits_ntuple_ID, col++, hit->GetPosition().z());
+      analysisManager->FillNtupleDColumn(hits_ntuple_ID, col++, hit->GetTime());
+      if (runAction->GetSaveHitMetadata()) {
+        analysisManager->FillNtupleSColumn(hits_ntuple_ID, col++, hit->GetSensitiveDetectorName());
+        analysisManager->FillNtupleSColumn(hits_ntuple_ID, col++, hit->GetVolumeName());
+        analysisManager->FillNtupleSColumn(hits_ntuple_ID, col++, hit->GetPhysicalVolumeName());
+        analysisManager->FillNtupleIColumn(hits_ntuple_ID, col++, hit->GetCopyNo());
+        analysisManager->FillNtupleSColumn(hits_ntuple_ID, col++, hit->GetParticleName());
+        analysisManager->FillNtupleIColumn(hits_ntuple_ID, col++, hit->GetTrackID());
+        analysisManager->FillNtupleIColumn(hits_ntuple_ID, col++, hit->GetParentID());
+      }
+      analysisManager->AddNtupleRow(hits_ntuple_ID);
+    }
+  }
+
+  if (runAction->GetSaveParticles() && eventTriggered) {
     G4TrajectoryContainer *trajectoryContainer = event->GetTrajectoryContainer();
     if (trajectoryContainer) {
       for (size_t i = 0; i < trajectoryContainer->size(); ++i) {

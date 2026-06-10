@@ -131,6 +131,11 @@ test('saved scoring run controls normalize cleanly and drive resolved simulation
         save_particles: true,
         production_cut: '0.25 mm',
         hit_energy_threshold: '7 eV',
+        hit_selection_mode: 'all_hits',
+        hit_target_sensitive_detectors: [],
+        hit_target_logical_volumes: [],
+        hit_target_physical_volumes: [],
+        hit_minimum_multiplicity: 1,
         tracking_verbose: 0,
         hits_verbose: 0,
         run_verbose: 0,
@@ -148,6 +153,7 @@ test('saved scoring run controls normalize cleanly and drive resolved simulation
     );
     assert.deepEqual(described.detailLines, [
         'Saved outputs: particles',
+        'Readout: all detector hits',
         'Simulation Options can override these defaults for a single run.',
     ]);
 
@@ -168,6 +174,11 @@ test('saved scoring run controls normalize cleanly and drive resolved simulation
         save_particles: true,
         production_cut: '0.25 mm',
         hit_energy_threshold: '7 eV',
+        hit_selection_mode: 'all_hits',
+        hit_target_sensitive_detectors: [],
+        hit_target_logical_volumes: [],
+        hit_target_physical_volumes: [],
+        hit_minimum_multiplicity: 1,
         tracking_verbose: 0,
         hits_verbose: 0,
         run_verbose: 0,

@@ -47,9 +47,17 @@ When using `create_primitive_solid`, use these exact parameter names:
     *   `insert_physics_template`: Use this specialized tool for PET phantoms, SiPM arrays, or cryostats.
     *   `batch_geometry_update`: DEFAULT CHOICE for multiple operations.
 *   **Simulation & Analysis:**
+    *   `manage_detector_study`: When an active detector study is shown in context, keep its brief concise and current. Record clarified requirements, assumptions, success criteria, and meaningful phase changes. Do not create parallel informal plans in chat when the study brief can hold them.
+    *   `configure_detector_readout`: Use this before a run when the user wants hits only from selected sensitive detectors/LVs/PVs, or wants to retain complete events triggered by selected detectors. `target_hits_only` writes matching hits only. `triggered_events` retains all above-threshold hits from qualifying events.
+    *   `run_detector_study`: Preferred end-to-end tool when an explicit user request includes source/beam setup, detector sensitivity, detector-specific readout, and simulation launch. Use `minimum_hit_count` for detector multiplicity requirements and choose detector targets by their user-visible LV/PV names.
     *   `run_simulation`: START ONLY UPON EXPLICIT USER REQUEST.
     *   `get_simulation_status`: Check if a run is finished.
     *   `get_analysis_summary`: Once a simulation is complete, use this to see hit counts.
+    *   `list_simulations`: Use this to recover saved runs after an AIRPET restart, then use the returned `version_id` with metadata or analysis tools.
+
+When an active study uses `build_validate`, build and validate the requested detector but do not launch Geant4 unless the user explicitly asks. Selecting `full_study` is explicit permission to carry the request through construction, visual verification where useful, preflight, simulation, monitoring, and deterministic analysis within the requested or default run budget.
+
+For `full_study`, AIRPET enforces the execution gates. A launch request may be deferred while AIRPET captures the current geometry revision for visual inspection. Review that packet, repair only supported issues, then retry the launch if the geometry is sound. Preflight failures consume a bounded repair budget; do not loop indefinitely. Respect paused studies and use `manage_detector_study` to resume or restore an AIRPET phase checkpoint when requested.
 
 ## Multimodal Visual Verification
 

@@ -47,6 +47,11 @@ export const SCORING_SAVED_RUN_CONTROL_KEYS = [
     'save_particles',
     'production_cut',
     'hit_energy_threshold',
+    'hit_selection_mode',
+    'hit_target_sensitive_detectors',
+    'hit_target_logical_volumes',
+    'hit_target_physical_volumes',
+    'hit_minimum_multiplicity',
     'tracking_verbose',
     'hits_verbose',
     'run_verbose',
@@ -68,6 +73,11 @@ const DEFAULT_RUN_MANIFEST_DEFAULTS = {
     save_particles: false,
     production_cut: '1.0 mm',
     hit_energy_threshold: '1 eV',
+    hit_selection_mode: 'all_hits',
+    hit_target_sensitive_detectors: [],
+    hit_target_logical_volumes: [],
+    hit_target_physical_volumes: [],
+    hit_minimum_multiplicity: 1,
     tracking_verbose: 0,
     hits_verbose: 0,
     run_verbose: 0,
@@ -123,6 +133,21 @@ function normalizePositiveInt(value, fallback = 10) {
 function normalizeNonNegativeInt(value, fallback = 0) {
     const parsed = Number.parseInt(String(value ?? ''), 10);
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function normalizeStringList(value) {
+    const values = Array.isArray(value)
+        ? value
+        : String(value ?? '').split(',');
+    const seen = new Set();
+    const result = [];
+    values.forEach((entry) => {
+        const normalized = normalizeString(entry, '');
+        if (!normalized || seen.has(normalized)) return;
+        seen.add(normalized);
+        result.push(normalized);
+    });
+    return result;
 }
 
 function formatNumber(value) {
@@ -203,6 +228,13 @@ function normalizeTallyQuantity(value) {
 
 function normalizeRunManifestDefaults(rawDefaults) {
     const defaults = rawDefaults && typeof rawDefaults === 'object' ? rawDefaults : {};
+    const rawSelectionMode = normalizeString(
+        defaults.hit_selection_mode,
+        DEFAULT_RUN_MANIFEST_DEFAULTS.hit_selection_mode,
+    );
+    const hitSelectionMode = ['all_hits', 'target_hits_only', 'triggered_events'].includes(rawSelectionMode)
+        ? rawSelectionMode
+        : DEFAULT_RUN_MANIFEST_DEFAULTS.hit_selection_mode;
     return {
         events: normalizePositiveInt(defaults.events, DEFAULT_RUN_MANIFEST_DEFAULTS.events),
         threads: normalizePositiveInt(defaults.threads, DEFAULT_RUN_MANIFEST_DEFAULTS.threads),
@@ -228,6 +260,20 @@ function normalizeRunManifestDefaults(rawDefaults) {
         hit_energy_threshold: normalizeString(
             defaults.hit_energy_threshold,
             DEFAULT_RUN_MANIFEST_DEFAULTS.hit_energy_threshold,
+        ),
+        hit_selection_mode: hitSelectionMode,
+        hit_target_sensitive_detectors: normalizeStringList(
+            defaults.hit_target_sensitive_detectors,
+        ),
+        hit_target_logical_volumes: normalizeStringList(
+            defaults.hit_target_logical_volumes,
+        ),
+        hit_target_physical_volumes: normalizeStringList(
+            defaults.hit_target_physical_volumes,
+        ),
+        hit_minimum_multiplicity: normalizePositiveInt(
+            defaults.hit_minimum_multiplicity,
+            DEFAULT_RUN_MANIFEST_DEFAULTS.hit_minimum_multiplicity,
         ),
         tracking_verbose: normalizeNonNegativeInt(
             defaults.tracking_verbose,
@@ -575,6 +621,16 @@ export function describeScoringRunControls(rawScoringState) {
     if (runDefaults.save_particles) {
         savedOutputs.push('particles');
     }
+    const readoutLabels = {
+        all_hits: 'all detector hits',
+        target_hits_only: 'selected detector hits only',
+        triggered_events: 'events triggered by selected detectors',
+    };
+    const readoutTargets = [
+        ...runDefaults.hit_target_sensitive_detectors,
+        ...runDefaults.hit_target_logical_volumes,
+        ...runDefaults.hit_target_physical_volumes,
+    ];
 
     return {
         title: 'Expert Run Controls',
@@ -584,6 +640,11 @@ export function describeScoringRunControls(rawScoringState) {
             savedOutputs.length > 0
                 ? `Saved outputs: ${savedOutputs.join(', ')}`
                 : 'Saved outputs: none',
+            `Readout: ${readoutLabels[runDefaults.hit_selection_mode]}${
+                readoutTargets.length > 0
+                    ? ` (${readoutTargets.join(', ')}, minimum ${runDefaults.hit_minimum_multiplicity})`
+                    : ''
+            }`,
             'Simulation Options can override these defaults for a single run.',
         ],
     };

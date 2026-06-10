@@ -687,6 +687,32 @@ RUN_SIMULATION_OPTION_SPECS: Dict[str, Dict[str, Any]] = {
     "hit_energy_threshold": _expr_param(
         "Hit energy threshold passed to /g4pet/run/hitEnergyThreshold (e.g. '1 eV')"
     ),
+    "hit_selection_mode": {
+        "type": "string",
+        "enum": ["all_hits", "target_hits_only", "triggered_events"],
+        "description": (
+            "Hit-output policy. target_hits_only writes only selected detector hits; "
+            "triggered_events writes all above-threshold hits from events that satisfy the target trigger."
+        ),
+    },
+    "hit_target_sensitive_detectors": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Sensitive-detector names used by the hit selection policy.",
+    },
+    "hit_target_logical_volumes": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Logical-volume names used by the hit selection policy.",
+    },
+    "hit_target_physical_volumes": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Physical-volume names used by the hit selection policy.",
+    },
+    "hit_minimum_multiplicity": _int_param(
+        "Minimum number of selected, above-threshold hits required to trigger an event."
+    ),
     "save_hits": _bool_param("Whether to save hit ntuples during the run."),
     "save_hit_metadata": _bool_param("Whether to save per-hit metadata."),
     "save_particles": _bool_param("Whether to save particle ntuples."),
@@ -1567,6 +1593,184 @@ AI_GEOMETRY_TOOLS = [
                 **RUN_SIMULATION_OPTION_SPECS,
             }
         }
+    },
+    {
+        "name": "manage_detector_study",
+        "description": (
+            "Read, update, pause, resume, or restore a checkpoint for the active "
+            "AIRPET detector-study brief and workflow state. "
+            "Use this to record clarified requirements, assumptions, success criteria, "
+            "and meaningful workflow phase changes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "get",
+                        "update",
+                        "pause",
+                        "resume",
+                        "restore_checkpoint",
+                    ],
+                    "description": "Study action (default: get).",
+                },
+                "study_id": {
+                    "type": "string",
+                    "description": "Optional study ID. Defaults to the active study.",
+                },
+                "phase": {
+                    "type": "string",
+                    "enum": [
+                        "INTAKE",
+                        "PLANNED",
+                        "BUILDING",
+                        "VISUAL_CHECK",
+                        "PREFLIGHT",
+                        "READY",
+                        "RUNNING",
+                        "ANALYZING",
+                        "COMPLETE",
+                        "NEEDS_ATTENTION",
+                        "PAUSED",
+                    ],
+                },
+                "status_message": {"type": "string"},
+                "title": {"type": "string"},
+                "goal": {"type": "string"},
+                "requirements": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "assumptions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "success_criteria": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "checkpoint_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional checkpoint ID for restore_checkpoint. "
+                        "Defaults to the latest phase checkpoint."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "configure_detector_readout",
+        "description": (
+            "Configure detector-specific hit recording for subsequent simulations. Use this when the user "
+            "wants hits only from selected detectors or wants to retain events triggered by selected detectors."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["get", "set"],
+                    "description": "Get the current policy or set a new policy (default: set).",
+                },
+                "hit_selection_mode": {
+                    "type": "string",
+                    "enum": ["all_hits", "target_hits_only", "triggered_events"],
+                },
+                "target_sensitive_detectors": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "target_logical_volumes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "target_physical_volumes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "minimum_hit_count": {"type": "integer", "minimum": 1},
+                "hit_energy_threshold": {
+                    "type": "string",
+                    "description": "Minimum deposited energy for a hit to qualify, e.g. '100 keV'.",
+                },
+                "mark_targets_sensitive": {
+                    "type": "boolean",
+                    "description": "Mark resolved target logical volumes as sensitive (default: true).",
+                },
+            },
+        },
+    },
+    {
+        "name": "run_detector_study",
+        "description": (
+            "Prepare and launch an end-to-end detector study. This can configure a directed incident beam, "
+            "mark detector targets sensitive, apply detector-specific readout, run preflight, and start Geant4. "
+            "Call only when the user explicitly asks to run a simulation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "incident_beam": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string"},
+                        "particle": {"type": "string"},
+                        "energy": {"type": "string"},
+                        "incident_axis": {
+                            "type": "string",
+                            "enum": ["+x", "-x", "+y", "-y", "+z", "-z"],
+                        },
+                        "offset": {"type": "string"},
+                        "source_name": {"type": "string"},
+                    },
+                    "required": ["target", "particle", "energy"],
+                },
+                "source_id": {
+                    "type": "string",
+                    "description": "Existing source ID to activate exclusively when incident_beam is omitted.",
+                },
+                "detector_study_id": {
+                    "type": "string",
+                    "description": "Optional active detector-study ID. AIRPET normally supplies this automatically.",
+                },
+                "hit_selection_mode": {
+                    "type": "string",
+                    "enum": ["all_hits", "target_hits_only", "triggered_events"],
+                },
+                "target_sensitive_detectors": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "target_logical_volumes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "target_physical_volumes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "minimum_hit_count": {"type": "integer", "minimum": 1},
+                "hit_energy_threshold": {"type": "string"},
+                "mark_targets_sensitive": {"type": "boolean"},
+                "events": {"type": "integer"},
+                "threads": {"type": "integer"},
+                **{
+                    key: value
+                    for key, value in RUN_SIMULATION_OPTION_SPECS.items()
+                    if key not in {
+                        "hit_selection_mode",
+                        "hit_target_sensitive_detectors",
+                        "hit_target_logical_volumes",
+                        "hit_target_physical_volumes",
+                        "hit_minimum_multiplicity",
+                        "hit_energy_threshold",
+                    }
+                },
+            },
+        },
     },
     {
         "name": "get_simulation_status",
