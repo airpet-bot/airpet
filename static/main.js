@@ -18,7 +18,7 @@ import * as RingArrayEditor from './ringArrayEditor.js';
 import * as SceneManager from './sceneManager.js';
 import * as SkinSurfaceEditor from './skinSurfaceEditor.js';
 import * as SolidEditor from './solidEditor.js';
-import { buildCadImportBatchContext } from './cadImportUi.js';
+import { buildCadImportBatchContext, formatStepImportReportMessage, isOrphanCadImportRecord } from './cadImportUi.js';
 import * as StepImportEditor from './stepImportEditor.js';
 import * as ParameterRegistryEditor from './parameterRegistryEditor.js';
 import * as ParamStudyEditor from './paramStudyEditor.js';
@@ -39,6 +39,7 @@ import { mergeProjectStateWithExclusions } from './projectStateMerge.js';
 import {
     buildResolvedSimulationOptions,
     buildSimulationOptionOverrides,
+    hasSimulationHitsOutput,
 } from './scoringUi.js';
 import {
     getNormalizedGpsDirectionVector,
@@ -267,6 +268,7 @@ async function initializeApp() {
         onAddDetectorFeatureGeneratorClicked: handleAddDetectorFeatureGenerator,
         onEditDetectorFeatureGeneratorClicked: handleEditDetectorFeatureGenerator,
         onRealizeDetectorFeatureGeneratorClicked: handleRealizeDetectorFeatureGenerator,
+        onDeleteDetectorFeatureGeneratorClicked: handleDeleteDetectorFeatureGenerator,
 
         onPVVisibilityToggle: handlePVVisibilityToggle,
         onDeleteSelectedClicked: handleDeleteSelected,
@@ -2289,6 +2291,46 @@ async function handleRealizeDetectorFeatureGenerator(generatorEntry) {
     }
 }
 
+async function handleDeleteDetectorFeatureGenerator(generatorEntry) {
+    const generatorId = String(generatorEntry?.generator_id || '').trim();
+    const generatorName = String(generatorEntry?.name || generatorId || 'detector feature generator');
+    if (!generatorId) {
+        UIManager.showError('Could not determine which detector feature generator to delete.');
+        return;
+    }
+
+    const confirmed = window.confirm(
+        `Delete detector feature generator '${generatorName}'? `
+        + 'Its auxiliary geometry (extra solids, logical volumes, and placements) will be removed; '
+        + 'the result solid from a boolean subtraction is preserved.'
+    );
+    if (!confirmed) {
+        return;
+    }
+
+    UIManager.showLoading('Deleting detector generator...');
+    try {
+        const result = await APIService.deleteDetectorFeatureGenerator(generatorId);
+        syncUIWithState(result);
+        const deletion = (result && result.detector_feature_deletion) || {};
+        const skipped = deletion.skipped || {};
+        const skippedTotal =
+            (skipped.placement_ids || []).length
+            + (skipped.logical_volume_names || []).length
+            + (skipped.solid_names || []).length;
+        if (skippedTotal > 0) {
+            console.info(
+                `Detector feature generator '${generatorName}' deleted. ${skippedTotal} `
+                + 'generated object(s) were preserved because other geometry still depends on them.'
+            );
+        }
+    } catch (error) {
+        UIManager.showError('Failed to delete detector generator: ' + (error.message || error));
+    } finally {
+        UIManager.hideLoading();
+    }
+}
+
 function handleAddDefine() {
     DefineEditor.show(null, AppState.currentProjectState);
 }
@@ -2569,17 +2611,26 @@ async function handleImportStep(file, importRecord = null) {
     if (!effectiveRecord) {
         effectiveRecord = findExistingCadImportByFilename(file.name);
         if (effectiveRecord) {
-            const sourceFilename = effectiveRecord.source?.filename || file.name;
-            const answer = window.confirm(
-                `A STEP import from "${sourceFilename}" already exists in this project.\n\n` +
-                `Press OK to reimport (replace existing geometry in-place).\n` +
-                `Press Cancel to import as new (creates duplicate assemblies).`
-            );
-            if (!answer) {
-                // User chose "import as new", proceed without import record
-                effectiveRecord = null;
+            if (isOrphanCadImportRecord(effectiveRecord)) {
+                // Existing record is an orphan (no solids survived F-015 rollback).
+                // Reimport directly without the "reimport vs new" confirm so the user
+                // can recover from an accidental zero-solid import.
+                console.info(
+                    'Existing STEP import for this file has no solids; proceeding to reimport without confirm.'
+                );
+            } else {
+                const sourceFilename = effectiveRecord.source?.filename || file.name;
+                const answer = window.confirm(
+                    `A STEP import from "${sourceFilename}" already exists in this project.\n\n` +
+                    `Press OK to reimport (replace existing geometry in-place).\n` +
+                    `Press Cancel to import as new (creates duplicate assemblies).`
+                );
+                if (!answer) {
+                    // User chose "import as new", proceed without import record
+                    effectiveRecord = null;
+                }
+                // else: user chose reimport, keep effectiveRecord
             }
-            // else: user chose reimport, keep effectiveRecord
         }
     }
 
@@ -2641,13 +2692,13 @@ async function handleCadImportBatchAction(action, importRecord) {
         }
 
         const suggestedMaterial = getImportedCadMaterialSuggestion(importRecord) || availableMaterials[0];
-        const promptMessage = `Assign a material to ${batchContext.logicalVolumeSummary}:`;
-        const materialName = prompt(promptMessage, suggestedMaterial || '');
-        if (materialName == null) {
-            return;
-        }
+        UIManager.setCadImportMaterialSummary(
+            `Assign a material to ${batchContext.logicalVolumeSummary}.`
+        );
+        UIManager.setCadImportMaterialOptions(availableMaterials, suggestedMaterial);
+        UIManager.setCadImportMaterialEmpty(false);
 
-        const materialRef = materialName.trim();
+        const materialRef = await UIManager.requestCadImportMaterialSelection();
         if (!materialRef) {
             return;
         }
@@ -3059,54 +3110,6 @@ function handleCameraModeChange(mode) {
             UIManager.showNotification("Please select an object to center the camera on.");
         }
     }
-}
-
-function formatStepImportReportMessage(report, smartImportRequested = false, isReimport = false) {
-    const actionLabel = isReimport ? 'reimport' : 'import';
-    if (!report) {
-        return smartImportRequested
-            ? `STEP file ${actionLabel}ed. Smart CAD report unavailable.`
-            : `STEP file ${actionLabel}ed successfully.`;
-    }
-
-    if (!report.enabled) {
-        return `STEP file ${actionLabel}ed successfully (smart import disabled).`;
-    }
-
-    const summary = report.summary || {};
-    const total = summary.total || 0;
-    const modeCounts = summary.selected_mode_counts || {};
-    const primitiveSelected = modeCounts.primitive || 0;
-    const tessSelected = modeCounts.tessellated || 0;
-
-    const ratioPct = total > 0
-        ? ((summary.selected_primitive_ratio || 0) * 100).toFixed(1)
-        : "0.0";
-
-    const fallbackReasonCounts = {};
-    (report.candidates || []).forEach(c => {
-        if (c?.selected_mode === 'tessellated' && c?.fallback_reason) {
-            fallbackReasonCounts[c.fallback_reason] = (fallbackReasonCounts[c.fallback_reason] || 0) + 1;
-        }
-    });
-
-    const topReasons = Object.entries(fallbackReasonCounts)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 3)
-        .map(([reason, count]) => `${reason}: ${count}`);
-
-    const lines = [
-        `STEP ${actionLabel} complete (Smart CAD).`,
-        `Total solids: ${total}`,
-        `Selected primitives: ${primitiveSelected} (${ratioPct}%)`,
-        `Selected tessellated fallback: ${tessSelected}`,
-    ];
-
-    if (topReasons.length > 0) {
-        lines.push(`Top fallback reasons: ${topReasons.join(', ')}`);
-    }
-
-    return lines.join("\n");
 }
 
 async function handleConfirmStepImport(options) {
@@ -3906,10 +3909,6 @@ async function pollSimStatus() {
                 AppState.simStatusPoller = null;
                 if (status.status === 'Completed') {
                     AppState.lastSimJobId = AppState.currentSimJobId;
-                    // Enable the reconstruction and download buttons **
-                    UIManager.setAnalysisModalButtonEnabled(true);
-                    UIManager.setReconModalButtonEnabled(true);
-                    UIManager.setDownloadButtonEnabled(true);
                     try {
                         const metaResult = await APIService.getSimulationMetadata(
                             AppState.lastSimVersionId,
@@ -3921,12 +3920,29 @@ async function pollSimStatus() {
                                 AppState.lastSimJobId,
                                 metaResult.metadata,
                             );
+                            const hasHitsData = hasSimulationHitsOutput(metaResult.metadata);
+                            if (hasHitsData) {
+                                UIManager.setAnalysisModalButtonEnabled(true);
+                                UIManager.setReconModalButtonEnabled(true);
+                                UIManager.setDownloadButtonEnabled(true);
+                            } else {
+                                // No hits data - disable post-processing buttons
+                                UIManager.setAnalysisModalButtonEnabled(false);
+                                UIManager.setReconModalButtonEnabled(false);
+                                UIManager.setDownloadButtonEnabled(false);
+                                UIManager.appendToSimConsole("Simulation completed but no hits were recorded. Ensure sensitive detectors are configured and particles intersect them.");
+                            }
                         }
                     } catch (metadataError) {
                         console.warn('Failed to load scoring metadata for completed run:', metadataError);
                     }
                     // Update status display on completion
                     UIManager.updateSimStatusDisplay(AppState.lastSimJobId, status.total_events);
+                } else {
+                    // Simulation failed - clear state and explain
+                    clearLoadedSimulationRunState();
+                    UIManager.appendToSimConsole(`\n--- Simulation failed ---`);
+                    UIManager.setSimStatusDisplayFailed("Last simulation failed before producing output. Post-processing controls are disabled.");
                 }
                 AppState.currentSimJobId = null;
                 UIManager.setSimulationState('idle');

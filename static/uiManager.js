@@ -98,6 +98,8 @@ let newProjectButton, saveProjectButton, exportGdmlButton,
     bottomPanel, bottomPanelResizeHandle, toggleBottomPanelBtn,
     aiPromptInput, aiGenerateButton, aiModelSelect, aiBackendStatusEl,
     setApiKeyButton, apiKeyModal, apiKeyInput, saveApiKeyButton, cancelApiKeyButton,
+    cadImportMaterialModal, cadImportMaterialSelect, cadImportMaterialSummary,
+    cadImportMaterialEmpty, confirmCadImportMaterialButton, cancelCadImportMaterialButton,
     currentModeDisplay;
 
 // Hierarchy and Inspector
@@ -238,6 +240,7 @@ let callbacks = {
     onAddRingArrayClicked: () => { },
     onAddDetectorFeatureGeneratorClicked: () => { },
     onEditDetectorFeatureGeneratorClicked: (_generatorEntry) => { },
+    onDeleteDetectorFeatureGeneratorClicked: (_generatorEntry) => { },
     onRealizeDetectorFeatureGeneratorClicked: (_generatorEntry) => { },
     onConfirmAddObject: (type, name, params) => { },
     onDeleteSelectedClicked: () => { },
@@ -383,6 +386,14 @@ export function initUI(cb) {
     apiKeyInput = document.getElementById('apiKeyInput');
     saveApiKeyButton = document.getElementById('saveApiKey');
     cancelApiKeyButton = document.getElementById('cancelApiKey');
+
+    // CAD import material modal elements
+    cadImportMaterialModal = document.getElementById('cadImportMaterialModal');
+    cadImportMaterialSelect = document.getElementById('cadImportMaterialSelect');
+    cadImportMaterialSummary = document.getElementById('cadImportMaterialSummary');
+    cadImportMaterialEmpty = document.getElementById('cadImportMaterialEmpty');
+    confirmCadImportMaterialButton = document.getElementById('confirmCadImportMaterial');
+    cancelCadImportMaterialButton = document.getElementById('cancelCadImportMaterial');
 
     // Loading overlay
     loadingOverlay = document.getElementById('loading-overlay');
@@ -3678,6 +3689,20 @@ function renderDetectorFeatureGeneratorsPanel(projectState) {
         });
         summaryActions.appendChild(regenerateButton);
 
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'history-action-btn detector-feature-delete-btn';
+        deleteButton.textContent = 'Delete';
+        deleteButton.title = 'Remove this generator and its auxiliary generated geometry. The result solid from a boolean subtraction is preserved.';
+        deleteButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (callbacks.onDeleteDetectorFeatureGeneratorClicked) {
+                callbacks.onDeleteDetectorFeatureGeneratorClicked(rawEntry);
+            }
+        });
+        summaryActions.appendChild(deleteButton);
+
         summaryMeta.appendChild(summaryActions);
         summaryLayout.appendChild(summaryText);
         summaryLayout.appendChild(summaryMeta);
@@ -3905,7 +3930,7 @@ function updateHierarchyToolButtons(projectState) {
         const hasProjectState = Boolean(projectState);
         createRingArrayButton.disabled = !hasProjectState;
         createRingArrayButton.title = hasProjectState
-            ? 'Create a detector ring array from Hierarchy > + Tools.'
+            ? 'Create a ring array placement'
             : 'Open or create a project before launching the ring-array tool.';
     }
 }
@@ -4865,6 +4890,64 @@ export function setApiKeyInputPlaceholder(text) {
     if (apiKeyInput) apiKeyInput.placeholder = text;
 }
 
+// --- Functions for CAD Import Material Modal ---
+export function showCadImportMaterialModal() {
+    if (cadImportMaterialModal) cadImportMaterialModal.style.display = 'block';
+}
+export function hideCadImportMaterialModal() {
+    if (cadImportMaterialModal) cadImportMaterialModal.style.display = 'none';
+}
+export function setCadImportMaterialOptions(materialNames, suggestedName) {
+    if (!cadImportMaterialSelect) return;
+    cadImportMaterialSelect.innerHTML = '';
+    materialNames.forEach((name) => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        cadImportMaterialSelect.appendChild(opt);
+    });
+    if (suggestedName && materialNames.includes(suggestedName)) {
+        cadImportMaterialSelect.value = suggestedName;
+    } else if (materialNames.length > 0) {
+        cadImportMaterialSelect.value = materialNames[0];
+    }
+}
+export function getCadImportMaterialSelection() {
+    return cadImportMaterialSelect ? cadImportMaterialSelect.value : null;
+}
+export function setCadImportMaterialSummary(text) {
+    if (cadImportMaterialSummary) cadImportMaterialSummary.textContent = text;
+}
+export function setCadImportMaterialEmpty(visible) {
+    if (cadImportMaterialEmpty) {
+        cadImportMaterialEmpty.style.display = visible ? 'block' : 'none';
+    }
+}
+export function requestCadImportMaterialSelection() {
+    return new Promise((resolve) => {
+        if (!confirmCadImportMaterialButton || !cancelCadImportMaterialButton) {
+            resolve(null);
+            return;
+        }
+        const onConfirm = () => {
+            cleanup();
+            resolve(getCadImportMaterialSelection());
+        };
+        const onCancel = () => {
+            cleanup();
+            resolve(null);
+        };
+        const cleanup = () => {
+            confirmCadImportMaterialButton.removeEventListener('click', onConfirm);
+            cancelCadImportMaterialButton.removeEventListener('click', onCancel);
+            hideCadImportMaterialModal();
+        };
+        confirmCadImportMaterialButton.addEventListener('click', onConfirm);
+        cancelCadImportMaterialButton.addEventListener('click', onCancel);
+        showCadImportMaterialModal();
+    });
+}
+
 // --- Functions for simulation ---
 export function setSimulationState(state) {
     // state can be 'idle', 'running'
@@ -5530,6 +5613,12 @@ export function updateSimStatusDisplay(jobId, totalEvents) {
 export function clearSimStatusDisplay() {
     if (simStatusDisplay) {
         simStatusDisplay.innerHTML = '<span>No simulation run loaded.</span>';
+    }
+}
+
+export function setSimStatusDisplayFailed(message) {
+    if (simStatusDisplay) {
+        simStatusDisplay.innerHTML = `<span style="color: #c53030;">${message}</span>`;
     }
 }
 

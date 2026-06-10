@@ -379,7 +379,7 @@ test('detector generator launch state stays deterministic for hierarchy tools', 
         }),
         {
             canLaunch: true,
-            title: 'Create a new detector generator from Hierarchy > + Tools.',
+            title: 'Create a new detector feature generator (holes, channels, tiled sensors, support ribs, layered stacks, annular shields)',
             hint: 'Hierarchy > + Tools is the primary launch surface for drilled-hole patterns, stacks, tiled arrays, ribs, channels, and shield sleeves.',
         },
     );
@@ -393,7 +393,7 @@ test('detector generator launch state stays deterministic for hierarchy tools', 
         }),
         {
             canLaunch: true,
-            title: 'Create a new detector generator from Hierarchy > + Tools.',
+            title: 'Create a new detector feature generator (holes, channels, tiled sensors, support ribs, layered stacks, annular shields)',
             hint: 'No box-solid targets are available yet, but parent-logical-volume generators can still launch from Hierarchy > + Tools.',
         },
     );
@@ -556,8 +556,8 @@ test('boolean-based generator selection context falls back to affected live plac
 test('hierarchy tools template includes both detector generator and ring array launchers', () => {
     const templateText = fs.readFileSync(new URL('../../templates/index.html', import.meta.url), 'utf8');
 
-    assert.match(templateText, /id="createDetectorFeatureGeneratorButton">Create Detector Generator</);
-    assert.match(templateText, /id="createRingArrayButton">Create Ring Array</);
+    assert.match(templateText, /id="createDetectorFeatureGeneratorButton"[^>]*>Create Detector Generator</);
+    assert.match(templateText, /id="createRingArrayButton"[^>]*>Create Ring Array</);
 });
 
 test('tiled sensor array model and description stay deterministic', () => {

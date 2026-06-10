@@ -386,6 +386,13 @@ export function buildCadImportSelectionContext(rawRecord) {
     return buildSelectionContextFromRecord(normalizeCadImportRecord(rawRecord));
 }
 
+export function isOrphanCadImportRecord(rawRecord) {
+    if (!rawRecord) return false;
+    const record = normalizeCadImportRecord(rawRecord);
+    const solidIds = record.created_object_ids?.solid_ids || [];
+    return Array.isArray(solidIds) && solidIds.length === 0;
+}
+
 export function describeCadImportRecord(rawRecord) {
     const record = normalizeCadImportRecord(rawRecord);
     const createdObjectSummary = formatCreatedObjectSummary(record);
@@ -479,4 +486,63 @@ export function describeCadImportRecord(rawRecord) {
             sourceLabel,
         },
     };
+}
+
+export function formatStepImportReportMessage(report, smartImportRequested = false, isReimport = false) {
+    const actionLabel = isReimport ? 'reimport' : 'import';
+    if (!report) {
+        return smartImportRequested
+            ? `STEP file ${actionLabel}ed. Smart CAD report unavailable.`
+            : `STEP file ${actionLabel}ed successfully.`;
+    }
+
+    if (!report.enabled) {
+        const summary = report.summary || {};
+        const total = summary.total || 0;
+        if (total === 0) {
+            return `Warning: STEP ${actionLabel} produced no solids (smart import disabled). The file may be malformed, empty, or use unsupported geometry.`;
+        }
+        return `STEP file ${actionLabel}ed successfully (smart import disabled).`;
+    }
+
+    const summary = report.summary || {};
+    const total = summary.total || 0;
+    const modeCounts = summary.selected_mode_counts || {};
+    const primitiveSelected = modeCounts.primitive || 0;
+    const tessSelected = modeCounts.tessellated || 0;
+
+    const ratioPct = total > 0
+        ? ((summary.selected_primitive_ratio || 0) * 100).toFixed(1)
+        : "0.0";
+
+    const fallbackReasonCounts = {};
+    (report.candidates || []).forEach(c => {
+        if (c?.selected_mode === 'tessellated' && c?.fallback_reason) {
+            fallbackReasonCounts[c.fallback_reason] = (fallbackReasonCounts[c.fallback_reason] || 0) + 1;
+        }
+    });
+
+    const topReasons = Object.entries(fallbackReasonCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([reason, count]) => `${reason}: ${count}`);
+
+    const lines = [
+        `STEP ${actionLabel} complete (Smart CAD).`,
+        `Total solids: ${total}`,
+        `Selected primitives: ${primitiveSelected} (${ratioPct}%)`,
+        `Selected tessellated fallback: ${tessSelected}`,
+    ];
+
+    if (topReasons.length > 0) {
+        lines.push(`Top fallback reasons: ${topReasons.join(', ')}`);
+    }
+
+    if (total === 0) {
+        lines.unshift(
+            `Warning: STEP ${actionLabel} produced no solids. The file may be malformed, empty, or use unsupported geometry.`,
+        );
+    }
+
+    return lines.join("\n");
 }

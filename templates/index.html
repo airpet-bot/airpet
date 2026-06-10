@@ -870,8 +870,13 @@
         }
 
         #menu_bar li>button:hover,
-        #menu_bar li .dropdown_content button:hover {
+        #menu_bar li .dropdown_content button:hover:not(:disabled) {
             background-color: #555;
+        }
+
+        #menu_bar .dropdown_content button:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
         }
 
         #menu_bar .dropdown_content {
@@ -3668,13 +3673,13 @@
                          <button class="add_button" data-add-type="particle_source"
                              title="Add a General Particle Source">+ GPS</button>
                          <button id="addPVButton" title="Place a volume inside the selected one" disabled>+ PV</button>
-                     <div class="dropdown">
-                          <button id="toolsDropdownButton">+ Tools</button>
-                          <div id="toolsDropdownContent" class="dropdown_content">
-                              <button id="createDetectorFeatureGeneratorButton">Create Detector Generator</button>
-                              <button id="createRingArrayButton">Create Ring Array</button>
-                          </div>
-                      </div>
+                      <div class="dropdown">
+                           <button id="toolsDropdownButton" title="Open geometry tools: detector generators and ring arrays">+ Tools</button>
+                           <div id="toolsDropdownContent" class="dropdown_content">
+                               <button id="createDetectorFeatureGeneratorButton" title="Create a new detector feature generator (holes, channels, tiled sensors, support ribs, layered stacks, annular shields)">Create Detector Generator</button>
+                               <button id="createRingArrayButton" title="Create a ring array placement">Create Ring Array</button>
+                           </div>
+                       </div>
                      </div>
                  </div>
                 <ul id="structure_tree_root"></ul>
@@ -5814,6 +5819,25 @@
             <div class="modal-footer">
                 <button id="cancelStepImport">Cancel</button>
                 <button id="confirmStepImport" class="confirm-button">Import</button>
+            </div>
+        </div>
+    </div>
+    <div id="cadImportMaterialModal" class="editor-modal">
+        <div class="modal-content" style="width: 460px; height: auto; max-height: 80vh;">
+            <div class="modal-header">
+                <h4>Assign Material to Imported CAD</h4>
+            </div>
+            <div class="modal-body" style="flex-direction: column; padding: 16px;">
+                <p id="cadImportMaterialSummary" style="font-size: 13px; color: #555; margin: 0 0 12px 0;">Choose a material to apply to the imported logical volumes in this STEP record.</p>
+                <div class="property_item">
+                    <label for="cadImportMaterialSelect">Material:</label>
+                    <select id="cadImportMaterialSelect"></select>
+                </div>
+                <p id="cadImportMaterialEmpty" style="display: none; font-size: 12px; color: #b00;">No materials are defined for this project. Create one from the Defines tab first.</p>
+            </div>
+            <div class="modal-footer">
+                <button id="cancelCadImportMaterial">Cancel</button>
+                <button id="confirmCadImportMaterial" class="confirm-button">Apply</button>
             </div>
         </div>
     </div>

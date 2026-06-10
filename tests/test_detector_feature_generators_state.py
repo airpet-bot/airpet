@@ -24,6 +24,16 @@ def _install_occ_stubs():
     if "OCC" in sys.modules:
         return
 
+    # Only install stubs when real OCC is not importable (e.g. on a machine
+    # without pythonocc-core). In CI / dev envs where OCC is already in
+    # sys.modules, leave it alone so other tests that need real STEP parsing
+    # (test_step_import_integration) are not poisoned by these dummy objects.
+    try:
+        import OCC.Core.STEPControl  # noqa: F401
+        return
+    except Exception:
+        pass
+
     occ_module = types.ModuleType("OCC")
     occ_module.__path__ = []
     core_module = types.ModuleType("OCC.Core")
@@ -77,7 +87,23 @@ from src.project_manager import ProjectManager
 def _make_pm():
     pm = ProjectManager(ExpressionEvaluator())
     pm.create_empty_project()
+    _register_default_geant4_materials(pm)
     return pm
+
+
+def _register_default_geant4_materials(pm):
+    """Register the standard Geant4 NIST materials used as defaults by the
+    detector feature generator UI. The F-019 material-ref validation rejects
+    detectors that reference materials not present in the project."""
+    from src.geometry_types import Material
+    default_materials = [
+        Material(name="G4_Pb", Z_expr="82", A_expr="207.2", density_expr="11.34", state="solid"),
+        Material(name="G4_Si", Z_expr="14", A_expr="28.0855", density_expr="2.33", state="solid"),
+        Material(name="G4_Al", Z_expr="13", A_expr="26.9815", density_expr="2.70", state="solid"),
+    ]
+    for material in default_materials:
+        if material.name not in (pm.current_geometry_state.materials or {}):
+            pm.current_geometry_state.add_material(material)
 
 
 def _normalize_detector_feature_generators(raw_generators):
@@ -2000,7 +2026,7 @@ def test_annular_shield_sleeve_realization_requires_instantiated_parent_lv():
     solid_dict, error_msg = pm.add_solid(
         "detached_shield_parent_box",
         "box",
-        {"x": "30", "y": "20", "z": "10"},
+        {"x": "30", "y": "30", "z": "40"},
     )
     assert error_msg is None
 
@@ -2540,3 +2566,424 @@ def test_patterned_hole_starter_example_rebuilds_hole_recipes_deterministically(
             (1.55724838302, -1.83155948031, 1.5),
         ]
     )
+
+
+def test_upsert_layered_detector_stack_rejects_unknown_layer_materials():
+    """Regression for F-019: a layered detector stack that references an
+    undefined material (G4_W) must be rejected with a clear error before any
+    geometry is created."""
+    pm = _make_pm()
+    solid_dict, error_msg = pm.add_solid("f019_box", "box", {"x": "100", "y": "100", "z": "100"})
+    assert error_msg is None
+    _, error_msg = pm.add_logical_volume("f019_lv", solid_dict["name"], "G4_Galactic")
+    assert error_msg is None
+
+    created_entry, result, error_msg = pm.upsert_detector_feature_generator(
+        {
+            "generator_type": "layered_detector_stack",
+            "name": "f019_stack",
+            "target": {
+                "parent_logical_volume_ref": {"name": "f019_lv"},
+            },
+            "stack": {
+                "module_size_mm": {"x": 20.0, "y": 20.0},
+                "module_count": 1,
+            },
+            "layers": {
+                "absorber": {"material_ref": "UndefinedAbsorber", "thickness_mm": 4.0},
+                "sensor": {"material_ref": "G4_Si", "thickness_mm": 1.0},
+                "support": {"material_ref": "G4_Al", "thickness_mm": 2.0},
+            },
+        },
+        realize_now=True,
+    )
+
+    assert created_entry is None
+    assert result is None
+    assert error_msg is not None
+    assert "UndefinedAbsorber" in error_msg
+    assert "unknown material" in error_msg.lower()
+    assert pm.current_geometry_state.detector_feature_generators == []
+
+
+def test_upsert_tiled_sensor_array_rejects_unknown_sensor_material():
+    """Regression for F-019: a tiled sensor array must reject unknown sensor materials."""
+    pm = _make_pm()
+    solid_dict, error_msg = pm.add_solid("f019_tile_box", "box", {"x": "100", "y": "100", "z": "100"})
+    assert error_msg is None
+    _, error_msg = pm.add_logical_volume("f019_tile_lv", solid_dict["name"], "G4_Galactic")
+    assert error_msg is None
+
+    created_entry, result, error_msg = pm.upsert_detector_feature_generator(
+        {
+            "generator_type": "tiled_sensor_array",
+            "name": "f019_tiles",
+            "target": {
+                "parent_logical_volume_ref": {"name": "f019_tile_lv"},
+            },
+            "array": {"count_x": 2, "count_y": 2, "pitch_mm": {"x": 5.0, "y": 5.0}},
+            "sensor": {"material_ref": "UndefinedSensor", "size_mm": {"x": 4.0, "y": 4.0}, "thickness_mm": 1.0},
+        },
+        realize_now=True,
+    )
+
+    assert created_entry is None
+    assert result is None
+    assert error_msg is not None
+    assert "UndefinedSensor" in error_msg
+    assert pm.current_geometry_state.detector_feature_generators == []
+
+
+def test_upsert_layered_detector_stack_succeeds_when_all_materials_defined():
+    """F-019 happy path: a layered stack with all materials defined should upsert and realize."""
+    pm = _make_pm()
+    # G4_Pb, G4_Si, G4_Al are registered by _make_pm
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+
+    created_entry, result, error_msg = pm.upsert_detector_feature_generator(
+        {
+            "generator_type": "layered_detector_stack",
+            "name": "f019_stack_ok",
+            "target": {
+                "parent_logical_volume_ref": {"id": world_lv.id, "name": "World"},
+            },
+            "stack": {
+                "module_size_mm": {"x": 20.0, "y": 20.0},
+                "module_count": 1,
+            },
+            "layers": {
+                "absorber": {"material_ref": "G4_Pb", "thickness_mm": 4.0},
+                "sensor": {"material_ref": "G4_Si", "thickness_mm": 1.0},
+                "support": {"material_ref": "G4_Al", "thickness_mm": 2.0},
+            },
+        },
+        realize_now=True,
+    )
+
+    assert error_msg is None, f"expected success, got {error_msg!r}"
+    assert created_entry is not None
+    assert result is not None
+
+
+def test_upsert_rejects_duplicate_generator_name_on_second_create():
+    """Regression for F-020: creating a second generator with a name already in use
+    must be rejected with a clear error; the first entry must remain untouched."""
+    pm = _make_pm()
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+
+    base_entry = {
+        "generator_type": "rectangular_drilled_hole_array",
+        "name": "f020_holes",
+        "target": {
+            "solid_ref": {"id": world_lv.id, "name": "World"},
+        },
+        "pattern": {
+            "layout": "rectangular",
+            "count_x": 2,
+            "count_y": 2,
+            "pitch_mm": {"x": 5.0, "y": 5.0},
+        },
+        "hole": {"diameter_mm": 1.0, "depth_mm": 5.0},
+    }
+    first_entry, _, first_err = pm.upsert_detector_feature_generator(base_entry, realize_now=False)
+    assert first_err is None, f"setup failed: {first_err!r}"
+    assert first_entry is not None
+    assert len(pm.current_geometry_state.detector_feature_generators) == 1
+
+    # Try to create a second entry with the same name
+    duplicate = dict(base_entry)
+    second_entry, second_result, second_err = pm.upsert_detector_feature_generator(duplicate, realize_now=False)
+
+    assert second_entry is None
+    assert second_result is None
+    assert second_err is not None
+    assert "f020_holes" in second_err
+    assert "already exists" in second_err.lower()
+    assert len(pm.current_geometry_state.detector_feature_generators) == 1
+
+
+def test_upsert_allows_same_name_update_of_existing_entry():
+    """Regression for F-020: updating an existing entry (same generator_id) with the
+    same name must succeed; the entry should be replaced in place, not duplicated."""
+    pm = _make_pm()
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+
+    base_entry = {
+        "generator_type": "rectangular_drilled_hole_array",
+        "name": "f020_update",
+        "target": {
+            "solid_ref": {"id": world_lv.id, "name": "World"},
+        },
+        "pattern": {
+            "layout": "rectangular",
+            "count_x": 2,
+            "count_y": 2,
+            "pitch_mm": {"x": 5.0, "y": 5.0},
+        },
+        "hole": {"diameter_mm": 1.0, "depth_mm": 5.0},
+    }
+    first_entry, _, first_err = pm.upsert_detector_feature_generator(base_entry, realize_now=False)
+    assert first_err is None, f"setup failed: {first_err!r}"
+    original_id = first_entry["generator_id"]
+    assert len(pm.current_geometry_state.detector_feature_generators) == 1
+
+    # Update with same generator_id and same name but a different pitch
+    updated = dict(base_entry)
+    updated["pattern"] = {
+        "layout": "rectangular",
+        "count_x": 3,
+        "count_y": 3,
+        "pitch_mm": {"x": 8.0, "y": 8.0},
+    }
+    updated["generator_id"] = original_id
+    second_entry, _, second_err = pm.upsert_detector_feature_generator(updated, realize_now=False)
+
+    assert second_err is None, f"same-id update should succeed, got {second_err!r}"
+    assert second_entry is not None
+    assert second_entry["generator_id"] == original_id
+    assert len(pm.current_geometry_state.detector_feature_generators) == 1
+
+
+def test_realize_rectangular_hole_rejects_degenerate_extent():
+    """Regression for F-022: a hole whose diameter or depth clearly exceeds the
+    target solid's bounding box must be rejected before the boolean subtraction
+    runs. The browser test created a 100mm box and a 500mm-diameter hole, which
+    caused the 3D viewer to spin in an infinite loop."""
+    pm = _make_pm()
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+    # World is a 200mm box in the empty-project default; add a 100mm test solid
+    # explicitly so the precheck is independent of the default world size.
+    solid_dict, error_msg = pm.add_solid(
+        "f022_target", "box", {"x": "100", "y": "100", "z": "100"},
+    )
+    assert error_msg is None
+    pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
+        {
+            "generator_id": "dfg_f022_holes",
+            "name": "f022_holes",
+            "generator_type": "rectangular_drilled_hole_array",
+            "target": {
+                "solid_ref": {"id": solid_dict["id"], "name": solid_dict["name"]},
+            },
+            "pattern": {
+                "layout": "rectangular",
+                "count_x": 1,
+                "count_y": 1,
+                "pitch_mm": {"x": 10.0, "y": 10.0},
+            },
+            # Diameter 500mm is 5x the 100mm target box
+            "hole": {"diameter_mm": 500.0, "depth_mm": 50.0},
+        }
+    ])
+
+    result, error_msg = pm.realize_detector_feature_generator("dfg_f022_holes")
+    assert result is None
+    assert error_msg is not None
+    assert "exceeds target solid" in error_msg
+    assert "f022_target" in error_msg
+    # The world LV must not be polluted with a stale boolean result
+    assert pm.current_geometry_state.solids.get("f022_holes__result") is None
+
+
+def test_realize_annular_shield_rejects_degenerate_extent():
+    """Regression for F-022: an annular shield whose outer diameter or length
+    clearly exceeds the target solid's bounding box must be rejected up front."""
+    pm = _make_pm()
+    solid_dict, error_msg = pm.add_solid(
+        "f022_shield_box", "box", {"x": "50", "y": "50", "z": "10"},
+    )
+    assert error_msg is None
+    _, error_msg = pm.add_logical_volume(
+        "f022_shield_lv", solid_dict["name"], "G4_Galactic",
+    )
+    assert error_msg is None
+    parent_lv_state = pm.current_geometry_state.logical_volumes["f022_shield_lv"]
+    pm.current_geometry_state.detector_feature_generators = _normalize_detector_feature_generators([
+        {
+            "generator_id": "dfg_f022_shield",
+            "name": "f022_shield",
+            "generator_type": "annular_shield_sleeve",
+            "target": {
+                "parent_logical_volume_ref": {
+                    "id": parent_lv_state.id,
+                    "name": parent_lv_state.name,
+                },
+            },
+            # Outer diameter 200mm is 4x the 50mm box
+            "shield": {
+                "inner_radius_mm": 5.0,
+                "outer_radius_mm": 100.0,
+                "length_mm": 5.0,
+                "material_ref": "G4_Pb",
+            },
+        }
+    ])
+
+    result, error_msg = pm.realize_detector_feature_generator("dfg_f022_shield")
+    assert result is None
+    assert error_msg is not None
+    assert "exceeds target solid" in error_msg
+
+
+def test_delete_detector_feature_generator_removes_entry_and_auxiliary_geometry():
+    """Regression for F-018: deleting a generator must remove the saved entry
+    and the auxiliary generated geometry. The result solid from a boolean
+    subtraction is preserved so the user's last realization persists."""
+    pm = _make_pm()
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+
+    # Use the patterned_hole_starter project so the realization has actual geometry
+    starter = (
+        Path(__file__).resolve().parents[1]
+        / "examples"
+        / "detector_feature_generators"
+        / "patterned_hole_starter.project.json"
+    )
+    with starter.open("r", encoding="utf-8") as handle:
+        pm.load_project_from_json_string(handle.read())
+    _register_default_geant4_materials(pm)
+
+    # Pick one of the saved generators from the starter project
+    starter_generators = pm.current_geometry_state.detector_feature_generators
+    assert starter_generators, "starter project should ship with saved generators"
+    target = starter_generators[0]
+    target_id = target["generator_id"]
+    target_name = target.get("name")
+    realization = target.get("realization", {}) or {}
+    result_solid_ref = realization.get("result_solid_ref") or {}
+    result_solid_name = (
+        pm._get_detector_feature_object_name_hint(result_solid_ref)
+        or (result_solid_ref.get("name") if isinstance(result_solid_ref, dict) else None)
+    )
+
+    # Realize first so generated geometry exists to be cleaned up
+    realize_result, error_msg = pm.realize_detector_feature_generator(target_id)
+    assert error_msg is None, f"realize failed: {error_msg!r}"
+    assert realize_result.get("generated_solid_names")
+
+    # Snapshot pre-delete counts
+    pre_count = len(pm.current_geometry_state.detector_feature_generators)
+    assert pre_count >= 1
+
+    success, payload = pm.delete_detector_feature_generator(target_id)
+    assert success, f"delete failed: {payload!r}"
+    assert payload["generator_id"] == target_id
+    assert payload["name"] == target_name
+
+    # Entry was popped
+    assert len(pm.current_geometry_state.detector_feature_generators) == pre_count - 1
+    assert all(
+        g.get("generator_id") != target_id
+        for g in pm.current_geometry_state.detector_feature_generators
+    )
+
+    # At least the cutter/auxiliary solid was removed
+    deleted_solids = payload["deleted"]["solid_names"]
+    assert deleted_solids, "expected at least one auxiliary solid to be removed"
+
+    # Result solid from a boolean subtraction is preserved
+    if result_solid_name:
+        assert result_solid_name in pm.current_geometry_state.solids, (
+            f"result solid {result_solid_name!r} should be preserved"
+        )
+
+
+def test_delete_detector_feature_generator_unknown_id_returns_error():
+    """Regression for F-018: deleting a non-existent generator must fail cleanly."""
+    pm = _make_pm()
+    success, error_msg = pm.delete_detector_feature_generator("dfg_does_not_exist")
+    assert success is False
+    assert "was not found" in error_msg
+    assert pm.current_geometry_state.detector_feature_generators == []
+
+
+def test_delete_detector_feature_generator_preserves_externally_referenced_generated_lv():
+    pm = _make_pm()
+    world_lv = pm.current_geometry_state.logical_volumes["World"]
+
+    entry, _, error_msg = pm.upsert_detector_feature_generator(
+        {
+            "generator_type": "tiled_sensor_array",
+            "name": "externally_referenced_tiles",
+            "target": {
+                "parent_logical_volume_ref": {
+                    "id": world_lv.id,
+                    "name": world_lv.name,
+                },
+            },
+            "array": {
+                "count_x": 1,
+                "count_y": 1,
+                "pitch_mm": {"x": 6.0, "y": 6.0},
+            },
+            "sensor": {
+                "material_ref": "G4_Si",
+                "size_mm": {"x": 5.0, "y": 5.0},
+                "thickness_mm": 1.0,
+                "is_sensitive": True,
+            },
+        },
+        realize_now=True,
+    )
+    assert error_msg is None
+
+    generated_lv_name = entry["realization"]["generated_object_refs"][
+        "logical_volume_refs"
+    ][0]["name"]
+    external_pv, error_msg = pm.add_physical_volume(
+        "World",
+        "external_sensor_reference",
+        generated_lv_name,
+        {"x": "20", "y": "0", "z": "0"},
+        {"x": "0", "y": "0", "z": "0"},
+        {"x": "1", "y": "1", "z": "1"},
+    )
+    assert error_msg is None
+
+    success, payload = pm.delete_detector_feature_generator(entry["generator_id"])
+
+    assert success is True
+    assert generated_lv_name in pm.current_geometry_state.logical_volumes
+    assert generated_lv_name in payload["skipped"]["logical_volume_names"]
+    assert any(
+        pv.id == external_pv["id"] and pv.volume_ref == generated_lv_name
+        for pv in pm.current_geometry_state.logical_volumes["World"].content
+    )
+
+
+def test_delete_boolean_generator_preserves_touched_target_geometry():
+    pm = _make_pm()
+    starter = (
+        Path(__file__).resolve().parents[1]
+        / "examples"
+        / "detector_feature_generators"
+        / "patterned_hole_starter.project.json"
+    )
+    with starter.open("r", encoding="utf-8") as handle:
+        pm.load_project_from_json_string(handle.read())
+
+    target = pm.current_geometry_state.detector_feature_generators[0]
+    result, error_msg = pm.realize_detector_feature_generator(target["generator_id"])
+    assert error_msg is None
+    target_lv_names = list(result["updated_logical_volume_names"])
+    target_pv_ids = {
+        pv.id
+        for lv in pm.current_geometry_state.logical_volumes.values()
+        if lv.content_type == "physvol"
+        for pv in lv.content
+        if pv.volume_ref in target_lv_names
+    }
+
+    success, payload = pm.delete_detector_feature_generator(target["generator_id"])
+
+    assert success is True
+    assert payload["deleted"]["logical_volume_names"] == []
+    assert payload["deleted"]["placement_ids"] == []
+    assert all(name in pm.current_geometry_state.logical_volumes for name in target_lv_names)
+    remaining_pv_ids = {
+        pv.id
+        for lv in pm.current_geometry_state.logical_volumes.values()
+        if lv.content_type == "physvol"
+        for pv in lv.content
+    }
+    assert target_pv_ids <= remaining_pv_ids

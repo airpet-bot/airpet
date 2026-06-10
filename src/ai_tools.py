@@ -1608,6 +1608,17 @@ AI_GEOMETRY_TOOLS = [
         }
     },
     {
+        "name": "list_simulations",
+        "description": "List recent simulation jobs with their status. Use this to find the most recent job ID when the user asks about simulation results without providing a specific job ID.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Maximum number of recent jobs to return (default: 10)."},
+                "status_filter": {"type": "string", "description": "Only return jobs with this status: 'Running', 'Completed', 'Error', or 'Queued'. Omit to return all.", "enum": ["Running", "Completed", "Error", "Queued"]}
+            }
+        }
+    },
+    {
         "name": "batch_geometry_update",
         "description": "Execute multiple geometry operations in a single high-efficiency batch. Use this when you have many objects to create or modify at once.",
         "parameters": {

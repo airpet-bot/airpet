@@ -122,10 +122,10 @@ def _seed_scoped_preflight_drift_replica_overlap_fixture(pm: ProjectManager) -> 
     return {
         "scope_name": scope_name,
         "expected_scope_summary_delta": {
-            "errors": 5,
+            "errors": 6,
             "warnings": 1,
             "infos": 0,
-            "issue_count": 6,
+            "issue_count": 7,
         },
         "expected_outside_scope_summary_delta": {
             "errors": 1,

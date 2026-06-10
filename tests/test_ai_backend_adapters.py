@@ -849,3 +849,88 @@ def test_invoke_text_request_for_backend_rejects_unsupported_backend_id():
 
     with pytest.raises(ValueError, match="Unsupported text-first backend"):
         invoke_text_request_for_backend("gemini_remote", request)
+
+
+def test_llama_cpp_base_url_v1_suffix_normalized():
+    """F-037: base_url with trailing /v1 should not produce doubled /v1/v1 path."""
+    from src.ai_backend_adapters import _normalize_base_url
+
+    assert _normalize_base_url("http://host:8080/v1") == "http://host:8080"
+    assert _normalize_base_url("http://host:8080/v1/") == "http://host:8080"
+    assert _normalize_base_url("http://host:8080") == "http://host:8080"
+    assert _normalize_base_url("http://host:8080/v2") == "http://host:8080"
+    assert _normalize_base_url("http://host:8080/api/v1") == "http://host:8080/api"
+
+
+def test_llama_cpp_adapter_endpoint_url_no_doubled_v1():
+    """F-037: endpoint_url should not double /v1 when base_url includes /v1 suffix."""
+    runtime_config = {
+        "backends": {
+            "llama_cpp": {
+                "base_url": "http://localhost:9001/v1",
+                "model": "test-model",
+            }
+        }
+    }
+
+    captured_calls = []
+
+    def fake_post(url, json, headers, timeout, verify):
+        captured_calls.append({"url": url})
+        return _FakeResponse(
+            {
+                "model": "test-model",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            }
+        )
+
+    request = TextGenerationRequest(
+        messages=(TextMessage(role="user", content="hello"),),
+        require_json_mode=False,
+    )
+
+    invoke_text_request_for_backend(
+        "llama_cpp",
+        request,
+        runtime_config=runtime_config,
+        http_post=fake_post,
+    )
+
+    assert captured_calls[0]["url"] == "http://localhost:9001/v1/chat/completions"
+
+
+def test_lm_studio_adapter_endpoint_url_no_doubled_v1():
+    """F-037: LM Studio adapter should also normalize /v1 suffix."""
+    runtime_config = {
+        "backends": {
+            "lm_studio": {
+                "base_url": "http://localhost:1234/v1",
+                "model": "test-model",
+            }
+        }
+    }
+
+    captured_calls = []
+
+    def fake_post(url, json, headers, timeout, verify):
+        captured_calls.append({"url": url})
+        return _FakeResponse(
+            {
+                "model": "test-model",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            }
+        )
+
+    request = TextGenerationRequest(
+        messages=(TextMessage(role="user", content="hello"),),
+        require_json_mode=False,
+    )
+
+    invoke_text_request_for_backend(
+        "lm_studio",
+        request,
+        runtime_config=runtime_config,
+        http_post=fake_post,
+    )
+
+    assert captured_calls[0]["url"] == "http://localhost:1234/v1/chat/completions"

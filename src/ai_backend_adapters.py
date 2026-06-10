@@ -3,9 +3,19 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+import re
 from urllib.parse import urljoin
 
 ADAPTER_CONTRACT_VERSION = "2026-03-19.local-capability-overrides"
+
+
+def _normalize_base_url(base_url: str) -> str:
+    """Strip trailing /v1 (or /vN) from base_url to avoid doubled version path.
+
+    The endpoint_path already includes /v1/chat/completions, so a base_url
+    of 'http://host:8080/v1' would produce '/v1/v1/chat/completions'.
+    """
+    return re.sub(r'/v\d+/?$', '', base_url.rstrip('/'))
 
 
 @dataclass(frozen=True)
@@ -173,8 +183,9 @@ class LlamaCppAdapterConfig:
         if isinstance(headers_obj, Mapping):
             header_items = tuple((str(k), str(v)) for k, v in headers_obj.items())
 
+        raw_base_url = str(cfg.get("base_url", "http://127.0.0.1:8080"))
         return LlamaCppAdapterConfig(
-            base_url=str(cfg.get("base_url", "http://127.0.0.1:8080")),
+            base_url=_normalize_base_url(raw_base_url),
             endpoint_path=str(cfg.get("endpoint_path", "/v1/chat/completions")),
             model=str(cfg.get("model", "local-model")),
             timeout_seconds=float(cfg.get("timeout_seconds", 600.0)),
@@ -295,8 +306,9 @@ class LMStudioAdapterConfig:
         if isinstance(headers_obj, Mapping):
             header_items = tuple((str(k), str(v)) for k, v in headers_obj.items())
 
+        raw_base_url = str(cfg.get("base_url", "http://127.0.0.1:1234"))
         return LMStudioAdapterConfig(
-            base_url=str(cfg.get("base_url", "http://127.0.0.1:1234")),
+            base_url=_normalize_base_url(raw_base_url),
             endpoint_path=str(cfg.get("endpoint_path", "/v1/chat/completions")),
             model=str(cfg.get("model", "local-model")),
             timeout_seconds=float(cfg.get("timeout_seconds", 45.0)),

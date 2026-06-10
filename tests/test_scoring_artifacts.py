@@ -4,7 +4,27 @@ import json
 import h5py
 import numpy as np
 
-from src.scoring_artifacts import write_scoring_artifact_bundle
+from src.scoring_artifacts import (
+    build_scoring_run_summary,
+    write_scoring_artifact_bundle,
+)
+
+
+def test_build_scoring_run_summary_uses_irregular_plurals():
+    summary = build_scoring_run_summary(
+        {
+            "scoring_summary": {
+                "enabled_mesh_count": 2,
+                "enabled_tally_count": 3,
+            },
+        }
+    )
+
+    assert (
+        summary["setup_summary_text"]
+        == "2 enabled scoring meshes across 3 enabled tally requests."
+    )
+    assert summary["detail_lines"][0] == "2 enabled meshes · 3 enabled tally requests"
 
 
 def test_write_scoring_artifact_bundle_builds_energy_deposit_mesh_and_updates_metadata(tmp_path):

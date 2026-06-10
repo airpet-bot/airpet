@@ -586,6 +586,7 @@ class ProjectManager:
         self.MAX_OPTIMIZER_BUDGET = 1000
         self._is_transaction_open = False
         self._pre_transaction_state = None
+        self._pre_import_state_snapshot = None
         self.chat_history = [] # For AI conversation continuity
 
         # --- Project Management ---
@@ -2727,6 +2728,9 @@ class ProjectManager:
 
     def _realize_detector_feature_generator_entry(self, generator_entry):
         generator_type = generator_entry.get('generator_type')
+        degenerate_error = self._check_detector_feature_generator_degenerate_geometry(generator_entry)
+        if degenerate_error:
+            return None, degenerate_error
         if generator_type == 'rectangular_drilled_hole_array':
             return self._realize_rectangular_drilled_hole_array(generator_entry)
         if generator_type == 'circular_drilled_hole_array':
@@ -2745,6 +2749,238 @@ class ProjectManager:
         return None, (
             f"Detector feature generator type '{generator_type}' is not supported for realization."
         )
+
+    def _validate_detector_feature_generator_materials(self, normalized_entry):
+        """Return an error string if any material_ref in the entry is not defined
+        in the project, otherwise None. Each offending name is reported once so
+        the user can fix all of them in a single round-trip."""
+        if not isinstance(normalized_entry, dict):
+            return None
+
+        available_materials = set((self.current_geometry_state.materials or {}).keys())
+        missing = []
+        seen = set()
+
+        def _check(name, where):
+            if not isinstance(name, str) or not name.strip():
+                return
+            name = name.strip()
+            if name in available_materials:
+                return
+            # Geant4/NIST materials are valid by convention and are resolved by
+            # the GDML/simulation layer even when they are not explicitly saved.
+            if name.startswith('G4_'):
+                return
+            if name in seen:
+                return
+            seen.add(name)
+            missing.append(f"'{name}' at {where}")
+
+        generator_type = normalized_entry.get('generator_type')
+        layers = normalized_entry.get('layers') or {}
+        if isinstance(layers, dict):
+            for role in ('absorber', 'sensor', 'support'):
+                role_entry = layers.get(role) or {}
+                if isinstance(role_entry, dict):
+                    _check(role_entry.get('material_ref'), f"layers.{role}.material_ref")
+        sensor = normalized_entry.get('sensor') or {}
+        if isinstance(sensor, dict):
+            _check(sensor.get('material_ref'), "sensor.material_ref")
+        rib = normalized_entry.get('rib') or {}
+        if isinstance(rib, dict):
+            _check(rib.get('material_ref'), "rib.material_ref")
+        shield = normalized_entry.get('shield') or {}
+        if isinstance(shield, dict):
+            _check(shield.get('material_ref'), "shield.material_ref")
+
+        if not missing:
+            return None
+        if generator_type == 'layered_detector_stack':
+            kind = 'layered detector stack'
+        else:
+            kind = f"detector feature generator '{normalized_entry.get('name') or generator_type or 'unnamed'}'"
+        return (
+            f"{kind} references unknown material(s): "
+            + ', '.join(missing)
+            + '. Define these materials in Defines > Materials or use a different material_ref.'
+        )
+
+    def _check_duplicate_detector_feature_generator_name(self, normalized_entry):
+        """Return an error string if another saved detector feature generator
+        already uses the requested name. Same-name updates of the same entry
+        (matching generator_id) are allowed."""
+        candidate_id = normalized_entry.get('generator_id')
+        candidate_name = (normalized_entry.get('name') or '').strip()
+        if not candidate_name:
+            return None  # upstream normalizer already rejects empty names
+        for existing in self.current_geometry_state.detector_feature_generators or []:
+            if not isinstance(existing, dict):
+                continue
+            existing_name = (existing.get('name') or '').strip()
+            if existing_name != candidate_name:
+                continue
+            if candidate_id is not None and existing.get('generator_id') == candidate_id:
+                continue  # same entry being updated
+            return (
+                f"A detector feature generator named '{candidate_name}' already exists. "
+                "Pick a unique name or edit the existing entry instead."
+            )
+        return None
+
+    def _resolve_detector_feature_target_solid(self, generator_entry):
+        """Return the (solid, solid_name) tuple backing a generator's target, or
+        (None, None) if the target is not resolvable. Hole/cut types use
+        target.solid_ref directly; placement-array types resolve the parent
+        logical volume's solid_ref."""
+        if not isinstance(generator_entry, dict):
+            return None, None
+        state = self.current_geometry_state
+        target_section = generator_entry.get('target', {}) or {}
+        solid_ref = target_section.get('solid_ref')
+        if solid_ref:
+            solid_name = self._resolve_detector_feature_object_name(
+                solid_ref, state.solids
+            )
+            if not solid_name:
+                solid_name = self._get_detector_feature_object_name_hint(solid_ref)
+            if solid_name and solid_name in state.solids:
+                return state.solids[solid_name], solid_name
+            return None, None
+        parent_lv_ref = target_section.get('parent_logical_volume_ref')
+        if parent_lv_ref:
+            lv_name = self._resolve_detector_feature_object_name(
+                parent_lv_ref, state.logical_volumes
+            )
+            if not lv_name:
+                lv_name = self._get_detector_feature_object_name_hint(parent_lv_ref)
+            if lv_name and lv_name in state.logical_volumes:
+                parent_lv = state.logical_volumes[lv_name]
+                if parent_lv.solid_ref in state.solids:
+                    return state.solids[parent_lv.solid_ref], parent_lv.solid_ref
+        return None, None
+
+    def _estimate_solid_bounding_box_mm(self, solid):
+        """Conservative axis-aligned bounding box (x, y, z) full extents in mm.
+        Returns None when the solid type is not recognised."""
+        if solid is None:
+            return None
+        params = getattr(solid, '_evaluated_parameters', None) or {}
+        solid_type = getattr(solid, 'type', None)
+        if solid_type == 'box':
+            try:
+                return (
+                    float(params.get('x') or 0.0),
+                    float(params.get('y') or 0.0),
+                    float(params.get('z') or 0.0),
+                )
+            except (TypeError, ValueError):
+                return None
+        if solid_type in ('tube', 'cylinder'):
+            try:
+                rmax = float(params.get('rmax') or 0.0)
+                z = float(params.get('z') or 0.0)
+                return (2.0 * rmax, 2.0 * rmax, z)
+            except (TypeError, ValueError):
+                return None
+        if solid_type == 'sphere':
+            try:
+                rmax = float(params.get('rmax') or 0.0)
+                return (2.0 * rmax, 2.0 * rmax, 2.0 * rmax)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _detector_feature_extents_mm(self, generator_entry):
+        """Return the (x, y, z) full-extent envelope the generator will create or
+        cut, in mm. Used to detect degenerate cases (e.g. 500mm hole in a 100mm
+        box) before the boolean or placement loop runs. Returns None when the
+        generator type is unknown or the relevant fields are missing."""
+        if not isinstance(generator_entry, dict):
+            return None
+        generator_type = generator_entry.get('generator_type')
+        try:
+            if generator_type in ('rectangular_drilled_hole_array', 'circular_drilled_hole_array'):
+                hole = generator_entry.get('hole', {}) or {}
+                diameter = float(hole.get('diameter_mm') or 0.0)
+                depth = float(hole.get('depth_mm') or 0.0)
+                return (diameter, diameter, depth)
+            if generator_type == 'channel_cut_array':
+                channel = generator_entry.get('channel', {}) or {}
+                width = float(channel.get('width_mm') or 0.0)
+                length = float(channel.get('length_mm') or width)
+                depth = float(channel.get('depth_mm') or 0.0)
+                return (max(width, length), max(width, length), depth)
+            if generator_type == 'layered_detector_stack':
+                layers = generator_entry.get('layers', {}) or {}
+                stack = generator_entry.get('stack', {}) or {}
+                total_thickness = sum(
+                    float((layers.get(key) or {}).get('thickness_mm') or 0.0)
+                    for key in ('absorber', 'sensor', 'support')
+                )
+                module_size = stack.get('module_size_mm') or {}
+                return (
+                    float(module_size.get('x') or 0.0),
+                    float(module_size.get('y') or 0.0),
+                    total_thickness,
+                )
+            if generator_type == 'tiled_sensor_array':
+                sensor = generator_entry.get('sensor', {}) or {}
+                size = sensor.get('size_mm') or {}
+                return (
+                    float(size.get('x') or 0.0),
+                    float(size.get('y') or 0.0),
+                    float(sensor.get('thickness_mm') or 0.0),
+                )
+            if generator_type == 'support_rib_array':
+                rib = generator_entry.get('rib', {}) or {}
+                size = rib.get('size_mm') or {}
+                return (
+                    float(size.get('x') or 0.0),
+                    float(size.get('y') or 0.0),
+                    float(rib.get('thickness_mm') or 0.0),
+                )
+            if generator_type == 'annular_shield_sleeve':
+                shield = generator_entry.get('shield', {}) or {}
+                outer_radius = float(shield.get('outer_radius_mm') or 0.0)
+                length = float(shield.get('length_mm') or 0.0)
+                return (2.0 * outer_radius, 2.0 * outer_radius, length)
+        except (TypeError, ValueError):
+            return None
+        return None
+
+    def _check_detector_feature_generator_degenerate_geometry(self, generator_entry):
+        """Reject generators whose primary extent envelope clearly exceeds the
+        target solid's bounding box. This guards against pathological inputs
+        (e.g. a 500mm hole in a 100mm box) that can send boolean or placement
+        sub-handlers into runaway loops."""
+        target_solid, solid_name = self._resolve_detector_feature_target_solid(generator_entry)
+        if target_solid is None:
+            return None  # let the per-type handler emit the missing-target error
+        bbox = self._estimate_solid_bounding_box_mm(target_solid)
+        if bbox is None:
+            return None
+        extents = self._detector_feature_extents_mm(generator_entry)
+        if extents is None:
+            return None
+        tolerance = 1.05  # 5% slack for rounded dimensions
+        axes = (('x', extents[0], bbox[0]), ('y', extents[1], bbox[1]), ('z', extents[2], bbox[2]))
+        for axis_name, gen_extent, target_extent in axes:
+            if gen_extent <= 0.0 or target_extent <= 0.0:
+                continue
+            if gen_extent > target_extent * tolerance:
+                gen_name = (
+                    generator_entry.get('name')
+                    or generator_entry.get('generator_id')
+                    or generator_entry.get('generator_type')
+                    or 'detector feature generator'
+                )
+                return (
+                    f"Detector feature generator '{gen_name}' extent along {axis_name} "
+                    f"({gen_extent:.3f} mm) exceeds target solid '{solid_name}' "
+                    f"bounding box ({target_extent:.3f} mm). Reduce the relevant dimension "
+                    "or pick a larger target solid."
+                )
+        return None
 
     def upsert_detector_feature_generator(self, raw_entry, *, realize_now=True):
         """Create or update one saved detector-feature-generator contract."""
@@ -2784,6 +3020,14 @@ class ProjectManager:
             normalized_entry = normalize_detector_feature_generator_entry(candidate_entry)
         except ValueError as exc:
             return None, None, str(exc)
+
+        material_error = self._validate_detector_feature_generator_materials(normalized_entry)
+        if material_error:
+            return None, None, material_error
+
+        duplicate_name_error = self._check_duplicate_detector_feature_generator_name(normalized_entry)
+        if duplicate_name_error:
+            return None, None, duplicate_name_error
 
         self.begin_transaction()
         realization_result = None
@@ -2872,6 +3116,139 @@ class ProjectManager:
         description = generator_entry.get('name') or generator_entry.get('generator_id') or f"generator #{generator_index}"
         self.end_transaction(f"Realized detector feature generator '{description}'")
         return result, None
+
+    def delete_detector_feature_generator(self, generator_id):
+        """Remove a saved detector-feature-generator entry and clean up its
+        auxiliary generated geometry (cutter/sensor/rib/shield solids, generated
+        logical volumes, and placements). The result solid from a boolean
+        subtraction is preserved so the user keeps the result of their last
+        realization."""
+        if not self.current_geometry_state:
+            return False, "No project loaded."
+
+        generator_index, generator_entry = self._find_detector_feature_generator(generator_id)
+        if generator_entry is None:
+            return False, f"Detector feature generator '{generator_id}' was not found."
+
+        description = (
+            generator_entry.get('name')
+            or generator_entry.get('generator_id')
+            or f"generator #{generator_index}"
+        )
+
+        realization = generator_entry.get('realization', {}) or {}
+        realization_mode = realization.get('mode')
+        generated_refs = realization.get('generated_object_refs', {}) or {}
+        result_solid_ref = realization.get('result_solid_ref') or {}
+
+        def _ref_name(ref):
+            if not isinstance(ref, dict):
+                return None
+            return self._get_detector_feature_object_name_hint(ref) or ref.get('id')
+
+        result_solid_name = _ref_name(result_solid_ref)
+        solid_refs = generated_refs.get('solid_refs', []) or []
+        lv_refs = generated_refs.get('logical_volume_refs', []) or []
+        pv_refs = generated_refs.get('placement_refs', []) or []
+
+        # Auxiliary solids = generated solids minus the result solid (preserve result)
+        auxiliary_solid_names = [
+            name for name in (_ref_name(ref) for ref in solid_refs)
+            if name and name != result_solid_name
+        ]
+        # Boolean generators record target LVs/PVs as affected geometry. Those
+        # objects predate the generator and are not owned cleanup candidates.
+        if realization_mode == 'boolean_subtraction':
+            auxiliary_lv_names = []
+            auxiliary_pv_ids = []
+        else:
+            auxiliary_lv_names = [
+                name for name in (_ref_name(ref) for ref in lv_refs) if name
+            ]
+            auxiliary_pv_ids = [
+                ref.get('id')
+                for ref in pv_refs
+                if isinstance(ref, dict) and ref.get('id')
+            ]
+
+        deleted = {
+            'placement_ids': [],
+            'logical_volume_names': [],
+            'solid_names': [],
+        }
+        skipped = {
+            'placement_ids': [],
+            'logical_volume_names': [],
+            'solid_names': [],
+        }
+
+        self.begin_transaction()
+        try:
+            # Pop the generator entry first so the realisation refs it leaves behind
+            # are no longer authoritative.
+            del self.current_geometry_state.detector_feature_generators[generator_index]
+
+            # Delete auxiliary placements (PVs)
+            for pv_id in auxiliary_pv_ids:
+                lv = None
+                for candidate in self.current_geometry_state.logical_volumes.values():
+                    if candidate.content_type == 'physvol':
+                        for pv in candidate.content:
+                            if pv.id == pv_id:
+                                lv = candidate
+                                break
+                    if lv is not None:
+                        break
+                if lv is None:
+                    skipped['placement_ids'].append(pv_id)
+                    continue
+                lv.content = [pv for pv in lv.content if pv.id != pv_id]
+                deleted['placement_ids'].append(pv_id)
+
+            # Delete auxiliary logical volumes (only when no other PV references them)
+            for lv_name in auxiliary_lv_names:
+                lv = self.current_geometry_state.logical_volumes.get(lv_name)
+                if lv is None:
+                    continue
+                referenced = any(
+                    other_lv.content_type == 'physvol'
+                    and any(pv.volume_ref == lv_name for pv in other_lv.content)
+                    for other_lv in self.current_geometry_state.logical_volumes.values()
+                )
+                if referenced:
+                    skipped['logical_volume_names'].append(lv_name)
+                    continue
+                del self.current_geometry_state.logical_volumes[lv_name]
+                deleted['logical_volume_names'].append(lv_name)
+
+            # Delete auxiliary solids (only when no LV references them)
+            for solid_name in auxiliary_solid_names:
+                if solid_name not in self.current_geometry_state.solids:
+                    continue
+                referenced = any(
+                    other_lv.solid_ref == solid_name
+                    for other_lv in self.current_geometry_state.logical_volumes.values()
+                )
+                if referenced:
+                    skipped['solid_names'].append(solid_name)
+                    continue
+                del self.current_geometry_state.solids[solid_name]
+                deleted['solid_names'].append(solid_name)
+
+            success, error_msg = self.recalculate_geometry_state()
+            if not success:
+                raise ValueError(error_msg)
+        except Exception as exc:
+            self.abort_transaction()
+            return False, str(exc)
+
+        self.end_transaction(f"Deleted detector feature generator '{description}'")
+        return True, {
+            'generator_id': generator_entry.get('generator_id'),
+            'name': description,
+            'deleted': deleted,
+            'skipped': skipped,
+        }
 
     def _snapshot_step_import_annotations(self, cad_import_record):
         """Captures user-facing annotations that should survive a supported reimport."""
@@ -6062,10 +6439,248 @@ class ProjectManager:
         success, error_msg = self.recalculate_geometry_state()
         return success, error_msg
 
+    # --- Input validation helpers ---
+
+    def _eval_numeric(self, expr, field_name, must_be_positive=False):
+        """Evaluate an expression to a numeric value. Raises ValueError on failure."""
+        if not isinstance(expr, str):
+            expr = str(expr)
+        success, value = self.expression_evaluator.evaluate(expr)
+        if not success:
+            raise ValueError(f"Cannot evaluate '{expr}' for {field_name}")
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"Value for {field_name} is not numeric: {value}")
+        if not math.isfinite(value):
+            raise ValueError(f"Value for {field_name} must be finite, got {value}")
+        if must_be_positive and value <= 0:
+            raise ValueError(f"{field_name} must be positive, got {value}")
+        return value
+
+    def _validate_material(self, name, properties_dict):
+        """Validate material name and properties. Raises ValueError."""
+        if not name or not name.strip():
+            raise ValueError("Material name cannot be empty or whitespace only")
+        name = name.strip()
+        if '<' in name or '>' in name:
+            raise ValueError("Material name cannot contain HTML markup")
+
+        props = properties_dict.copy()
+        mat_type = str(props.pop('type', props.get('mat_type', 'standard')) or 'standard')
+        props['mat_type'] = mat_type
+
+        if mat_type == 'nist' or (
+            name.startswith('G4_')
+            and not props.get('components')
+            and not props.get('Z')
+            and not props.get('Z_expr')
+        ):
+            props['mat_type'] = 'nist'
+            return name, props
+
+        try:
+            density = props.pop('density', None) or props.get('density_expr')
+            if density is None:
+                raise ValueError("Material density is required")
+            self._eval_numeric(density, 'density', must_be_positive=True)
+            props['density_expr'] = str(density)
+
+            z = props.pop('Z', None)
+            if z is None:
+                z = props.get('Z_expr')
+            a = props.pop('A', None)
+            if a is None:
+                a = props.get('A_expr')
+
+            has_components = bool(props.get('components'))
+            if not has_components and z is None:
+                raise ValueError("Element material requires Z (atomic number)")
+            if z is not None:
+                z_val = self._eval_numeric(z, 'Z')
+                if z_val < 1 or not float(z_val).is_integer():
+                    raise ValueError(f"Z must be a positive integer, got {z_val}")
+                props['Z_expr'] = str(z)
+            if a is not None:
+                a_val = self._eval_numeric(a, 'A')
+                if a_val < 1:
+                    raise ValueError(f"A must be >= 1, got {a_val}")
+                props['A_expr'] = str(a)
+            if mat_type == 'ion':
+                charge = props.get('chargeState', 0)
+                props['chargeState'] = int(self._eval_numeric(charge, 'chargeState'))
+        except ValueError as exc:
+            raise ValueError(f"Invalid material expression: {exc}") from exc
+
+        return name, props
+
+    def _validate_source(self, source_data):
+        """Validate source parameters. Raises ValueError."""
+        name = source_data.get('name', '')
+        if not name or not name.strip():
+            raise ValueError("Source name cannot be empty or whitespace only")
+        # Sanitize name: strip HTML tags and collapse whitespace
+        import re
+        name = re.sub(r'<[^>]+>', '', name).strip()
+        name = re.sub(r'\s+', ' ', name)
+        if not name:
+            raise ValueError("Source name cannot be empty or whitespace only after sanitization")
+        source_data = source_data.copy()
+        source_data['name'] = name
+
+        particle = source_data.get('particle', 'e-')
+        if not particle or not str(particle).strip():
+            raise ValueError("Particle type cannot be empty")
+
+        energy = source_data.get('energy')
+        if energy is not None:
+            energy_val = self._eval_numeric(energy, 'energy', must_be_positive=True)
+            source_data = source_data.copy()
+            source_data['energy'] = energy_val
+
+        if 'ionZ' in source_data:
+            z_val = int(self._eval_numeric(source_data['ionZ'], 'ionZ'))
+            if z_val < 1:
+                raise ValueError(f"ionZ must be >= 1, got {z_val}")
+            source_data = source_data.copy()
+            source_data['ionZ'] = z_val
+        if 'ionA' in source_data:
+            a_val = int(self._eval_numeric(source_data['ionA'], 'ionA'))
+            if a_val < 1:
+                raise ValueError(f"ionA must be >= 1, got {a_val}")
+            source_data = source_data.copy()
+            source_data['ionA'] = a_val
+
+        if 'activity' in source_data:
+            act_val = self._eval_numeric(source_data['activity'], 'activity', must_be_positive=True)
+            source_data = source_data.copy()
+            source_data['activity'] = act_val
+
+        return source_data
+
+    def _validate_solid(self, name, solid_type, params):
+        """Validate solid type and parameters. Raises ValueError."""
+        if not name or not name.strip():
+            raise ValueError("Solid name cannot be empty or whitespace only")
+        name = name.strip()
+
+        valid_types = {
+            'box', 'tube', 'cone', 'sphere', 'orb', 'torus', 'trd', 'trap',
+            'para', 'ellipsoid', 'eltube', 'polycone', 'genericPolycone',
+            'hype', 'paraboloid', 'polyhedra', 'genericPolyhedra',
+            'twistedbox', 'twistedtrap', 'twistedtrd', 'twistedtubs',
+            'elcone', 'tet', 'arb8', 'cutTube', 'scaledSolid',
+            'reflectedSolid', 'tessellated', 'multiUnion',
+        }
+        if solid_type not in valid_types:
+            raise ValueError(f"Invalid solid type '{solid_type}'. Valid types: {valid_types}")
+
+        params = params.copy()
+
+        # Accept legacy/backend aliases while retaining AIRPET's canonical
+        # parameter names used by recalculation, rendering, and GDML export.
+        if solid_type in {'tube'} and 'z' not in params and 'dz' in params:
+            params['z'] = params.pop('dz')
+        if solid_type == 'trd' and 'x1' not in params and 'dx1' in params:
+            for half_key, full_key in (
+                ('dx1', 'x1'), ('dx2', 'x2'), ('dy1', 'y1'),
+                ('dy2', 'y2'), ('dz', 'z'),
+            ):
+                if half_key in params:
+                    params[full_key] = f"2*({params.pop(half_key)})"
+
+        def _positive(key, label=None):
+            if key not in params:
+                raise ValueError(f"{label or key} is required")
+            self._eval_numeric(params[key], label or key, must_be_positive=True)
+
+        def _non_negative(key, label=None, default=0):
+            value = self._eval_numeric(params.get(key, default), label or key)
+            if value < 0:
+                raise ValueError(f"{label or key} must be >= 0, got {value}")
+            return value
+
+        if solid_type == 'box':
+            for dim in ['x', 'y', 'z']:
+                _positive(dim, f'box.{dim}')
+        elif solid_type == 'tube':
+            rmin = _non_negative('rmin', 'tube.rmin')
+            _positive('rmax', 'tube.rmax')
+            rmax = self._eval_numeric(params['rmax'], 'tube.rmax')
+            if rmin > rmax:
+                raise ValueError(f"rmin ({rmin}) must be <= rmax ({rmax})")
+            _positive('z', 'tube.z')
+            self._eval_numeric(params.get('startphi', 0), 'tube.startphi')
+            delta_phi = self._eval_numeric(params.get('deltaphi', 360), 'tube.deltaphi')
+            if delta_phi <= 0:
+                raise ValueError(f"deltaphi must be > 0, got {delta_phi}")
+        elif solid_type == 'cone':
+            for suffix in ('1', '2'):
+                rmin = _non_negative(f'rmin{suffix}', f'cone.rmin{suffix}')
+                _positive(f'rmax{suffix}', f'cone.rmax{suffix}')
+                rmax = self._eval_numeric(params[f'rmax{suffix}'], f'cone.rmax{suffix}')
+                if rmin > rmax:
+                    raise ValueError(
+                        f"rmin{suffix} ({rmin}) must be <= rmax{suffix} ({rmax})"
+                    )
+            _positive('z', 'cone.z')
+            delta_phi = self._eval_numeric(params.get('deltaphi', 360), 'cone.deltaphi')
+            if delta_phi <= 0:
+                raise ValueError(f"deltaphi must be > 0, got {delta_phi}")
+        elif solid_type == 'sphere':
+            rmin = _non_negative('rmin', 'sphere.rmin')
+            _positive('rmax', 'sphere.rmax')
+            rmax = self._eval_numeric(params['rmax'], 'sphere.rmax')
+            if rmin > rmax:
+                raise ValueError(f"rmin ({rmin}) must be <= rmax ({rmax})")
+            self._eval_numeric(params.get('startphi', 0), 'sphere.startphi')
+            delta_phi = self._eval_numeric(params.get('deltaphi', 360), 'sphere.deltaphi')
+            if delta_phi <= 0:
+                raise ValueError(f"deltaphi must be > 0, got {delta_phi}")
+            self._eval_numeric(params.get('starttheta', 0), 'sphere.starttheta')
+            delta_theta = self._eval_numeric(params.get('deltatheta', 180), 'sphere.deltatheta')
+            if delta_theta <= 0:
+                raise ValueError(f"deltatheta must be > 0, got {delta_theta}")
+        elif solid_type == 'orb':
+            _positive('r', 'orb.r')
+        elif solid_type == 'trd':
+            for dim in ('x1', 'x2', 'y1', 'y2', 'z'):
+                _positive(dim, f'trd.{dim}')
+        elif solid_type == 'para':
+            for dim in ('x', 'y', 'z'):
+                _positive(dim, f'para.{dim}')
+        elif solid_type == 'trap':
+            for dim in ('z', 'y1', 'x1', 'x2', 'y2', 'x3', 'x4'):
+                _positive(dim, f'trap.{dim}')
+        elif solid_type == 'torus':
+            rmin = _non_negative('rmin', 'torus.rmin')
+            _positive('rmax', 'torus.rmax')
+            rmax = self._eval_numeric(params['rmax'], 'torus.rmax')
+            if rmin > rmax:
+                raise ValueError(f"rmin ({rmin}) must be <= rmax ({rmax})")
+            _positive('rtor', 'torus.rtor')
+
+        return name, solid_type, params
+
+    def _validate_placement(self, pv_params):
+        """Validate placement position and scale. Raises ValueError."""
+        pv_params = pv_params.copy()
+        for key in ['scaleX', 'scaleY', 'scaleZ']:
+            val = self._eval_numeric(pv_params.get(key, 1), key)
+            if val <= 0:
+                raise ValueError(f"{key} must be positive, got {val}")
+            pv_params[key] = val
+        return pv_params
+
     def add_material(self, name_suggestion, properties_dict):
         if not self.current_geometry_state: return None, "No project loaded"
-        name = self._generate_unique_name(name_suggestion, self.current_geometry_state.materials)
-        
+        try:
+            name, properties_dict = self._validate_material(name_suggestion, properties_dict)
+        except ValueError as e:
+            return None, str(e)
+
+        name = self._generate_unique_name(name, self.current_geometry_state.materials)
+
         # Check if this is a NIST material name (starts with G4_)
         # If it's a NIST name and has no components/Z/A/density, create as NIST material
         is_nist_name = name_suggestion.startswith("G4_")
@@ -6221,7 +6836,12 @@ class ProjectManager:
         # Start with a clear change tracker
         self._clear_change_tracker()
         
-        name = self._generate_unique_name(name_suggestion, self.current_geometry_state.solids)
+        try:
+            name, solid_type, raw_parameters = self._validate_solid(name_suggestion, solid_type, raw_parameters)
+        except ValueError as e:
+            return None, str(e)
+
+        name = self._generate_unique_name(name, self.current_geometry_state.solids)
         new_solid = Solid(name, solid_type, raw_parameters)
         self.current_geometry_state.add_solid(new_solid)
 
@@ -6358,9 +6978,9 @@ class ProjectManager:
              return False, "Parent logical volume for placement was not specified."
         
         pv_name_sugg = pv_params.get('name', f"{new_lv_name}_PV")
-        position = {'x': '0', 'y': '0', 'z': '0'} 
-        rotation = {'x': '0', 'y': '0', 'z': '0'}
-        scale    = {'x': '1', 'y': '1', 'z': '1'}
+        position = pv_params.get('position', {'x': '0', 'y': '0', 'z': '0'})
+        rotation = pv_params.get('rotation', {'x': '0', 'y': '0', 'z': '0'})
+        scale    = pv_params.get('scale', {'x': '1', 'y': '1', 'z': '1'})
 
         new_pv_dict, pv_error = self.add_physical_volume(parent_lv_name, pv_name_sugg, new_lv_name, position, rotation, scale)
         if pv_error:
@@ -6558,6 +7178,13 @@ class ProjectManager:
 
     def add_physical_volume(self, parent_lv_name, pv_name_suggestion, placed_lv_ref, position, rotation, scale, copy_number_expr="0"):
         if not self.current_geometry_state: return None, "No project loaded"
+
+        try:
+            pv_params = {'scaleX': scale.get('x', '1'), 'scaleY': scale.get('y', '1'), 'scaleZ': scale.get('z', '1')}
+            pv_params = self._validate_placement(pv_params)
+            scale = {'x': pv_params['scaleX'], 'y': pv_params['scaleY'], 'z': pv_params['scaleZ']}
+        except ValueError as e:
+            return None, str(e)
         
         state = self.current_geometry_state
 
@@ -7877,6 +8504,12 @@ class ProjectManager:
             else:
                 target_import_index = None
 
+            # Snapshot the pre-merge state so a zero-solid fresh import can be rolled back
+            # without leaving an orphan assembly / group / cad_import record behind.
+            # `to_dict` returns shared references for some leaf lists, so a deepcopy is
+            # required to insulate the snapshot from later in-place mutations.
+            self._pre_import_state_snapshot = deepcopy(self.current_geometry_state)
+
             # The merge_from_state function already handles placements and grouping
             success, error_msg = self.merge_from_state(imported_state)
             
@@ -7892,10 +8525,27 @@ class ProjectManager:
             newly_created_solid_names = {solid.name for solid in imported_state.solids.values()}
             self.changed_object_ids['solids'].update(newly_created_solid_names)
             print(f"Changed solids {self.changed_object_ids['solids']}")
-            
+
             # Recalculate is handled inside merge_from_state, but an extra one ensures consistency.
             self.recalculate_geometry_state()
-            
+
+            # Surface empty-import cases (e.g. malformed STEP, zero-length file) so
+            # the UI can warn the user instead of leaving an empty orphan in the project.
+            imported_solid_count = len(newly_created_solid_names)
+            if imported_solid_count == 0:
+                partial_error = (
+                    f"STEP file '{effective_options.get('groupingName')}' did not produce any "
+                    f"solids. The file may be malformed, empty, or use unsupported geometry."
+                )
+                if target_import_record is not None:
+                    # Reimport: roll back the deletion + re-add via the open transaction.
+                    self.abort_transaction()
+                else:
+                    # Fresh import: roll back the merge by restoring the pre-merge state.
+                    self.current_geometry_state = deepcopy(self._pre_import_state_snapshot)
+                    self.recalculate_geometry_state()
+                return True, partial_error, import_report
+
             # Capture this entire import as a single history event.
             if target_import_record is not None:
                 self.end_transaction(f"Reimported STEP file '{effective_options.get('groupingName')}'")
@@ -7910,6 +8560,8 @@ class ProjectManager:
             # Ensure we raise the error to be caught by the app route
             raise e
         finally:
+            # Drop the pre-import snapshot reference to avoid retaining stale state.
+            self._pre_import_state_snapshot = None
             # Clean up the temporary file
             os.unlink(temp_path)
 
@@ -8277,7 +8929,23 @@ class ProjectManager:
         # Normalize gps_commands to ensure all values are strings
         gps_commands = self._normalize_gps_commands(gps_commands)
 
-        name = self._generate_unique_name(name_suggestion, self.current_geometry_state.sources)
+        # Build source_data dict for validation
+        source_data = {
+            'name': name_suggestion,
+            'particle': gps_commands.get('particle/type', 'e-'),
+            'energy': gps_commands.get('energy'),
+            'activity': activity,
+        }
+        if ion_params:
+            source_data['ionZ'] = ion_params.get('Z', 0)
+            source_data['ionA'] = ion_params.get('A', 0)
+
+        try:
+            source_data = self._validate_source(source_data)
+        except ValueError as e:
+            return None, str(e)
+
+        name = self._generate_unique_name(source_data['name'], self.current_geometry_state.sources)
 
         linked_pv = self._find_pv_by_id(volume_link_id) if volume_link_id else None
 
@@ -8323,18 +8991,61 @@ class ProjectManager:
         if not source_to_update:
             return False, f"Source with ID '{source_id}' not found."
 
-        # Check for name change and ensure uniqueness if it changed
-        if new_name and new_name != source_to_update.name:
-            if new_name in self.current_geometry_state.sources:
-                return False, f"A source named '{new_name}' already exists."
-            # To rename, we remove the old entry and add a new one
-            del self.current_geometry_state.sources[source_to_update.name]
-            source_to_update.name = new_name
-            self.current_geometry_state.sources[new_name] = source_to_update
+        candidate_gps_commands = (
+            self._normalize_gps_commands(new_gps_commands)
+            if new_gps_commands is not None
+            else deepcopy(source_to_update.gps_commands)
+        )
+        candidate_name = new_name if new_name is not None else source_to_update.name
+        candidate_activity = (
+            new_activity if new_activity is not None else source_to_update.activity
+        )
+        candidate_ion_params = (
+            deepcopy(new_ion_params)
+            if new_ion_params is not None
+            else deepcopy(source_to_update.ion_params)
+        )
+        candidate_source_type = (
+            new_source_type if new_source_type is not None else source_to_update.type
+        )
+
+        validation_payload = {
+            'name': candidate_name,
+            'particle': candidate_gps_commands.get('particle/type', 'e-'),
+            'energy': candidate_gps_commands.get('energy'),
+            'activity': candidate_activity,
+        }
+        if candidate_source_type == 'ion' or candidate_ion_params:
+            validation_payload['ionZ'] = (candidate_ion_params or {}).get('Z', 0)
+            validation_payload['ionA'] = (candidate_ion_params or {}).get('A', 0)
+        try:
+            validated_source = self._validate_source(validation_payload)
+            normalized_sequence = (
+                ParticleSource.normalize_gps_command_sequence(new_gps_command_sequence)
+                if new_gps_command_sequence is not None
+                else None
+            )
+            normalized_advanced_gps = (
+                normalize_advanced_gps_state(new_advanced_gps)
+                if new_advanced_gps is not None
+                else None
+            )
+        except (TypeError, ValueError) as exc:
+            return False, str(exc)
+
+        candidate_name = validated_source['name']
+        if candidate_name != source_to_update.name:
+            if candidate_name in self.current_geometry_state.sources:
+                return False, f"A source named '{candidate_name}' already exists."
+
+        old_name = source_to_update.name
+        if candidate_name != old_name:
+            del self.current_geometry_state.sources[old_name]
+            source_to_update.name = candidate_name
+            self.current_geometry_state.sources[candidate_name] = source_to_update
 
         if new_gps_commands is not None:
-            # Normalize gps_commands to ensure all values are strings
-            source_to_update.gps_commands = self._normalize_gps_commands(new_gps_commands)
+            source_to_update.gps_commands = candidate_gps_commands
 
         if new_position is not None:
             source_to_update.position = new_position
@@ -8343,11 +9054,7 @@ class ProjectManager:
             source_to_update.rotation = new_rotation
 
         if new_activity is not None:
-            # simple validation
-            try:
-                source_to_update.activity = float(new_activity)
-            except ValueError:
-                return False, f"Invalid activity value: {new_activity}"
+            source_to_update.activity = new_activity
 
         if new_confine_to_pv is not None:
             # We treat an empty string as "no confinement" (None)
@@ -8363,18 +9070,10 @@ class ProjectManager:
             source_to_update.ion_params = new_ion_params
 
         if new_gps_command_sequence is not None:
-            try:
-                source_to_update.gps_command_sequence = ParticleSource.normalize_gps_command_sequence(
-                    new_gps_command_sequence
-                )
-            except ValueError as exc:
-                return False, str(exc)
+            source_to_update.gps_command_sequence = normalized_sequence
 
         if new_advanced_gps is not None:
-            try:
-                source_to_update.advanced_gps = normalize_advanced_gps_state(new_advanced_gps)
-            except ValueError as exc:
-                return False, str(exc)
+            source_to_update.advanced_gps = normalized_advanced_gps
 
         # Handle Linked Volume Updates
         source_to_update.volume_link_id = new_volume_link_id
@@ -9570,6 +10269,27 @@ class ProjectManager:
                 hint='Mark at least one target logical volume as sensitive to record deposited-energy hits.',
             )
 
+        # Check for sensitive detectors with very low-density materials
+        vacuum_density_threshold_g_cm3 = 1e-6  # 1 microgram/cm³
+        for lv in state.logical_volumes.values():
+            if not lv.is_sensitive:
+                continue
+            mat_ref = lv.material_ref
+            if not mat_ref or mat_ref not in state.materials:
+                continue
+            mat = state.materials[mat_ref]
+            density = mat._evaluated_density
+            if density is not None and 0 < density < vacuum_density_threshold_g_cm3:
+                self._preflight_add_issue(
+                    report,
+                    'warning',
+                    'sensitive_detector_vacuum_material',
+                    f"Sensitive detector '{lv.name}' uses '{mat_ref}' with density {density} g/cm³. "
+                    f"This material is effectively vacuum and will produce no detector interactions.",
+                    object_refs=[lv.name, mat_ref],
+                    hint='Assign a material with meaningful density (e.g., G4_SILICON, G4_GERMANIUM) to record hits.',
+                )
+
         # 5) Solid geometry sanity checks.
         tiny_threshold_mm = 1e-3  # 1 micron in mm units
         for solid in state.solids.values():
@@ -9647,7 +10367,71 @@ class ProjectManager:
                         hint='Check CAD import quality; this may indicate degenerate geometry.',
                     )
 
-        # 6) Approximate sibling overlap checks (AABB heuristic).
+        # 6) Mother-daughter containment checks (AABB heuristic).
+        for parent_lv in state.logical_volumes.values():
+            if parent_lv.content_type != 'physvol' or not parent_lv.content:
+                continue
+
+            mother_solid = state.solids.get(parent_lv.solid_ref)
+            if not mother_solid:
+                continue
+
+            mother_half = self._get_solid_local_half_extents(mother_solid)
+            if not mother_half:
+                continue
+
+            hx, hy, hz = mother_half
+            if hx <= 0 or hy <= 0 or hz <= 0:
+                continue
+
+            mother_aabb = {
+                'min': np.array([-hx, -hy, -hz]),
+                'max': np.array([hx, hy, hz]),
+            }
+
+            for pv in parent_lv.content:
+                daughter_box = self._compute_pv_aabb(pv)
+                if daughter_box is None:
+                    continue
+
+                dmin = daughter_box['min']
+                dmax = daughter_box['max']
+                mmin = mother_aabb['min']
+                mmax = mother_aabb['max']
+
+                fully_inside = bool(np.all(dmin >= mmin) and np.all(dmax <= mmax))
+                if fully_inside:
+                    continue
+
+                outside_x = bool(np.any(dmin > mmax) or np.any(dmax < mmin))
+                if outside_x:
+                    self._preflight_add_issue(
+                        report,
+                        'error',
+                        'daughter_entirely_outside_mother',
+                        (
+                            f"Daughter volume '{pv.name}' in mother LV '{parent_lv.name}' "
+                            f"is entirely outside the mother solid '{mother_solid.name}'. "
+                            f"Simulation will crash with SIGSEGV."
+                        ),
+                        object_refs=[pv.id, parent_lv.name, mother_solid.name],
+                        hint='Move the daughter volume inside the mother solid bounds or enlarge the mother solid.',
+                    )
+                else:
+                    self._preflight_add_issue(
+                        report,
+                        'warning',
+                        'daughter_extends_outside_mother',
+                        (
+                            f"Daughter volume '{pv.name}' in mother LV '{parent_lv.name}' "
+                            f"extends outside the mother solid '{mother_solid.name}' "
+                            f"(AABB approximation). This may cause simulation errors."
+                        ),
+                        object_refs=[pv.id, parent_lv.name, mother_solid.name],
+                        hint='Ensure the daughter fits within the mother solid. Run Geant4 overlap checks for exact confirmation.',
+                    )
+
+        # 7) Approximate sibling overlap checks (AABB heuristic).
         placement_groups = []
         for lv in state.logical_volumes.values():
             if lv.content_type == 'physvol' and lv.content:
@@ -9689,7 +10473,7 @@ class ProjectManager:
                         )
                         return self._preflight_finalize(report)
 
-        # 7) Scoring mesh overlap with sensitive volumes.
+        # 8) Scoring mesh overlap with sensitive volumes.
         self._preflight_check_scoring_mesh_overlap(state, report)
 
         return self._preflight_finalize(report)

@@ -418,7 +418,7 @@ export function describeDetectorFeatureGeneratorLaunchState(projectState) {
     if (holeTargetOptions.length > 0) {
         return {
             canLaunch: true,
-            title: 'Create a new detector generator from Hierarchy > + Tools.',
+            title: 'Create a new detector feature generator (holes, channels, tiled sensors, support ribs, layered stacks, annular shields)',
             hint: 'Hierarchy > + Tools is the primary launch surface for drilled-hole patterns, stacks, tiled arrays, ribs, channels, and shield sleeves.',
         };
     }
@@ -426,7 +426,7 @@ export function describeDetectorFeatureGeneratorLaunchState(projectState) {
     if (parentTargetOptions.length > 0) {
         return {
             canLaunch: true,
-            title: 'Create a new detector generator from Hierarchy > + Tools.',
+            title: 'Create a new detector feature generator (holes, channels, tiled sensors, support ribs, layered stacks, annular shields)',
             hint: 'No box-solid targets are available yet, but parent-logical-volume generators can still launch from Hierarchy > + Tools.',
         };
     }

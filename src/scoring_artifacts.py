@@ -605,8 +605,8 @@ def build_scoring_run_summary(
     setup_summary_text = _normalize_string(scoring_summary.get("summary_text"))
     if not setup_summary_text:
         setup_summary_text = (
-            f"{_pluralize(enabled_mesh_count, 'enabled scoring mesh')} across "
-            f"{_pluralize(enabled_tally_count, 'enabled tally request')}."
+            f"{_pluralize(enabled_mesh_count, 'enabled scoring mesh', 'enabled scoring meshes')} across "
+            f"{_pluralize(enabled_tally_count, 'enabled tally request', 'enabled tally requests')}."
         )
 
     bundle_path = _normalize_string(
@@ -650,8 +650,8 @@ def build_scoring_run_summary(
 
     detail_lines = [
         (
-            f"{_pluralize(enabled_mesh_count, 'enabled mesh')} · "
-            f"{_pluralize(enabled_tally_count, 'enabled tally request')}"
+            f"{_pluralize(enabled_mesh_count, 'enabled mesh', 'enabled meshes')} · "
+            f"{_pluralize(enabled_tally_count, 'enabled tally request', 'enabled tally requests')}"
         ),
         f"Bundle: {bundle_path}" if bundle_exists else "Bundle: not recorded",
     ]

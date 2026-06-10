@@ -6,6 +6,8 @@ import {
     buildCadImportReimportContext,
     buildCadImportSelectionContext,
     describeCadImportRecord,
+    formatStepImportReportMessage,
+    isOrphanCadImportRecord,
 } from '../../static/cadImportUi.js';
 
 test('cad import provenance helpers describe a full STEP import deterministically', () => {
@@ -249,4 +251,115 @@ test('cad import batch helpers normalize imported logical volume ids and summari
     assert.equal(batchContext.logicalVolumeCount, 2);
     assert.equal(batchContext.logicalVolumeSummary, '2 logical volumes');
     assert.equal(batchContext.hasLogicalVolumes, true);
+});
+
+test('formatStepImportReportMessage surfaces a warning when zero solids were produced', () => {
+    const emptyReport = {
+        enabled: true,
+        candidates: [],
+        summary: {
+            total: 0,
+            primitive_count: 0,
+            tessellated_count: 0,
+            primitive_ratio: 0,
+            selected_mode_counts: { primitive: 0, tessellated: 0 },
+            selected_primitive_ratio: 0,
+            counts_by_classification: {
+                box: 0,
+                cylinder: 0,
+                sphere: 0,
+                cone: 0,
+                torus: 0,
+                tessellated: 0,
+            },
+        },
+    };
+
+    const message = formatStepImportReportMessage(emptyReport, true, false);
+    assert.match(message, /Warning: STEP import produced no solids/);
+    assert.match(message, /malformed, empty, or use unsupported geometry/);
+    assert.match(message, /Total solids: 0/);
+});
+
+test('formatStepImportReportMessage omits the warning for non-zero imports', () => {
+    const goodReport = {
+        enabled: true,
+        candidates: [
+            { selected_mode: 'primitive', classification: 'box', confidence: 0.9, fallback_reason: null },
+        ],
+        summary: {
+            total: 1,
+            primitive_count: 1,
+            tessellated_count: 0,
+            primitive_ratio: 1.0,
+            selected_mode_counts: { primitive: 1, tessellated: 0 },
+            selected_primitive_ratio: 1.0,
+            counts_by_classification: {
+                box: 1,
+                cylinder: 0,
+                sphere: 0,
+                cone: 0,
+                torus: 0,
+                tessellated: 0,
+            },
+        },
+    };
+
+    const message = formatStepImportReportMessage(goodReport, true, false);
+    assert.doesNotMatch(message, /Warning:/);
+    assert.match(message, /Total solids: 1/);
+    assert.match(message, /Selected primitives: 1 \(100\.0%\)/);
+});
+
+test('formatStepImportReportMessage surfaces a warning for disabled smart import with zero solids', () => {
+    const emptyReport = {
+        enabled: false,
+        summary: { total: 0, selected_mode_counts: { primitive: 0, tessellated: 0 } },
+    };
+
+    const message = formatStepImportReportMessage(emptyReport, false, false);
+    assert.match(message, /Warning: STEP import produced no solids \(smart import disabled\)/);
+});
+
+test('isOrphanCadImportRecord returns true when solid_ids is empty (F-015/F-017)', () => {
+    const orphan = {
+        import_id: 'step_import_orphan',
+        source: { format: 'step', filename: 'broken.step' },
+        created_object_ids: {
+            solid_ids: [],
+            logical_volume_ids: [],
+            assembly_ids: [],
+            placement_ids: [],
+            top_level_placement_ids: [],
+        },
+    };
+    assert.equal(isOrphanCadImportRecord(orphan), true);
+});
+
+test('isOrphanCadImportRecord returns true when created_object_ids is missing (F-015/F-017)', () => {
+    const orphan = {
+        import_id: 'step_import_orphan',
+        source: { format: 'step', filename: 'broken.step' },
+    };
+    assert.equal(isOrphanCadImportRecord(orphan), true);
+});
+
+test('isOrphanCadImportRecord returns false when solid_ids is non-empty', () => {
+    const good = {
+        import_id: 'step_import_good',
+        source: { format: 'step', filename: 'box.step' },
+        created_object_ids: {
+            solid_ids: ['solid_1'],
+            logical_volume_ids: ['lv_1'],
+            assembly_ids: ['asm_1'],
+            placement_ids: ['pv_1'],
+            top_level_placement_ids: ['pv_1'],
+        },
+    };
+    assert.equal(isOrphanCadImportRecord(good), false);
+});
+
+test('isOrphanCadImportRecord returns false for null/undefined record', () => {
+    assert.equal(isOrphanCadImportRecord(null), false);
+    assert.equal(isOrphanCadImportRecord(undefined), false);
 });

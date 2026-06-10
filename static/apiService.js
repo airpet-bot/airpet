@@ -1458,6 +1458,15 @@ export async function realizeDetectorFeatureGenerator(generatorId) {
     return handleResponse(response);
 }
 
+export async function deleteDetectorFeatureGenerator(generatorId) {
+    const response = await fetch(`${API_BASE_URL}/api/detector_feature_generators/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ generator_id: generatorId }),
+    });
+    return handleResponse(response);
+}
+
 export async function addParticleSource(name, gps_commands, position, rotation, activity, confine_to_pv, volume_link_id, source_type = 'gps', ion_params = null, gps_command_sequence = null, advanced_gps = null) {
     const response = await fetch(`${API_BASE_URL}/api/add_source`, {
         method: 'POST',

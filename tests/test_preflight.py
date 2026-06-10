@@ -191,10 +191,10 @@ def _seed_scoped_preflight_drift_replica_overlap_fixture(pm):
     return {
         'scope_name': scope_name,
         'expected_scope_summary_delta': {
-            'errors': 5,
+            'errors': 6,
             'warnings': 1,
             'infos': 0,
-            'issue_count': 6,
+            'issue_count': 7,
         },
         'expected_outside_scope_summary_delta': {
             'errors': 1,
@@ -203,6 +203,7 @@ def _seed_scoped_preflight_drift_replica_overlap_fixture(pm):
             'issue_count': 1,
         },
         'expected_scoped_issue_codes': [
+            'daughter_entirely_outside_mother',
             'invalid_replica_direction',
             'invalid_replica_instance_count',
             'invalid_replica_width',
@@ -212,8 +213,9 @@ def _seed_scoped_preflight_drift_replica_overlap_fixture(pm):
         ],
         'expected_issue_family_correlations': {
             'scope': {
-                'issue_count': 6,
+                'issue_count': 7,
                 'issue_codes': [
+                    'daughter_entirely_outside_mother',
                     'invalid_replica_direction',
                     'invalid_replica_instance_count',
                     'invalid_replica_width',
@@ -222,6 +224,7 @@ def _seed_scoped_preflight_drift_replica_overlap_fixture(pm):
                     'unknown_procedural_volume_reference',
                 ],
                 'counts_by_code': {
+                    'daughter_entirely_outside_mother': 1,
                     'invalid_replica_direction': 1,
                     'invalid_replica_instance_count': 1,
                     'invalid_replica_width': 1,
@@ -238,6 +241,7 @@ def _seed_scoped_preflight_drift_replica_overlap_fixture(pm):
                 },
             },
             'scope_only_issue_codes': [
+                'daughter_entirely_outside_mother',
                 'invalid_replica_direction',
                 'invalid_replica_instance_count',
                 'invalid_replica_width',
@@ -247,6 +251,12 @@ def _seed_scoped_preflight_drift_replica_overlap_fixture(pm):
             'outside_scope_only_issue_codes': [],
             'shared_issue_codes': ['unknown_material_reference'],
             'entries': [
+                {
+                    'issue_code': 'daughter_entirely_outside_mother',
+                    'correlation': 'scope',
+                    'scope_count': 1,
+                    'outside_scope_count': 0,
+                },
                 {
                     'issue_code': 'invalid_replica_direction',
                     'correlation': 'scope',

@@ -4022,6 +4022,8 @@ def get_simulation_metadata(version_id, job_id):
         environment_summary = _environment_summary_from_metadata(metadata)
         if environment_summary is not None and 'environment_summary' not in metadata:
             metadata['environment_summary'] = environment_summary
+        if not isinstance(metadata.get('run_manifest_summary'), dict):
+            metadata['run_manifest_summary'] = build_run_manifest_summary(metadata, run_dir, version_id=version_id)
         return jsonify({"success": True, "metadata": metadata})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -5174,7 +5176,7 @@ def add_source_route():
     if new_source:
         return create_success_response(pm, "Particle source created.")
     else:
-        return jsonify({"success": False, "error": error_msg}), 500
+        return jsonify({"success": False, "error": error_msg}), 400
 
 @app.route('/api/update_source_transform', methods=['POST'])
 def update_source_transform_route():
@@ -5236,7 +5238,7 @@ def update_source_route():
     if success:
         return create_success_response(pm, "Particle source updated successfully.")
     else:
-        return jsonify({"success": False, "error": error_msg}), 500
+        return jsonify({"success": False, "error": error_msg}), 400
     
 @app.route('/api/simulation/process_lors/<version_id>/<job_id>', methods=['POST'])
 def process_lors_route(version_id, job_id):
@@ -6801,7 +6803,7 @@ def add_material_route():
     if new_obj:
         return create_success_response(pm, "Material created.")
     else:
-        return jsonify({"success": False, "error": error_msg}), 500
+        return jsonify({"success": False, "error": error_msg}), 400
 
 @app.route('/update_material', methods=['POST'])
 def update_material_route():
@@ -7936,7 +7938,7 @@ def add_solid_and_place_route():
     if success:
         return create_success_response(pm, "Object(s) created successfully.")
     else:
-        return jsonify({"success": False, "error": error_msg}), 500
+        return jsonify({"success": False, "error": error_msg}), 400
 
 @app.route('/add_primitive_solid', methods=['POST'])
 def add_primitive_solid_route():
@@ -7955,7 +7957,7 @@ def add_primitive_solid_route():
     if new_obj:
         return create_success_response(pm, "Primitive solid created.")
     else:
-        return jsonify({"success": False, "error": error_msg}), 500
+        return jsonify({"success": False, "error": error_msg}), 400
 
 @app.route('/update_solid', methods=['POST'])
 def update_solid_route():
@@ -10171,6 +10173,8 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 if isinstance(p, list) and len(p) == 3:
                     p = {'x': str(p[0]), 'y': str(p[1]), 'z': str(p[2])}
 
+                p = normalize_primitive_solid_params(stype, p)
+
                 # Validate parameters against the solid type spec
                 if isinstance(p, dict):
                     spec = PRIMITIVE_SOLID_PARAM_SPECS.get(stype, {})
@@ -10189,8 +10193,6 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                         error_msg = f"Missing required parameters for {stype}: {missing_params}. Required: {required_params}"
                         logger.error(error_msg)
                         return {"success": False, "error": error_msg}
-
-                p = normalize_primitive_solid_params(stype, p)
 
                 if APP_MODE != 'production':
                     logger.debug(f"normalized params={p}")
@@ -11041,15 +11043,38 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
 
         elif tool_name == "get_analysis_summary":
             job_id = args['job_id']
-            version_id = pm.current_version_id
-            if not version_id:
-                return {"success": False, "error": "No active version."}
 
-            version_dir = pm._get_version_dir(version_id)
-            run_dir = os.path.join(version_dir, "sim_runs", job_id)
-            output_path = os.path.join(run_dir, "output.hdf5")
+            # Try current version first, then search all versions
+            output_path = None
+            found_version_id = None
+            for vid in ([pm.current_version_id] if pm.current_version_id else []):
+                if not vid:
+                    continue
+                vdir = pm._get_version_dir(vid)
+                rdir = os.path.join(vdir, "sim_runs", job_id)
+                opath = os.path.join(rdir, "output.hdf5")
+                if os.path.exists(opath):
+                    output_path = opath
+                    found_version_id = vid
+                    break
 
-            if not os.path.exists(output_path):
+            # If not found in current version, search all versions
+            if not output_path:
+                project_path = pm._get_project_path()
+                versions_path = os.path.join(project_path, "versions")
+                if os.path.isdir(versions_path):
+                    for vid in sorted(os.listdir(versions_path), reverse=True):
+                        vdir = os.path.join(versions_path, vid)
+                        if not os.path.isdir(vdir):
+                            continue
+                        rdir = os.path.join(vdir, "sim_runs", job_id)
+                        opath = os.path.join(rdir, "output.hdf5")
+                        if os.path.exists(opath):
+                            output_path = opath
+                            found_version_id = vid
+                            break
+
+            if not output_path:
                 return {"success": False, "error": "Simulation output not yet available."}
 
             try:
@@ -11081,7 +11106,7 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                         "total_hits": total_hits,
                         "particle_breakdown": particles,
                     }
-                    metadata = _load_simulation_run_metadata(pm, version_id, job_id)
+                    metadata = _load_simulation_run_metadata(pm, found_version_id, job_id)
                     environment_summary = _environment_summary_from_metadata(metadata)
                     if environment_summary is not None:
                         summary["environment_summary"] = environment_summary
@@ -11092,6 +11117,48 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                     }
             except Exception as e:
                 return {"success": False, "error": str(e)}
+
+        elif tool_name == "list_simulations":
+            limit = int(args.get("limit", 10))
+            status_filter = args.get("status_filter")
+
+            with SIMULATION_LOCK:
+                all_jobs = list(SIMULATION_STATUS.items())
+
+            # Sort by job creation time (newest first) — items dict preserves insertion order
+            all_jobs.reverse()
+
+            jobs = []
+            for job_id, status in all_jobs:
+                if len(jobs) >= limit:
+                    break
+                if status_filter and status.get('status') != status_filter:
+                    continue
+                jobs.append({
+                    "job_id": job_id,
+                    "status": status.get('status', 'Unknown'),
+                    "progress": status.get('progress', 0),
+                })
+
+            # Also check LATEST_COMPLETED_JOB_ID
+            if LATEST_COMPLETED_JOB_ID:
+                latest_found = False
+                for j in jobs:
+                    if j['job_id'] == LATEST_COMPLETED_JOB_ID:
+                        latest_found = True
+                        break
+                if not latest_found:
+                    jobs.insert(0, {
+                        "job_id": LATEST_COMPLETED_JOB_ID,
+                        "status": "Completed",
+                        "progress": 0,
+                    })
+
+            return {
+                "success": True,
+                "jobs": jobs,
+                "total": len(jobs),
+            }
 
         elif tool_name == "manage_optical_surface":
             name = args['name']
@@ -15925,10 +15992,16 @@ def import_step_with_options_route():
     try:
         # We need a new method in ProjectManager to handle this
         success, error_msg, import_report = pm.import_step_with_options(file, options)
-        if success:
+        if success and not error_msg:
             return create_success_response(
                 pm,
                 "STEP file imported successfully.",
+                extra_payload={"step_import_report": import_report}
+            )
+        elif success and error_msg:
+            return create_success_response(
+                pm,
+                error_msg,
                 extra_payload={"step_import_report": import_report}
             )
         else:
@@ -15986,6 +16059,27 @@ def realize_detector_feature_generator_route():
         pm,
         f"Detector feature generator '{generator_id}' regenerated.",
         extra_payload={"detector_feature_realization": result},
+    )
+
+@app.route('/api/detector_feature_generators/delete', methods=['POST'])
+def delete_detector_feature_generator_route():
+    pm = get_project_manager_for_session()
+
+    data = request.get_json(silent=True) or {}
+    generator_id = str(data.get('generator_id') or '').strip()
+    if not generator_id:
+        return jsonify({"success": False, "error": "generator_id is required."}), 400
+
+    success, payload = pm.delete_detector_feature_generator(generator_id)
+    if not success:
+        status_code = 404 if "was not found" in payload else 400
+        return jsonify({"success": False, "error": payload}), status_code
+
+    name = (payload or {}).get('name') or generator_id
+    return create_success_response(
+        pm,
+        f"Detector feature generator '{name}' deleted.",
+        extra_payload={"detector_feature_deletion": payload},
     )
 
 @app.route('/add_assembly', methods=['POST'])

@@ -24,6 +24,19 @@ export const SUPPORTED_SCORING_TALLY_QUANTITIES = [
 
 export const RUNTIME_READY_SCORING_QUANTITIES = ['energy_deposit', 'n_of_step'];
 
+export function hasSimulationHitsOutput(rawMetadata) {
+    const metadata = rawMetadata && typeof rawMetadata === 'object' ? rawMetadata : {};
+    const rawOutputFiles = metadata.run_manifest_summary?.output_files ?? metadata.output_files;
+
+    if (Array.isArray(rawOutputFiles)) {
+        return rawOutputFiles.find((entry) => entry?.role === 'hits')?.exists === true;
+    }
+    if (rawOutputFiles && typeof rawOutputFiles === 'object') {
+        return rawOutputFiles.hits?.exists === true;
+    }
+    return metadata.run_manifest_summary?.artifact_bundle?.source_output?.exists === true;
+}
+
 export const SCORING_SAVED_RUN_CONTROL_KEYS = [
     'threads',
     'seed1',
@@ -526,7 +539,7 @@ export function describeScoringMesh(rawMesh, rawScoringState) {
     return {
         title: mesh.name,
         statusBadge: mesh.enabled ? 'enabled' : 'disabled',
-        summary: `World box mesh · center ${formatNumber(mesh.geometry.center_mm.x)} x ${formatNumber(mesh.geometry.center_mm.y)} x ${formatNumber(mesh.geometry.center_mm.z)} mm · size ${formatNumber(mesh.geometry.size_mm.x)} x ${formatNumber(mesh.geometry.size_mm.y)} x ${formatNumber(mesh.geometry.size_mm.z)} mm · bins ${mesh.bins.x} x ${mesh.bins.y} x ${mesh.bins.z} · ${pluralize(enabledTallies.length, 'enabled tally')}`,
+        summary: `World box mesh · center ${formatNumber(mesh.geometry.center_mm.x)} x ${formatNumber(mesh.geometry.center_mm.y)} x ${formatNumber(mesh.geometry.center_mm.z)} mm · size ${formatNumber(mesh.geometry.size_mm.x)} x ${formatNumber(mesh.geometry.size_mm.y)} x ${formatNumber(mesh.geometry.size_mm.z)} mm · bins ${mesh.bins.x} x ${mesh.bins.y} x ${mesh.bins.z} · ${pluralize(enabledTallies.length, 'enabled tally', 'enabled tallies')}`,
     };
 }
 
@@ -536,7 +549,7 @@ export function describeScoringPanelState(projectState) {
     const enabledTallies = scoringState.tally_requests.filter((tally) => tally.enabled);
 
     return {
-        intro: `${pluralize(enabledMeshes.length, 'enabled scoring mesh')} across ${pluralize(enabledTallies.length, 'enabled tally request')}.`,
+        intro: `${pluralize(enabledMeshes.length, 'enabled scoring mesh', 'enabled scoring meshes')} across ${pluralize(enabledTallies.length, 'enabled tally request', 'enabled tally requests')}.`,
         hint: 'energy_deposit and n_of_step tallies currently emit runtime scoring artifacts. Other saved tallies remain editable here for upcoming runtime slices.',
         empty: 'No scoring meshes saved yet. Add one world-space box mesh to start a scoring study.',
         defaultExpandedIndex: scoringState.scoring_meshes.length === 1 ? 0 : -1,
@@ -891,7 +904,7 @@ export function describeScoringResultSummary(rawSummary) {
     }
 
     const detailLines = [
-        `${pluralize(summary.enabledMeshCount, 'enabled mesh')} · ${pluralize(summary.enabledTallyCount, 'enabled tally request')}`,
+        `${pluralize(summary.enabledMeshCount, 'enabled mesh', 'enabled meshes')} · ${pluralize(summary.enabledTallyCount, 'enabled tally request', 'enabled tally requests')}`,
         summary.bundleExists
             ? `Bundle: ${summary.bundlePath || 'scoring_artifacts.json'}`
             : 'Bundle: not recorded',

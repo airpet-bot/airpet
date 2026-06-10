@@ -15,10 +15,31 @@ import {
     describeScoringResultComparison,
     describeScoringResultSummary,
     formatScoringQuantityLabel,
+    hasSimulationHitsOutput,
     isMeshTallyEnabled,
     replaceScoringMesh,
     setMeshTallyEnabled,
 } from '../../static/scoringUi.js';
+
+test('simulation hits output detection supports manifest and legacy metadata shapes', () => {
+    assert.equal(hasSimulationHitsOutput({
+        run_manifest_summary: {
+            output_files: [
+                { role: 'metadata', exists: true },
+                { role: 'hits', exists: true },
+            ],
+        },
+    }), true);
+    assert.equal(hasSimulationHitsOutput({
+        run_manifest_summary: {
+            output_files: [{ role: 'hits', exists: false }],
+        },
+    }), false);
+    assert.equal(hasSimulationHitsOutput({
+        output_files: { hits: { exists: true } },
+    }), true);
+    assert.equal(hasSimulationHitsOutput({}), false);
+});
 
 test('adding a scoring mesh creates a default energy deposit tally and deterministic summary', () => {
     const nextState = buildScoringStateWithAddedMesh({
@@ -45,6 +66,36 @@ test('adding a scoring mesh creates a default energy deposit tally and determini
     assert.equal(
         panelState.hint,
         'energy_deposit and n_of_step tallies currently emit runtime scoring artifacts. Other saved tallies remain editable here for upcoming runtime slices.',
+    );
+});
+
+test('scoring summaries use irregular plurals for multiple meshes and tallies', () => {
+    const firstState = buildScoringStateWithAddedMesh({
+        scoring_meshes: [],
+        tally_requests: [],
+    });
+    const firstMesh = firstState.scoring_meshes[0];
+    const withTwoTallies = setMeshTallyEnabled(firstState, firstMesh, 'n_of_step', true);
+    const withTwoMeshes = buildScoringStateWithAddedMesh(withTwoTallies);
+
+    assert.match(
+        describeScoringMesh(firstMesh, withTwoMeshes).summary,
+        /2 enabled tallies$/,
+    );
+    assert.equal(
+        describeScoringPanelState({ scoring: withTwoMeshes }).intro,
+        '2 enabled scoring meshes across 3 enabled tally requests.',
+    );
+
+    const resultSummary = buildScoringResultSummary({
+        scoring_summary: {
+            enabled_mesh_count: 2,
+            enabled_tally_count: 3,
+        },
+    });
+    assert.equal(
+        describeScoringResultSummary(resultSummary).detailLines[0],
+        '2 enabled meshes · 3 enabled tally requests',
     );
 });
 
