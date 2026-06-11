@@ -979,6 +979,9 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
     if (typeof options.executionMode === 'string' && options.executionMode.trim()) {
         payload.execution_mode = options.executionMode.trim();
     }
+    if (Array.isArray(options.selectionContext) && options.selectionContext.length > 0) {
+        payload.selection_context = options.selectionContext;
+    }
     if (typeof options.studyInterpretationId === 'string' && options.studyInterpretationId.trim()) {
         payload.study_interpretation_id = options.studyInterpretationId.trim();
     }

@@ -103,7 +103,7 @@ def test_detector_study_ledger_persists_across_project_manager_restart(tmp_path)
     assert restored["phase"] == "BUILDING"
     assert restored["brief"]["requirements"] == ["Use G4_Si"]
     assert restored["brief"]["success_criteria"] == ["Record at least one hit"]
-    assert restored["schema_version"] == 2
+    assert restored["schema_version"] == 3
     assert restored["checkpoints"][0]["label"] == "Study intake baseline"
 
 
@@ -303,6 +303,132 @@ def test_detector_study_routes_create_and_continue_active_study(pm):
         cleared_response = client.delete("/api/ai/studies/active")
         assert cleared_response.status_code == 200
         assert pm.active_detector_study_id is None
+
+
+def test_detector_study_route_blocks_then_resolves_automatic_intake(pm):
+    pm.project_name = "automatic-intake"
+    app.config["TESTING"] = True
+    with (
+        app.test_client() as client,
+        patch("app.get_project_manager_for_session", return_value=pm),
+    ):
+        created_response = client.post("/api/ai/studies/ensure", json={
+            "goal": "Build a 4x4 detector array with 10 mm spacing and simulate it.",
+            "execution_mode": "full_study",
+        })
+        assert created_response.status_code == 200
+        created_payload = created_response.get_json()
+        study = created_payload["study"]
+
+        assert created_payload["requires_clarification"] is True
+        assert study["phase"] == "INTAKE"
+        assert len(study["intake"]["blocking_questions"]) == 3
+
+        answers = {
+            item["question_id"]: {
+                "source_particle_energy": "511 keV gamma",
+                "active_material": "silicon",
+                "spacing_semantics": "center-to-center pitch",
+            }[item["question_id"]]
+            for item in study["intake"]["blocking_questions"]
+        }
+        resolved_response = client.patch(
+            f"/api/ai/studies/{study['study_id']}",
+            json={
+                "action": "resolve_intake",
+                "goal": study["brief"]["goal"],
+                "requirements": study["brief"]["requirements"],
+                "assumptions": study["brief"]["assumptions"],
+                "success_criteria": study["brief"]["success_criteria"],
+                "answers": answers,
+            },
+        )
+        assert resolved_response.status_code == 200
+        resolved = resolved_response.get_json()["study"]
+
+        assert resolved["phase"] == "PLANNED"
+        assert resolved["intake"]["status"] == "ready"
+        assert any(
+            requirement
+            == "Use this particle source specification: 511 keV gamma."
+            for requirement in resolved["brief"]["requirements"]
+        )
+
+
+def test_detector_study_route_rejects_partial_intake_answers(pm):
+    pm.project_name = "partial-intake"
+    app.config["TESTING"] = True
+    with (
+        app.test_client() as client,
+        patch("app.get_project_manager_for_session", return_value=pm),
+    ):
+        created = client.post("/api/ai/studies/ensure", json={
+            "goal": "Build a detector and run it.",
+            "execution_mode": "full_study",
+        }).get_json()["study"]
+        first_question = created["intake"]["blocking_questions"][0]
+
+        response = client.patch(
+            f"/api/ai/studies/{created['study_id']}",
+            json={
+                "action": "resolve_intake",
+                "answers": {
+                    first_question["question_id"]: "1 MeV electron",
+                },
+            },
+        )
+
+        assert response.status_code == 400
+        assert "Answer all blocking questions" in response.get_json()["error"]
+
+
+@pytest.mark.parametrize(
+    ("route_path", "expected_status"),
+    [
+        ("/api/ai/chat", 409),
+        ("/api/ai/chat/stream", 200),
+    ],
+)
+def test_ai_chat_routes_block_unresolved_study_intake(
+    pm,
+    route_path,
+    expected_status,
+):
+    pm.project_name = "blocked-chat-intake"
+    study = pm.create_detector_study(
+        goal="Build a detector and run it.",
+        execution_mode="full_study",
+        intake={
+            "status": "needs_clarification",
+            "blocking_questions": [{
+                "question_id": "source_particle_energy",
+                "question": "What particle and energy should AIRPET simulate?",
+                "answer": None,
+                "resolved": False,
+            }],
+        },
+    )
+    app.config["TESTING"] = True
+    with (
+        app.test_client() as client,
+        patch("app.get_project_manager_for_session", return_value=pm),
+    ):
+        response = client.post(route_path, json={
+            "message": "Start building now.",
+            "execution_mode": "full_study",
+            "detector_study_id": study["study_id"],
+        })
+
+    assert response.status_code == expected_status
+    if route_path.endswith("/stream"):
+        payload_text = response.get_data(as_text=True)
+        assert '"error_type": "study_clarification_required"' in payload_text
+    else:
+        payload = response.get_json()
+        assert payload["error_type"] == "study_clarification_required"
+        assert payload["blocking_questions"][0]["question_id"] == (
+            "source_particle_energy"
+        )
 
 
 def test_detector_readout_macro_commands_round_trip_through_saved_version(pm, tmp_path):

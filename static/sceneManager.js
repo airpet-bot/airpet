@@ -18,6 +18,7 @@ import {
     buildVisualVerificationMetadata,
     resolveVisualVerificationViewSpecs,
 } from './visualVerificationPacket.js';
+import { halfLengthFromGdmlFullLength } from './primitiveDimensions.js';
 
 // We must extend the THREE.js objects with the BVH functionality.
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -905,7 +906,7 @@ export function createPrimitiveGeometry(solidData, projectState, csgEvaluator) {
             {
                 const rmin = p.rmin;
                 const rmax = p.rmax;
-                const halfZ = p.z / 2; // This should be the half-length
+                const halfZ = halfLengthFromGdmlFullLength(p.z);
                 const tanInnerStereo = Math.tan(p.inst);
                 const tanOuterStereo = Math.tan(p.outst);
 
@@ -1206,8 +1207,9 @@ export function createPrimitiveGeometry(solidData, projectState, csgEvaluator) {
             {
                 // 1. Create the basic tube geometry.
                 let tubeGeom;
+                const halfZ = halfLengthFromGdmlFullLength(p.z);
                 if (p.rmin <= 1e-9) { // Solid Cylinder
-                    tubeGeom = new THREE.CylinderGeometry(p.rmax, p.rmax, p.z * 2, 50, 1, false, p.startphi, p.deltaphi);
+                    tubeGeom = new THREE.CylinderGeometry(p.rmax, p.rmax, p.z, 50, 1, false, p.startphi, p.deltaphi);
 
                     // Need to do some rotations to obtain the same orientation as the hollow tube
                     tubeGeom.rotateX(-Math.PI / 2);
@@ -1219,9 +1221,9 @@ export function createPrimitiveGeometry(solidData, projectState, csgEvaluator) {
                     shape.lineTo(p.rmin * Math.cos(p.startphi + p.deltaphi), p.rmin * Math.sin(p.startphi + p.deltaphi));
                     shape.absarc(0, 0, p.rmin, p.startphi + p.deltaphi, p.startphi, true);
                     shape.closePath();
-                    const extrudeSettings = { steps: 1, depth: p.z * 2, bevelEnabled: false };
+                    const extrudeSettings = { steps: 1, depth: p.z, bevelEnabled: false };
                     tubeGeom = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-                    tubeGeom.translate(0, 0, -p.z);
+                    tubeGeom.translate(0, 0, -halfZ);
                 }
 
                 // G4CutTubs is aligned to Z axis, which matches our tube extrusion.
@@ -1280,9 +1282,11 @@ export function createPrimitiveGeometry(solidData, projectState, csgEvaluator) {
             break;
         case 'trd': // Trapezoid with parallel z-faces
             {
-                const dx1 = p.dx1; const dx2 = p.dx2;
-                const dy1 = p.dy1; const dy2 = p.dy2;
-                const dz = p.dz;
+                const dx1 = halfLengthFromGdmlFullLength(p.x1);
+                const dx2 = halfLengthFromGdmlFullLength(p.x2);
+                const dy1 = halfLengthFromGdmlFullLength(p.y1);
+                const dy2 = halfLengthFromGdmlFullLength(p.y2);
+                const dz = halfLengthFromGdmlFullLength(p.z);
 
                 const points = [
                     new THREE.Vector3(-dx1, -dy1, -dz), new THREE.Vector3(dx1, -dy1, -dz),
@@ -1353,9 +1357,13 @@ export function createPrimitiveGeometry(solidData, projectState, csgEvaluator) {
             break;
         case 'trap': // General Trapezoid
             {
-                const dz = p.z; const th = p.theta; const ph = p.phi;
-                const dy1 = p.y1; const dx1 = p.x1; const dx2 = p.x2;
-                const dy2 = p.y2; const dx3 = p.x3; const dx4 = p.x4;
+                const dz = halfLengthFromGdmlFullLength(p.z); const th = p.theta; const ph = p.phi;
+                const dy1 = halfLengthFromGdmlFullLength(p.y1);
+                const dx1 = halfLengthFromGdmlFullLength(p.x1);
+                const dx2 = halfLengthFromGdmlFullLength(p.x2);
+                const dy2 = halfLengthFromGdmlFullLength(p.y2);
+                const dx3 = halfLengthFromGdmlFullLength(p.x3);
+                const dx4 = halfLengthFromGdmlFullLength(p.x4);
                 const a1 = p.alpha1; const a2 = p.alpha2;
                 const tth_cp = Math.tan(th) * Math.cos(ph);
                 const tth_sp = Math.tan(th) * Math.sin(ph);
@@ -1380,14 +1388,14 @@ export function createPrimitiveGeometry(solidData, projectState, csgEvaluator) {
             {
                 // Both twistedbox and twistedtrd can be handled by the same logic.
                 // A twistedbox is just a twistedtrd with dx1=dx2 and dy1=dy2.
-                const dz = p.z;
+                const dz = halfLengthFromGdmlFullLength(p.z);
                 const phiTwist = p.PhiTwist;
 
                 // Define the 2D vertices for the bottom and top faces
-                const dx1 = p.x1 !== undefined ? p.x1 : p.x; // Use 'dx' for twistedbox
-                const dy1 = p.y1 !== undefined ? p.y1 : p.y;
-                const dx2 = p.x2 !== undefined ? p.x2 : p.x;
-                const dy2 = p.y2 !== undefined ? p.y2 : p.y;
+                const dx1 = halfLengthFromGdmlFullLength(p.x1 !== undefined ? p.x1 : p.x);
+                const dy1 = halfLengthFromGdmlFullLength(p.y1 !== undefined ? p.y1 : p.y);
+                const dx2 = halfLengthFromGdmlFullLength(p.x2 !== undefined ? p.x2 : p.x);
+                const dy2 = halfLengthFromGdmlFullLength(p.y2 !== undefined ? p.y2 : p.y);
 
                 const bottomVerts = [
                     new THREE.Vector2(-dx1, -dy1),
@@ -1442,9 +1450,13 @@ export function createPrimitiveGeometry(solidData, projectState, csgEvaluator) {
             break;
         case 'twistedtrap':
             {
-                const halfZ = p.z;
-                const y1 = p.y1; const x1 = p.x1; const x2 = p.x2;
-                const y2 = p.y2; const x3 = p.x3; const x4 = p.x4;
+                const halfZ = halfLengthFromGdmlFullLength(p.z);
+                const y1 = halfLengthFromGdmlFullLength(p.y1);
+                const x1 = halfLengthFromGdmlFullLength(p.x1);
+                const x2 = halfLengthFromGdmlFullLength(p.x2);
+                const y2 = halfLengthFromGdmlFullLength(p.y2);
+                const x3 = halfLengthFromGdmlFullLength(p.x3);
+                const x4 = halfLengthFromGdmlFullLength(p.x4);
                 const phiTwist = p.PhiTwist; // Twist angle
                 const theta = p.Theta; // Polar angle of line joining face centers
                 const phi = p.Phi; // Azimuthal angle of line joining face centers
@@ -1481,21 +1493,25 @@ export function createPrimitiveGeometry(solidData, projectState, csgEvaluator) {
             {
                 // This is a twisted trd, which is a twisted trapezoid with parallel x-y faces.
                 // It's a twistedbox with different dimensions at the top and bottom.
-                const dz = p.z; // half-length z
+                const dz = halfLengthFromGdmlFullLength(p.z);
                 const phiTwist = p.PhiTwist;
+                const x1 = halfLengthFromGdmlFullLength(p.x1);
+                const x2 = halfLengthFromGdmlFullLength(p.x2);
+                const y1 = halfLengthFromGdmlFullLength(p.y1);
+                const y2 = halfLengthFromGdmlFullLength(p.y2);
 
                 // Define the 2D vertices for the bottom (-z) and top (+z) faces
                 const bottomVerts = [
-                    new THREE.Vector2(-p.x1, -p.y1),
-                    new THREE.Vector2(p.x1, -p.y1),
-                    new THREE.Vector2(p.x1, p.y1),
-                    new THREE.Vector2(-p.x1, p.y1),
+                    new THREE.Vector2(-x1, -y1),
+                    new THREE.Vector2(x1, -y1),
+                    new THREE.Vector2(x1, y1),
+                    new THREE.Vector2(-x1, y1),
                 ];
                 const topVerts = [
-                    new THREE.Vector2(-p.x2, -p.y2),
-                    new THREE.Vector2(p.x2, -p.y2),
-                    new THREE.Vector2(p.x2, p.y2),
-                    new THREE.Vector2(-p.x2, p.y2),
+                    new THREE.Vector2(-x2, -y2),
+                    new THREE.Vector2(x2, -y2),
+                    new THREE.Vector2(x2, y2),
+                    new THREE.Vector2(-x2, y2),
                 ];
 
                 // The rendering algorithm is identical to twistedbox, just with different vertices.
@@ -1538,7 +1554,7 @@ export function createPrimitiveGeometry(solidData, projectState, csgEvaluator) {
                 // Get parameters from the solid editor
                 const rmin = p.endinnerrad;
                 const rmax = p.endouterrad;
-                const halfZ = p.zlen;
+                const halfZ = halfLengthFromGdmlFullLength(p.zlen);
                 const dphi = p.phi; // phi sector angle in radians
                 const twist = p.twistedangle; // total twist angle in radians
 

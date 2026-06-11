@@ -1435,7 +1435,8 @@ def test_ai_tool_create_tube_with_alias_params(pm):
     ep = s._evaluated_parameters
     assert ep['rmin'] == 70
     assert ep['rmax'] == 90
-    assert ep['z'] == 50
+    assert ep['z'] == 100
+    assert s.raw_parameters['z'] == "2*(50)"
     # 360 deg should map to 2*pi rad
     assert abs(ep['deltaphi'] - 6.283185307179586) < 1e-6
 
@@ -1458,7 +1459,8 @@ def test_ai_tool_create_tube_with_unit_suffix_and_camelcase(pm):
     ep = s._evaluated_parameters
     assert ep['rmin'] == 70
     assert ep['rmax'] == 90
-    assert ep['z'] == 50
+    assert ep['z'] == 100
+    assert s.raw_parameters['z'] == "2*((50)*mm)"
     assert abs(ep['deltaphi'] - 6.283185307179586) < 1e-6
 
 

@@ -34,7 +34,8 @@ import {
     normalizeHistoryDeleteSelection,
 } from './historyDeleteFlow.js';
 import * as UIManager from './uiManager.js';
-import * as AIAssistant from './aiAssistant.js?v=21';
+import * as AIAssistant from './aiAssistant.js?v=22';
+import { buildAiSelectionContext } from './aiSelectionContext.js';
 import { mergeProjectStateWithExclusions } from './projectStateMerge.js';
 import {
     buildResolvedSimulationOptions,
@@ -567,6 +568,9 @@ async function initializeApp() {
     // Initialize AI Assistant
     AIAssistant.init({
         onVisualVerificationPacketRequested: createVisualVerificationPacket,
+        getSelectionContext: () => buildAiSelectionContext(
+            AppState.selectedHierarchyItems,
+        ),
         onGeometryUpdate: async (result) => {
             let canonicalResult = null;
             if (result?.project_state || result?.scene_update) {

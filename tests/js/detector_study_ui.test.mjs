@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
     detectorStudySummaryText,
     normalizeDetectorStudy,
+    normalizeDetectorStudyIntake,
 } from '../../static/detectorStudyUi.js';
 
 test('normalizes running study progress from simulation events', () => {
@@ -69,5 +70,44 @@ test('summarizes a completed study awaiting model interpretation', () => {
     assert.equal(
         detectorStudySummaryText(study),
         '12 recorded hits - interpreting results',
+    );
+});
+
+test('normalizes at most three automatic study brief questions', () => {
+    const intake = normalizeDetectorStudyIntake({
+        status: 'needs_clarification',
+        blocking_questions: [
+            { question_id: 'source', question: 'Source?', answer: '' },
+            { question_id: 'material', question: 'Material?', answer: 'silicon' },
+            { question_id: 'spacing', question: 'Spacing?', answer: '' },
+            { question_id: 'extra', question: 'Extra?', answer: '' },
+        ],
+        defaults_applied: [{ field: 'simulation.events', value: 1000 }],
+    });
+
+    assert.equal(intake.blocking_questions.length, 3);
+    assert.equal(intake.unresolvedQuestions.length, 2);
+    assert.equal(intake.requiresClarification, true);
+    assert.equal(intake.defaults_applied.length, 1);
+});
+
+test('study summary prioritizes unresolved intake decisions', () => {
+    const study = normalizeDetectorStudy({
+        study_id: 'study-intake',
+        phase: 'INTAKE',
+        brief: { goal: 'Build and simulate a detector' },
+        intake: {
+            status: 'needs_clarification',
+            blocking_questions: [
+                { question_id: 'source', question: 'Source?', answer: '' },
+                { question_id: 'material', question: 'Material?', answer: '' },
+            ],
+        },
+    });
+
+    assert.equal(study.requiresClarification, true);
+    assert.equal(
+        detectorStudySummaryText(study),
+        '2 decisions needed before construction',
     );
 });

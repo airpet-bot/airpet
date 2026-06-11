@@ -127,7 +127,7 @@ PRIMITIVE_SOLID_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
         "properties": {
             "rmin": _expr_param("Inner radius (mm)"),
             "rmax": _expr_param("Outer radius (mm)"),
-            "z": _expr_param("Half-length in Z (mm)"),
+            "z": _expr_param("Full Z length (mm), matching the GDML tube z attribute"),
             "startphi": _expr_param("Start angle (e.g., 0*deg, default: 0)"),
             "deltaphi": _expr_param("Span angle (e.g., 360*deg, default: 360)")
         }
@@ -139,7 +139,7 @@ PRIMITIVE_SOLID_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
             "rmax1": _expr_param("Outer radius at -Z side (mm)"),
             "rmin2": _expr_param("Inner radius at +Z side (mm)"),
             "rmax2": _expr_param("Outer radius at +Z side (mm)"),
-            "z": _expr_param("Half-length in Z (mm)"),
+            "z": _expr_param("Full Z length (mm), matching the GDML cone z attribute"),
             "startphi": _expr_param("Start angle (e.g., 0*deg, default: 0)"),
             "deltaphi": _expr_param("Span angle (e.g., 360*deg, default: 360)")
         }
@@ -164,10 +164,10 @@ PRIMITIVE_SOLID_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
     "trd": {
         "required": ["x1", "x2", "y1", "y2", "z"],
         "properties": {
-            "x1": _expr_param("X length at -Z side (mm)"),
-            "x2": _expr_param("X length at +Z side (mm)"),
-            "y1": _expr_param("Y length at -Z side (mm)"),
-            "y2": _expr_param("Y length at +Z side (mm)"),
+            "x1": _expr_param("Full X length at -Z side (mm)"),
+            "x2": _expr_param("Full X length at +Z side (mm)"),
+            "y1": _expr_param("Full Y length at -Z side (mm)"),
+            "y2": _expr_param("Full Y length at +Z side (mm)"),
             "z": _expr_param("Full Z length (mm)")
         }
     },
@@ -188,13 +188,13 @@ PRIMITIVE_SOLID_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
             "z": _expr_param("Full Z length (mm)"),
             "theta": _expr_param("Theta angle (default: 0*deg)"),
             "phi": _expr_param("Phi angle (default: 0*deg)"),
-            "y1": _expr_param("Y length at -Z side (mm)"),
-            "x1": _expr_param("X1 at -Z side (mm)"),
-            "x2": _expr_param("X2 at -Z side (mm)"),
+            "y1": _expr_param("Full Y length at -Z side (mm)"),
+            "x1": _expr_param("Full X length at -Z, -Y edge (mm)"),
+            "x2": _expr_param("Full X length at -Z, +Y edge (mm)"),
             "alpha1": _expr_param("Alpha1 angle (default: 0*deg)"),
-            "y2": _expr_param("Y length at +Z side (mm)"),
-            "x3": _expr_param("X3 at +Z side (mm)"),
-            "x4": _expr_param("X4 at +Z side (mm)"),
+            "y2": _expr_param("Full Y length at +Z side (mm)"),
+            "x3": _expr_param("Full X length at +Z, -Y edge (mm)"),
+            "x4": _expr_param("Full X length at +Z, +Y edge (mm)"),
             "alpha2": _expr_param("Alpha2 angle (default: 0*deg)")
         }
     },
@@ -205,7 +205,7 @@ PRIMITIVE_SOLID_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
             "rmax": _expr_param("Outer radius at z=0 (mm)"),
             "inst": _expr_param("Inner stereo angle"),
             "outst": _expr_param("Outer stereo angle"),
-            "z": _expr_param("Half-length in Z (mm)")
+            "z": _expr_param("Full Z length (mm), matching the GDML hype z attribute")
         }
     },
     "twistedbox": {
@@ -220,10 +220,10 @@ PRIMITIVE_SOLID_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
     "twistedtrd": {
         "required": ["x1", "x2", "y1", "y2", "z", "PhiTwist"],
         "properties": {
-            "x1": _expr_param("X length at -Z side (mm)"),
-            "x2": _expr_param("X length at +Z side (mm)"),
-            "y1": _expr_param("Y length at -Z side (mm)"),
-            "y2": _expr_param("Y length at +Z side (mm)"),
+            "x1": _expr_param("Full X length at -Z side (mm)"),
+            "x2": _expr_param("Full X length at +Z side (mm)"),
+            "y1": _expr_param("Full Y length at -Z side (mm)"),
+            "y2": _expr_param("Full Y length at +Z side (mm)"),
             "z": _expr_param("Full Z length (mm)"),
             "PhiTwist": _expr_param("Twist angle")
         }
@@ -235,12 +235,12 @@ PRIMITIVE_SOLID_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
             "z": _expr_param("Full Z length (mm)"),
             "Theta": _expr_param("Theta angle"),
             "Phi": _expr_param("Phi angle"),
-            "y1": _expr_param("Y length at -Z side (mm)"),
-            "x1": _expr_param("X1 at -Z side (mm)"),
-            "x2": _expr_param("X2 at -Z side (mm)"),
-            "y2": _expr_param("Y length at +Z side (mm)"),
-            "x3": _expr_param("X3 at +Z side (mm)"),
-            "x4": _expr_param("X4 at +Z side (mm)"),
+            "y1": _expr_param("Full Y length at -Z side (mm)"),
+            "x1": _expr_param("Full X length at -Z, -Y edge (mm)"),
+            "x2": _expr_param("Full X length at -Z, +Y edge (mm)"),
+            "y2": _expr_param("Full Y length at +Z side (mm)"),
+            "x3": _expr_param("Full X length at +Z, -Y edge (mm)"),
+            "x4": _expr_param("Full X length at +Z, +Y edge (mm)"),
             "Alph": _expr_param("Alpha angle")
         }
     },
@@ -250,7 +250,7 @@ PRIMITIVE_SOLID_PARAM_SPECS: Dict[str, Dict[str, Any]] = {
             "twistedangle": _expr_param("Twist angle"),
             "endinnerrad": _expr_param("Inner radius at endcaps (mm)"),
             "endouterrad": _expr_param("Outer radius at endcaps (mm)"),
-            "zlen": _expr_param("Full Z length (mm)"),
+            "zlen": _expr_param("Full Z length (mm), matching the GDML twistedtubs zlen attribute"),
             "phi": _expr_param("Angular span")
         }
     },
@@ -350,6 +350,7 @@ def _build_create_primitive_solid_parameters() -> Dict[str, Any]:
                 "properties": all_param_props,
                 "description": (
                     "Canonical GDML-style params for the selected solid_type. "
+                    "Fields described as full lengths must not be supplied as Geant4 constructor half-lengths. "
                     f"Required keys by solid_type: {required_by_type}"
                 )
             }
@@ -809,6 +810,36 @@ AI_GEOMETRY_TOOLS = [
             },
             "required": ["component_type", "name"]
         }
+    },
+    {
+        "name": "inspect_geometry_focus",
+        "description": (
+            "Inspect one solid, logical volume, or physical-volume placement through a compact, instance-aware "
+            "geometry report. Returns full object IDs and hierarchy paths, raw/evaluated solid dimensions, local "
+            "and world transforms, evaluated bounding boxes, material and sensitive-detector state, parents, "
+            "children, nearby components, and focused overlap/containment concerns. Prefer this over the full "
+            "component JSON before or after non-trivial spatial edits. If a physical-volume name is ambiguous, "
+            "the report returns all matching canonical IDs and live instances."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "component_type": {
+                    "type": "string",
+                    "enum": ["auto", "solid", "logical_volume", "physical_volume"],
+                    "description": "Component type. Use auto when only a user-visible name or ID is known.",
+                },
+                "reference": {
+                    "type": "string",
+                    "description": "Solid/LV name, or preferably the full physical-volume UUID.",
+                },
+                "nearby_limit": {
+                    "type": "integer",
+                    "description": "Maximum nearby components to return, from 0 to 20. Defaults to 6.",
+                },
+            },
+            "required": ["reference"],
+        },
     },
     {
         "name": "update_property",

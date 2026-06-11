@@ -1653,6 +1653,14 @@
             background: #fff7ed;
         }
 
+        .ai-study-card.needs-clarification {
+            border-color: #fcd34d;
+            border-left-color: #d97706;
+            background:
+                linear-gradient(135deg, rgba(255, 251, 235, 0.96), rgba(248, 250, 252, 0.98)),
+                repeating-linear-gradient(90deg, transparent 0 20px, rgba(217, 119, 6, 0.04) 20px 21px);
+        }
+
         .ai-study-card.complete {
             border-color: #bbf7d0;
             border-left-color: #16a34a;
@@ -1725,6 +1733,105 @@
         .ai-study-actions button:disabled {
             cursor: default;
             opacity: 0.45;
+        }
+
+        .ai-study-brief-panel {
+            margin-top: 9px;
+            padding: 9px;
+            border: 1px solid rgba(14, 116, 144, 0.18);
+            border-radius: 9px;
+            background: rgba(255, 255, 255, 0.78);
+        }
+
+        .ai-study-brief-panel[hidden] {
+            display: none;
+        }
+
+        .ai-study-brief-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 7px;
+        }
+
+        .ai-study-brief-field {
+            display: grid;
+            gap: 3px;
+            color: #475569;
+            font-size: 10px;
+            font-weight: 700;
+        }
+
+        .ai-study-brief-field:first-child {
+            grid-column: 1 / -1;
+        }
+
+        .ai-study-brief-field textarea {
+            min-height: 44px;
+            resize: vertical;
+            border: 1px solid #cbd5e1;
+            border-radius: 7px;
+            background: #fff;
+            color: #0f172a;
+            padding: 6px 7px;
+            font: 11px/1.35 "IBM Plex Sans", sans-serif;
+        }
+
+        #ai_study_blocking_questions {
+            display: grid;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        .ai-study-question {
+            display: grid;
+            gap: 3px;
+            padding: 7px;
+            border-left: 3px solid #d97706;
+            border-radius: 6px;
+            background: #fffbeb;
+        }
+
+        .ai-study-question label {
+            color: #78350f;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .ai-study-question small {
+            color: #92400e;
+            font-size: 9px;
+        }
+
+        .ai-study-question input {
+            border: 1px solid #fbbf24;
+            border-radius: 6px;
+            padding: 6px 7px;
+            color: #0f172a;
+            font: 11px "IBM Plex Sans", sans-serif;
+        }
+
+        .ai-study-brief-footer {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        #ai_study_brief_status {
+            flex: 1;
+            color: #64748b;
+            font-size: 10px;
+        }
+
+        #ai_study_brief_confirm {
+            border: 1px solid #0e7490;
+            border-radius: 999px;
+            background: #0e7490;
+            color: #fff;
+            cursor: pointer;
+            padding: 5px 10px;
+            font-size: 10px;
+            font-weight: 700;
         }
 
         #ai_study_report_panel {
@@ -4247,8 +4354,34 @@
                             <div class="ai-study-actions">
                                 <button id="ai_study_pause" type="button">Pause</button>
                                 <button id="ai_study_undo_phase" type="button">Undo phase</button>
+                                <button id="ai_study_brief_toggle" type="button">Review brief</button>
                                 <button id="ai_study_interpret" type="button" hidden>Retry interpretation</button>
                                 <button id="ai_study_report_toggle" type="button" hidden>View report</button>
+                            </div>
+                            <div id="ai_study_brief_panel" class="ai-study-brief-panel" hidden>
+                                <div class="ai-study-brief-grid">
+                                    <label class="ai-study-brief-field">
+                                        Goal
+                                        <textarea id="ai_study_brief_goal"></textarea>
+                                    </label>
+                                    <label class="ai-study-brief-field">
+                                        Requirements, one per line
+                                        <textarea id="ai_study_brief_requirements"></textarea>
+                                    </label>
+                                    <label class="ai-study-brief-field">
+                                        Assumptions, one per line
+                                        <textarea id="ai_study_brief_assumptions"></textarea>
+                                    </label>
+                                    <label class="ai-study-brief-field">
+                                        Success criteria, one per line
+                                        <textarea id="ai_study_brief_criteria"></textarea>
+                                    </label>
+                                </div>
+                                <div id="ai_study_blocking_questions"></div>
+                                <div class="ai-study-brief-footer">
+                                    <span id="ai_study_brief_status"></span>
+                                    <button id="ai_study_brief_confirm" type="button">Save and continue</button>
+                                </div>
                             </div>
                             <pre id="ai_study_report_panel" hidden></pre>
                         </div>

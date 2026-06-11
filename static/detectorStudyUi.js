@@ -3,6 +3,43 @@ export const DETECTOR_STUDY_TERMINAL_PHASES = new Set([
     'NEEDS_ATTENTION',
 ]);
 
+export function normalizeDetectorStudyIntake(intake) {
+    const normalized = intake && typeof intake === 'object' ? intake : {};
+    const blockingQuestions = Array.isArray(normalized.blocking_questions)
+        ? normalized.blocking_questions
+            .filter((item) => item && typeof item === 'object')
+            .slice(0, 3)
+            .map((item) => ({
+                ...item,
+                question_id: String(item.question_id || ''),
+                question: String(item.question || ''),
+                reason: String(item.reason || ''),
+                answer_hint: String(item.answer_hint || ''),
+                answer: String(item.answer || ''),
+                resolved: Boolean(item.resolved || item.answer),
+            }))
+        : [];
+    const unresolvedQuestions = blockingQuestions.filter(
+        (item) => !item.resolved,
+    );
+    return {
+        ...normalized,
+        status: String(normalized.status || 'ready'),
+        blocking_questions: blockingQuestions,
+        unresolvedQuestions,
+        requiresClarification: (
+            normalized.status === 'needs_clarification'
+            && unresolvedQuestions.length > 0
+        ),
+        defaults_applied: Array.isArray(normalized.defaults_applied)
+            ? normalized.defaults_applied
+            : [],
+        inferred: normalized.inferred && typeof normalized.inferred === 'object'
+            ? normalized.inferred
+            : {},
+    };
+}
+
 const PHASE_LABELS = {
     INTAKE: 'Intake',
     PLANNED: 'Planning',
@@ -49,6 +86,7 @@ export function normalizeDetectorStudy(study) {
     const report = study.report && typeof study.report === 'object'
         ? study.report
         : null;
+    const intake = normalizeDetectorStudyIntake(study.intake);
 
     let progress = PHASE_PROGRESS[phase] ?? 0;
     if (phase === 'RUNNING' && simulation) {
@@ -70,6 +108,8 @@ export function normalizeDetectorStudy(study) {
         analysis,
         coordinator,
         report,
+        intake,
+        requiresClarification: intake.requiresClarification,
         checkpoints: Array.isArray(study.checkpoints) ? study.checkpoints : [],
         paused: phase === 'PAUSED' || coordinator.status === 'paused',
     };
@@ -78,6 +118,10 @@ export function normalizeDetectorStudy(study) {
 export function detectorStudySummaryText(study) {
     const normalized = normalizeDetectorStudy(study);
     if (!normalized) return '';
+    if (normalized.requiresClarification) {
+        const count = normalized.intake.unresolvedQuestions.length;
+        return `${count} decision${count === 1 ? '' : 's'} needed before construction`;
+    }
     if (normalized.phase === 'RUNNING' && normalized.simulation) {
         const completed = Number(normalized.simulation.progress || 0);
         const total = Number(normalized.simulation.total_events || 0);

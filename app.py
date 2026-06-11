@@ -86,6 +86,10 @@ from src.ai_artifact_store import (
     AIArtifactStore,
     AIArtifactValidationError,
 )
+from src.detector_study_intake import (
+    build_detector_study_intake,
+    resolve_detector_study_intake,
+)
 from src.ai_multimodal_extraction_schema import (
     AIMultimodalSchemaValidationError,
     MULTIMODAL_EXTRACTION_SCHEMA_VERSION,
@@ -9478,8 +9482,6 @@ PRIMITIVE_SOLID_PARAM_ALIASES = {
     "tube": {
         "innerradius": "rmin",
         "outerradius": "rmax",
-        "halfz": "z",
-        "halflength": "z",
         "zlen": "z",
         "startangle": "startphi",
         "spanangle": "deltaphi"
@@ -9491,9 +9493,6 @@ PRIMITIVE_SOLID_PARAM_ALIASES = {
         "outerradius2": "rmax2",
         "rmin": "rmin1",
         "rmax": "rmax1",
-        "dz": "z",
-        "halfz": "z",
-        "halflength": "z",
         "zlen": "z",
         "sphi": "startphi",
         "dphi": "deltaphi",
@@ -9508,6 +9507,20 @@ PRIMITIVE_SOLID_PARAM_ALIASES = {
         "startpolarangle": "starttheta",
         "spanpolarangle": "deltatheta"
     }
+}
+
+# These aliases use Geant4 constructor-style half-lengths. AIRPET's canonical
+# GDML fields are full lengths, so normalize them with an explicit factor of 2.
+PRIMITIVE_SOLID_HALF_LENGTH_ALIASES = {
+    "tube": {
+        "halfz": "z",
+        "halflength": "z",
+    },
+    "cone": {
+        "dz": "z",
+        "halfz": "z",
+        "halflength": "z",
+    },
 }
 
 ANGLE_PARAM_NAMES = {"startphi", "deltaphi", "starttheta", "deltatheta", "theta", "phi", "alpha", "inst", "outst", "twistedangle", "phitwist", "alph"}
@@ -9553,8 +9566,10 @@ def normalize_primitive_solid_params(solid_type: Any, raw_params: Any) -> Any:
 
     st = str(solid_type or '').strip()
     aliases = PRIMITIVE_SOLID_PARAM_ALIASES.get(st, {})
+    half_length_aliases = PRIMITIVE_SOLID_HALF_LENGTH_ALIASES.get(st, {})
 
     mapped = dict(raw_params)
+    half_length_targets = set()
 
     # 1) Canonicalize key casing/format against the selected solid spec.
     spec = PRIMITIVE_SOLID_PARAM_SPECS.get(st, {})
@@ -9567,19 +9582,29 @@ def normalize_primitive_solid_params(solid_type: Any, raw_params: Any) -> Any:
         if canonical_key and canonical_key not in mapped:
             mapped[canonical_key] = value
 
-    # 2) Apply common alias mappings (innerRadius->rmin, halfZ->z, ...)
+    # 2) Apply aliases that preserve the canonical parameter's meaning.
     for key, value in raw_params.items():
         target = aliases.get(_normalize_param_alias_key(key))
         if target and target not in mapped:
             mapped[target] = value
 
-    # 3) Normalize numeric-with-unit shortcuts and angle defaults.
+    # 3) Map explicitly named half-length aliases to canonical full-length fields.
+    for key, value in raw_params.items():
+        target = half_length_aliases.get(_normalize_param_alias_key(key))
+        if target and target not in mapped:
+            mapped[target] = value
+            half_length_targets.add(target)
+
+    # 4) Normalize numeric-with-unit shortcuts and angle defaults.
     for k in list(mapped.keys()):
         mapped[k] = _coerce_unit_expr_if_bare_number(mapped[k])
         if _normalize_param_alias_key(k) in ANGLE_PARAM_NAMES:
             mapped[k] = _coerce_angle_expr_if_bare_number(mapped[k])
 
-    # 4) Apply solid-type specific defaults
+    for target in half_length_targets:
+        mapped[target] = f"2*({mapped[target]})"
+
+    # 5) Apply solid-type specific defaults
     if st == "cone":
         if "startphi" not in mapped:
             mapped["startphi"] = "0*deg"
@@ -10146,7 +10171,18 @@ def _detector_study_launch_gate(
         return {"allowed": True, "reason": None}
 
     coordinator = study.get("coordinator") or {}
+    intake = study.get("intake") or {}
     phase = str(study.get("phase") or "").upper()
+    if intake.get("status") == "needs_clarification":
+        return {
+            "allowed": False,
+            "reason": "study_clarification_required",
+            "message": (
+                "Confirm the automatic study brief before launching a simulation."
+            ),
+            "study_id": study.get("study_id"),
+            "blocking_questions": intake.get("blocking_questions") or [],
+        }
     if phase == "PAUSED" or coordinator.get("status") == "paused":
         return {
             "allowed": False,
@@ -10465,16 +10501,31 @@ def _active_detector_study_context(pm: ProjectManager) -> str:
         return ""
     brief = study.get("brief") if isinstance(study.get("brief"), dict) else {}
     coordinator = study.get("coordinator") or {}
+    intake = study.get("intake") or {}
     analysis = study.get("analysis") or {}
     report = study.get("report") or {}
     success_criteria = brief.get("success_criteria") or []
+    clarification_answers = [
+        {
+            "question_id": item.get("question_id"),
+            "answer": item.get("answer"),
+        }
+        for item in intake.get("blocking_questions") or []
+        if isinstance(item, dict) and item.get("answer")
+    ]
     return (
         "\n\n## Active AIRPET Detector Study\n"
         f"Study ID: {study.get('study_id')}\n"
         f"Execution mode: {study.get('execution_mode')}\n"
         f"Workflow phase: {study.get('phase')}\n"
         f"Goal: {brief.get('goal', '')}\n"
+        f"Requirements: {json.dumps(brief.get('requirements') or [])}\n"
+        f"Assumptions: {json.dumps(brief.get('assumptions') or [])}\n"
         f"Success criteria: {json.dumps(success_criteria)}\n"
+        f"Intake status: {intake.get('status', 'ready')}\n"
+        f"Inferred study settings: {json.dumps(intake.get('inferred') or {})}\n"
+        f"Applied defaults: {json.dumps(intake.get('defaults_applied') or [])}\n"
+        f"Clarification answers: {json.dumps(clarification_answers)}\n"
         f"Geometry revision: {coordinator.get('geometry_revision', 0)}\n"
         f"Visual verified revision: {coordinator.get('visual_verified_revision')}\n"
         f"Preflight repair attempts: {coordinator.get('repair_attempts', 0)}"
@@ -10485,6 +10536,165 @@ def _active_detector_study_context(pm: ProjectManager) -> str:
         "AIRPET owns the phase gates, will require visual verification of the "
         "current revision before a full-study launch, will run preflight, and "
         "will automatically link, monitor, analyze, and report the simulation."
+    )
+
+
+AI_SELECTION_CONTEXT_MAX_ITEMS = 12
+AI_SELECTION_CONTEXT_TYPES = {
+    "define",
+    "material",
+    "solid",
+    "logical_volume",
+    "assembly",
+    "particle_source",
+    "physical_volume",
+}
+
+
+def _compact_ai_selection_details(
+    component_type: str,
+    details: Dict[str, Any],
+) -> Dict[str, Any]:
+    if component_type == "physical_volume":
+        keys = (
+            "volume_ref",
+            "parent_lv_name",
+            "copy_number",
+            "copy_number_expr",
+            "position",
+            "rotation",
+            "scale",
+            "_evaluated_position",
+            "_evaluated_rotation",
+            "_evaluated_scale",
+        )
+    elif component_type == "logical_volume":
+        keys = (
+            "solid_ref",
+            "material_ref",
+            "is_sensitive",
+            "content_type",
+        )
+    elif component_type == "solid":
+        keys = ("type", "raw_parameters", "_evaluated_parameters")
+    elif component_type == "material":
+        keys = (
+            "mat_type",
+            "density_expr",
+            "_evaluated_density",
+            "state",
+            "components",
+        )
+    elif component_type == "define":
+        keys = ("type", "raw_expression", "value", "unit", "category")
+    elif component_type == "particle_source":
+        gps_commands = details.get("gps_commands") or {}
+        return {
+            "active": bool(details.get("active")),
+            "source_type": details.get("source_type"),
+            "particle": gps_commands.get("particle"),
+            "energy": gps_commands.get("energy"),
+            "position": details.get("position"),
+            "rotation": details.get("rotation"),
+            "confine_to_pv": details.get("confine_to_pv"),
+            "volume_link_id": details.get("volume_link_id"),
+        }
+    elif component_type == "assembly":
+        placements = details.get("placements") or []
+        return {
+            "placement_count": len(placements),
+            "placements": [
+                {
+                    "id": item.get("id"),
+                    "name": item.get("name"),
+                    "volume_ref": item.get("volume_ref"),
+                }
+                for item in placements[:12]
+                if isinstance(item, dict)
+            ],
+        }
+    else:
+        keys = ()
+
+    return {
+        key: deepcopy(details.get(key))
+        for key in keys
+        if key in details
+    }
+
+
+def _resolve_ai_selection_context(
+    pm: ProjectManager,
+    raw_selection: Any,
+) -> List[Dict[str, Any]]:
+    if not isinstance(raw_selection, list):
+        return []
+
+    resolved = []
+    seen = set()
+    active_source_ids = set(
+        pm.current_geometry_state.active_source_ids or []
+    )
+    for raw_item in raw_selection[:AI_SELECTION_CONTEXT_MAX_ITEMS]:
+        if not isinstance(raw_item, dict):
+            continue
+        component_type = str(
+            raw_item.get("component_type") or raw_item.get("type") or ""
+        ).strip()
+        if component_type not in AI_SELECTION_CONTEXT_TYPES:
+            continue
+
+        raw_id = str(raw_item.get("id") or "").strip()
+        raw_name = str(raw_item.get("name") or "").strip()
+        lookup_ref = raw_id or raw_name
+        if not lookup_ref:
+            continue
+
+        details = pm.get_object_details(component_type, lookup_ref)
+        if not isinstance(details, dict):
+            continue
+
+        if component_type == "particle_source":
+            details = deepcopy(details)
+            details["active"] = details.get("id") in active_source_ids
+
+        canonical_name = str(details.get("name") or raw_name or lookup_ref)
+        if component_type in {"physical_volume", "particle_source"}:
+            tool_reference = str(details.get("id") or lookup_ref)
+        else:
+            tool_reference = canonical_name
+        dedupe_key = (component_type, tool_reference)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        resolved.append({
+            "component_type": component_type,
+            "tool_reference": tool_reference,
+            "name": canonical_name,
+            "object_uuid": details.get("id"),
+            "details": _compact_ai_selection_details(
+                component_type,
+                details,
+            ),
+        })
+
+    return resolved
+
+
+def _format_ai_selection_context(
+    selection_context: List[Dict[str, Any]],
+) -> str:
+    if not selection_context:
+        return ""
+    return (
+        "\n\n## Current AIRPET UI Selection\n"
+        "These objects were selected in the hierarchy when the user sent this "
+        "message. Resolve words such as 'this', 'that', or 'the selected part' "
+        "against this list. Use tool_reference exactly when a tool requires an "
+        "object name or ID, and still inspect the selected component before "
+        "modifying it.\n"
+        f"{json.dumps(selection_context, default=str)}"
     )
 
 
@@ -10571,7 +10781,702 @@ def _record_detector_study_tool_activity(
             pass
 
 
-def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+AI_VERIFIED_EDIT_TOOLS = {
+    "update_property",
+    "manage_define",
+    "manage_material",
+    "modify_solid",
+    "manage_logical_volume",
+    "modify_physical_volume",
+    "set_volume_appearance",
+    "configure_detector_readout",
+}
+
+AI_READOUT_RECEIPT_KEYS = (
+    "save_hits",
+    "save_hit_metadata",
+    "hit_selection_mode",
+    "hit_target_sensitive_detectors",
+    "hit_target_logical_volumes",
+    "hit_target_physical_volumes",
+    "hit_minimum_multiplicity",
+    "hit_energy_threshold",
+)
+
+
+def _receipt_json_value(value: Any) -> Any:
+    return json.loads(json.dumps(value, default=str))
+
+
+def _receipt_nested_value(value: Any, property_path: str) -> Any:
+    current = value
+    for part in str(property_path or "").split("."):
+        if not part:
+            return None
+        if isinstance(current, dict):
+            if part not in current:
+                return None
+            current = current[part]
+        else:
+            return None
+    return _receipt_json_value(current)
+
+
+def _ai_edit_receipt_spec(
+    tool_name: str,
+    args: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if tool_name not in AI_VERIFIED_EDIT_TOOLS:
+        return None
+
+    if tool_name == "update_property":
+        return {
+            "component_type": args.get("object_type"),
+            "tool_reference": args.get("object_id"),
+            "property_path": args.get("property_path"),
+            "requested": {
+                str(args.get("property_path") or "value"): args.get("new_value"),
+            },
+        }
+    if tool_name == "modify_solid":
+        return {
+            "component_type": "solid",
+            "tool_reference": args.get("name"),
+            "requested": {"raw_parameters": args.get("params")},
+        }
+    if tool_name == "modify_physical_volume":
+        requested = {
+            key: args.get(key)
+            for key in ("name", "position", "rotation", "scale")
+            if key in args and args.get(key) is not None
+        }
+        return {
+            "component_type": "physical_volume",
+            "tool_reference": args.get("pv_id"),
+            "requested": requested,
+        }
+    if tool_name == "manage_logical_volume":
+        requested = {
+            key: args.get(key)
+            for key in (
+                "solid_ref",
+                "material_ref",
+                "is_sensitive",
+                "color",
+                "opacity",
+            )
+            if key in args
+        }
+        return {
+            "component_type": "logical_volume",
+            "tool_reference": args.get("name"),
+            "requested": requested,
+        }
+    if tool_name == "manage_define":
+        requested = {
+            key: args.get(key)
+            for key in ("define_type", "value", "unit")
+            if key in args
+        }
+        return {
+            "component_type": "define",
+            "tool_reference": args.get("name"),
+            "requested": requested,
+        }
+    if tool_name == "manage_material":
+        requested = {
+            key: args.get(key)
+            for key in (
+                "density",
+                "z",
+                "Z",
+                "a",
+                "A",
+                "state",
+                "components",
+            )
+            if key in args
+        }
+        return {
+            "component_type": "material",
+            "tool_reference": args.get("name"),
+            "requested": requested,
+        }
+    if tool_name == "set_volume_appearance":
+        return {
+            "component_type": "logical_volume",
+            "tool_reference": args.get("name"),
+            "requested": {
+                key: args.get(key)
+                for key in ("color", "opacity")
+                if key in args
+            },
+        }
+    if tool_name == "configure_detector_readout":
+        if str(args.get("action") or "set").strip().lower() == "get":
+            return None
+        return {
+            "component_type": "scoring",
+            "tool_reference": "scoring_state",
+            "state_kind": "detector_readout",
+            "requested": {
+                key: args.get(key)
+                for key in (
+                    "hit_selection_mode",
+                    "target_sensitive_detectors",
+                    "target_logical_volumes",
+                    "target_physical_volumes",
+                    "minimum_hit_count",
+                    "hit_energy_threshold",
+                    "mark_targets_sensitive",
+                )
+                if key in args
+            },
+        }
+    return None
+
+
+def _capture_ai_edit_receipt_state(
+    pm: ProjectManager,
+    spec: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not spec:
+        return None
+
+    component_type = str(spec.get("component_type") or "")
+    tool_reference = str(spec.get("tool_reference") or "")
+    if not component_type or not tool_reference:
+        return None
+
+    details = pm.get_object_details(component_type, tool_reference)
+    if not isinstance(details, dict):
+        return None
+
+    if spec.get("state_kind") == "detector_readout":
+        defaults = details.get("run_manifest_defaults") or {}
+        return {
+            key: _receipt_json_value(defaults.get(key))
+            for key in AI_READOUT_RECEIPT_KEYS
+        }
+
+    property_path = spec.get("property_path")
+    if property_path:
+        property_root = details
+        if component_type == "environment":
+            property_root = details.get(tool_reference) or {}
+        return {
+            str(property_path): _receipt_nested_value(
+                property_root,
+                str(property_path),
+            ),
+        }
+
+    if component_type == "physical_volume":
+        keys = (
+            "name",
+            "volume_ref",
+            "parent_lv_name",
+            "position",
+            "rotation",
+            "scale",
+            "_evaluated_position",
+            "_evaluated_rotation",
+            "_evaluated_scale",
+        )
+    elif component_type == "solid":
+        keys = ("type", "raw_parameters", "_evaluated_parameters")
+    elif component_type == "logical_volume":
+        keys = (
+            "solid_ref",
+            "material_ref",
+            "is_sensitive",
+            "vis_attributes",
+        )
+    elif component_type == "define":
+        keys = ("type", "raw_expression", "value", "unit", "category")
+    elif component_type == "material":
+        keys = (
+            "mat_type",
+            "Z_expr",
+            "A_expr",
+            "density_expr",
+            "_evaluated_Z",
+            "_evaluated_A",
+            "_evaluated_density",
+            "state",
+            "components",
+        )
+    else:
+        keys = ()
+
+    return {
+        key: _receipt_json_value(details.get(key))
+        for key in keys
+        if key in details
+    }
+
+
+def _build_ai_edit_receipt(
+    pm: ProjectManager,
+    tool_name: str,
+    spec: Optional[Dict[str, Any]],
+    before: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not spec:
+        return None
+
+    after = _capture_ai_edit_receipt_state(pm, spec)
+    changed_fields = []
+    if before is not None and after is not None:
+        changed_fields = sorted(
+            key
+            for key in set(before) | set(after)
+            if before.get(key) != after.get(key)
+        )
+
+    if after is None:
+        status = "unverified"
+        outcome = "target_not_found_after_edit"
+    elif before is None:
+        status = "verified"
+        outcome = "created"
+    elif changed_fields:
+        status = "verified"
+        outcome = "changed"
+    else:
+        status = "verified"
+        outcome = "no_change"
+
+    return {
+        "schema_version": 1,
+        "tool_name": tool_name,
+        "status": status,
+        "verified": status == "verified",
+        "outcome": outcome,
+        "target": {
+            "component_type": spec.get("component_type"),
+            "tool_reference": spec.get("tool_reference"),
+        },
+        "requested": _receipt_json_value(spec.get("requested") or {}),
+        "changed_fields": changed_fields,
+        "before": before,
+        "after": after,
+    }
+
+
+AI_RISK_AWARE_EDIT_TOOLS = {
+    "update_property",
+    "manage_define",
+    "manage_material",
+    "create_primitive_solid",
+    "modify_solid",
+    "create_boolean_solid",
+    "manage_logical_volume",
+    "place_volume",
+    "modify_physical_volume",
+    "create_detector_ring",
+    "delete_objects",
+    "set_volume_appearance",
+    "delete_detector_ring",
+    "batch_geometry_update",
+    "insert_physics_template",
+    "manage_assembly",
+    "manage_detector_feature_generator",
+    "configure_detector_readout",
+}
+
+AI_HIGH_SPATIAL_EDIT_TOOLS = {
+    "create_detector_ring",
+    "delete_detector_ring",
+    "insert_physics_template",
+    "manage_assembly",
+    "manage_detector_feature_generator",
+}
+
+
+def _dedupe_ai_geometry_focus_targets(
+    targets: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    deduped = []
+    seen = set()
+    for target in targets:
+        component_type = str(target.get("component_type") or "").strip()
+        reference = str(target.get("reference") or "").strip()
+        if component_type not in {"physical_volume", "logical_volume", "solid"}:
+            continue
+        if not reference:
+            continue
+        key = (component_type, reference)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append({
+            "component_type": component_type,
+            "reference": reference,
+        })
+    return deduped
+
+
+def _ai_geometry_focus_targets_for_edit(
+    pm: ProjectManager,
+    tool_name: str,
+    args: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    targets: List[Dict[str, str]] = []
+    state = pm.current_geometry_state
+
+    if tool_name == "modify_physical_volume":
+        targets.append({
+            "component_type": "physical_volume",
+            "reference": args.get("pv_id"),
+        })
+    elif tool_name == "modify_solid":
+        targets.append({
+            "component_type": "solid",
+            "reference": args.get("name"),
+        })
+    elif tool_name in {"manage_logical_volume", "set_volume_appearance"}:
+        targets.append({
+            "component_type": "logical_volume",
+            "reference": args.get("name"),
+        })
+    elif tool_name == "place_volume":
+        targets.append({
+            "component_type": "logical_volume",
+            "reference": args.get("parent_lv_name"),
+        })
+    elif tool_name in AI_HIGH_SPATIAL_EDIT_TOOLS:
+        parent_reference = (
+            args.get("parent_lv_name")
+            or args.get("parent_logical_volume_name")
+        )
+        raw_target = args.get("target")
+        if not parent_reference and isinstance(raw_target, dict):
+            parent_ref = raw_target.get("parent_logical_volume_ref")
+            if isinstance(parent_ref, dict):
+                parent_reference = parent_ref.get("name") or parent_ref.get("id")
+            elif isinstance(parent_ref, str):
+                parent_reference = parent_ref
+        targets.append({
+            "component_type": "logical_volume",
+            "reference": parent_reference or getattr(state, "world_volume_ref", None),
+        })
+    elif tool_name == "update_property":
+        component_type = str(args.get("object_type") or "")
+        if component_type in {"physical_volume", "logical_volume", "solid"}:
+            targets.append({
+                "component_type": component_type,
+                "reference": args.get("object_id"),
+            })
+    elif tool_name == "manage_define":
+        targets.append({
+            "component_type": "logical_volume",
+            "reference": getattr(state, "world_volume_ref", None),
+        })
+    elif tool_name == "delete_objects":
+        for item in args.get("objects") or []:
+            item = {"id": item} if isinstance(item, str) else item
+            if not isinstance(item, dict):
+                continue
+            item_ref = item.get("id") or item.get("name")
+            item_type = str(item.get("type") or "")
+            if item_type == "physical_volume" or not item_type:
+                pv = pm._find_pv_by_id(str(item_ref or "")) or pm._find_pv_by_name(str(item_ref or ""))
+                if pv and pv.parent_lv_name:
+                    targets.append({
+                        "component_type": "logical_volume",
+                        "reference": pv.parent_lv_name,
+                    })
+                    continue
+            if item_type == "logical_volume" and item_ref in state.logical_volumes:
+                for placement in pm._find_pvs_by_lv_name(item_ref):
+                    if placement.parent_lv_name:
+                        targets.append({
+                            "component_type": "logical_volume",
+                            "reference": placement.parent_lv_name,
+                        })
+            elif item_type == "solid" and item_ref in state.solids:
+                targets.extend({
+                    "component_type": "logical_volume",
+                    "reference": lv.name,
+                } for lv in state.logical_volumes.values() if lv.solid_ref == item_ref)
+        if not targets:
+            targets.append({
+                "component_type": "logical_volume",
+                "reference": getattr(state, "world_volume_ref", None),
+            })
+    elif tool_name == "batch_geometry_update":
+        for operation in args.get("operations") or []:
+            if not isinstance(operation, dict):
+                continue
+            operation_name = (
+                operation.get("tool_name")
+                or operation.get("toolName")
+                or operation.get("tool")
+                or operation.get("type")
+            )
+            operation_args = (
+                operation.get("arguments")
+                if operation.get("arguments") is not None
+                else operation.get("args", {})
+            )
+            if operation_name and isinstance(operation_args, dict):
+                targets.extend(
+                    _ai_geometry_focus_targets_for_edit(
+                        pm,
+                        operation_name,
+                        operation_args,
+                    )
+                )
+
+    return _dedupe_ai_geometry_focus_targets(targets)
+
+
+def _classify_ai_edit_risk(
+    pm: ProjectManager,
+    tool_name: str,
+    args: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if tool_name not in AI_RISK_AWARE_EDIT_TOOLS:
+        return None
+
+    targets = _ai_geometry_focus_targets_for_edit(pm, tool_name, args)
+    risk_level = "low"
+    reason = "Non-spatial state change; edit receipt verification is sufficient."
+
+    if tool_name == "batch_geometry_update":
+        child_specs = []
+        for operation in args.get("operations") or []:
+            if not isinstance(operation, dict):
+                continue
+            operation_name = (
+                operation.get("tool_name")
+                or operation.get("toolName")
+                or operation.get("tool")
+                or operation.get("type")
+            )
+            operation_args = (
+                operation.get("arguments")
+                if operation.get("arguments") is not None
+                else operation.get("args", {})
+            )
+            if operation_name and isinstance(operation_args, dict):
+                child_spec = _classify_ai_edit_risk(
+                    pm,
+                    operation_name,
+                    operation_args,
+                )
+                if child_spec:
+                    child_specs.append(child_spec)
+        spatial_children = [
+            spec for spec in child_specs
+            if spec["risk_level"] in {"spatial", "high_spatial"}
+        ]
+        if any(spec["risk_level"] == "high_spatial" for spec in child_specs) or len(spatial_children) > 1:
+            risk_level = "high_spatial"
+            reason = "Batch changes multiple spatial relationships or contains a high-spatial-risk operation."
+        elif spatial_children:
+            risk_level = "spatial"
+            reason = "Batch contains one spatial geometry change."
+    elif tool_name in AI_HIGH_SPATIAL_EDIT_TOOLS:
+        risk_level = "high_spatial"
+        reason = "Generator, assembly, template, or array edit can affect multiple component placements."
+    elif tool_name == "delete_objects":
+        object_count = len(args.get("objects") or [])
+        risk_level = "high_spatial" if object_count > 1 else "spatial"
+        reason = (
+            "Deleting multiple objects can alter several hierarchy relationships."
+            if object_count > 1
+            else "Deletion changes hierarchy and spatial containment."
+        )
+    elif tool_name == "manage_define":
+        if args.get("name") in pm.current_geometry_state.defines:
+            risk_level = "high_spatial"
+            reason = "Updating a define can move or resize every geometry expression that references it."
+    elif tool_name == "update_property":
+        object_type = str(args.get("object_type") or "")
+        property_path = str(args.get("property_path") or "").lower()
+        spatial_tokens = (
+            "position",
+            "rotation",
+            "scale",
+            "dimension",
+            "parameter",
+            "solid_ref",
+            "content",
+        )
+        if any(
+            token in property_path
+            for token in spatial_tokens
+        ):
+            risk_level = "spatial"
+            reason = "Property update changes geometry dimensions, placement, or hierarchy."
+    elif tool_name == "manage_logical_volume":
+        existing = pm.current_geometry_state.logical_volumes.get(args.get("name"))
+        if existing and args.get("solid_ref") not in {None, existing.solid_ref}:
+            risk_level = "spatial"
+            reason = "Changing the logical volume solid changes every placed instance's spatial envelope."
+    elif tool_name in {"modify_solid", "place_volume"}:
+        risk_level = "spatial"
+        reason = "Edit changes a shape envelope or physical placement."
+    elif tool_name == "modify_physical_volume" and any(
+        args.get(key) is not None
+        for key in ("position", "rotation", "scale")
+    ):
+        risk_level = "spatial"
+        reason = "Edit changes a physical placement transform."
+
+    return {
+        "risk_level": risk_level,
+        "reason": reason,
+        "focus_targets": targets,
+    }
+
+
+def _focused_preflight_scope_for_target(
+    pm: ProjectManager,
+    target: Dict[str, str],
+) -> Optional[Dict[str, str]]:
+    component_type = target.get("component_type")
+    reference = target.get("reference")
+    if component_type == "logical_volume" and reference in pm.current_geometry_state.logical_volumes:
+        return {"type": "logical_volume", "name": reference}
+    if component_type == "physical_volume":
+        pv = pm._find_pv_by_id(reference) or pm._find_pv_by_name(reference)
+        if pv and pv.parent_lv_name in pm.current_geometry_state.logical_volumes:
+            return {"type": "logical_volume", "name": pv.parent_lv_name}
+    if component_type == "solid":
+        for lv in pm.current_geometry_state.logical_volumes.values():
+            if lv.solid_ref == reference:
+                return {"type": "logical_volume", "name": lv.name}
+    return None
+
+
+def _build_ai_risk_aware_verification(
+    pm: ProjectManager,
+    risk_spec: Dict[str, Any],
+) -> Dict[str, Any]:
+    risk_level = risk_spec["risk_level"]
+    verification = {
+        "schema_version": 1,
+        "risk_level": risk_level,
+        "classification_reason": risk_spec["reason"],
+        "policy": {
+            "edit_receipt_only": risk_level == "low",
+            "focused_geometry_check": risk_level in {"spatial", "high_spatial"},
+            "scoped_overlap_check": risk_level == "high_spatial",
+            "visual_verification": risk_level == "high_spatial",
+        },
+        "focus_targets": risk_spec.get("focus_targets") or [],
+    }
+    if risk_level == "low":
+        return verification
+
+    full_preflight = pm.run_preflight_checks()
+    inspections = []
+    for target in (risk_spec.get("focus_targets") or [])[:6]:
+        try:
+            inspections.append(
+                pm.inspect_geometry_focus(
+                    target["component_type"],
+                    target["reference"],
+                    nearby_limit=6,
+                    preflight_report=full_preflight,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            inspections.append({
+                "target": target,
+                "error": str(exc),
+            })
+    verification["focused_geometry_checks"] = inspections
+
+    if risk_level == "high_spatial":
+        scopes = []
+        seen_scopes = set()
+        for target in risk_spec.get("focus_targets") or []:
+            scope = _focused_preflight_scope_for_target(pm, target)
+            if not scope:
+                continue
+            scope_key = (scope["type"], scope["name"])
+            if scope_key in seen_scopes:
+                continue
+            seen_scopes.add(scope_key)
+            try:
+                scoped_report = pm.build_scoped_preflight_report(
+                    full_preflight,
+                    scope["type"],
+                    scope["name"],
+                )
+            except ValueError as exc:
+                scopes.append({"scope": scope, "error": str(exc)})
+                continue
+            geometry_issue_codes = {
+                "daughter_entirely_outside_mother",
+                "daughter_extends_outside_mother",
+                "possible_overlap_aabb",
+                "overlap_report_truncated",
+                "placement_hierarchy_cycle",
+                "placement_hierarchy_cycle_report_truncated",
+            }
+            spatial_issues = [
+                issue
+                for issue in scoped_report.get("issues", [])
+                if issue.get("code") in geometry_issue_codes
+            ]
+            scopes.append({
+                "scope": scope,
+                "summary": scoped_report.get("summary", {}),
+                "overlap_and_containment_issues": spatial_issues[:20],
+                "truncated": len(spatial_issues) > 20,
+            })
+        verification["scoped_overlap_checks"] = scopes
+
+        focus_ids = [
+            target["reference"]
+            for target in risk_spec.get("focus_targets") or []
+            if target.get("reference")
+        ][:32]
+        verification["visual_verification"] = {
+            "required": True,
+            "status": "pending_browser_capture",
+            "request": {
+                "reason": (
+                    "AIRPET classified the completed edit as high spatial risk. "
+                    "Inspect the changed components for alignment, duplication, "
+                    "containment, and unintended overlap before continuing."
+                ),
+                "questions": [
+                    "Are the changed components present at the intended positions and orientations?",
+                    "Are any components visibly duplicated, missing, misaligned, or outside their parent?",
+                    "Do the focused overlap and containment findings agree with the rendered geometry?",
+                ],
+                "focus_component_ids": focus_ids,
+                "views": ["isometric", "top", "side"],
+                "include_grid": True,
+                "include_axes": True,
+            },
+        }
+
+    return verification
+
+
+def _automatic_visual_verification_args(
+    result: Any,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(result, dict):
+        return None
+    verification = result.get("risk_aware_verification")
+    if not isinstance(verification, dict):
+        return None
+    visual = verification.get("visual_verification")
+    if not isinstance(visual, dict) or not visual.get("required"):
+        return None
+    request_args = visual.get("request")
+    return dict(request_args) if isinstance(request_args, dict) else None
+
+
+def _dispatch_ai_tool_impl(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Dispatches a tool call from the AI to the appropriate ProjectManager method."""
     if APP_MODE != 'production':
         logger.debug(f"tool_name={tool_name}")
@@ -10781,6 +11686,17 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
             if details:
                 return {"success": True, "result": details}
             return {"success": False, "error": f"Component '{args['name']}' not found."}
+
+        elif tool_name == "inspect_geometry_focus":
+            try:
+                report = pm.inspect_geometry_focus(
+                    args.get("component_type", "auto"),
+                    args["reference"],
+                    nearby_limit=args.get("nearby_limit", 6),
+                )
+            except (TypeError, ValueError) as exc:
+                return {"success": False, "error": str(exc)}
+            return {"success": True, "inspection": report}
 
         elif tool_name == "update_property":
             success, error = pm.update_object_property(
@@ -11914,7 +12830,14 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
                 op_tool_name = op.get('tool_name') or op.get('toolName') or op.get('tool') or op.get('type')
                 op_args = op.get('arguments') if op.get('arguments') is not None else op.get('args', {})
 
-                batch_results.append(dispatch_ai_tool(pm, op_tool_name, op_args))
+                batch_results.append(
+                    dispatch_ai_tool(
+                        pm,
+                        op_tool_name,
+                        op_args,
+                        apply_risk_verification=False,
+                    )
+                )
             return {"success": True, "batch_results": batch_results}
 
         elif tool_name == "get_analysis_summary":
@@ -12667,6 +13590,51 @@ def dispatch_ai_tool(pm: ProjectManager, tool_name: str, args: Dict[str, Any]) -
         return {"success": False, "error": str(e)}
 
 
+def dispatch_ai_tool(
+    pm: ProjectManager,
+    tool_name: str,
+    args: Dict[str, Any],
+    *,
+    apply_risk_verification: bool = True,
+) -> Dict[str, Any]:
+    normalized_args, normalize_error = _normalize_tool_args(tool_name, args)
+    receipt_args = (
+        normalized_args
+        if normalize_error is None and isinstance(normalized_args, dict)
+        else args
+    )
+    receipt_spec = _ai_edit_receipt_spec(tool_name, receipt_args or {})
+    before = _capture_ai_edit_receipt_state(pm, receipt_spec)
+    risk_spec = (
+        _classify_ai_edit_risk(pm, tool_name, receipt_args or {})
+        if apply_risk_verification and normalize_error is None
+        else None
+    )
+
+    result = _dispatch_ai_tool_impl(pm, tool_name, args)
+    if (
+        isinstance(result, dict)
+        and result.get("success") is True
+        and receipt_spec is not None
+    ):
+        result["edit_receipt"] = _build_ai_edit_receipt(
+            pm,
+            tool_name,
+            receipt_spec,
+            before,
+        )
+    if (
+        isinstance(result, dict)
+        and result.get("success") is True
+        and risk_spec is not None
+    ):
+        result["risk_aware_verification"] = _build_ai_risk_aware_verification(
+            pm,
+            risk_spec,
+        )
+    return result
+
+
 def _coerce_bool(value: Any, default: bool) -> bool:
     if value is None:
         return default
@@ -12709,6 +13677,7 @@ AI_TOOL_BUNDLES = {
         "manage_detector_study",
         "get_project_summary",
         "get_component_details",
+        "inspect_geometry_focus",
         "search_components",
         "evaluate_expression",
     },
@@ -15449,6 +16418,7 @@ def _stream_ai_chat_response(
     chat_attachments: Optional[List[Dict[str, Any]]] = None,
     client_display_message: Optional[str] = None,
     study_interpretation_id: Optional[str] = None,
+    selection_context: Optional[List[Dict[str, Any]]] = None,
 ):
     """Generator function for streaming AI chat progress via SSE."""
     import time
@@ -15478,8 +16448,12 @@ def _stream_ai_chat_response(
     attachment_notice = _build_ai_chat_attachment_notice(chat_attachments or [])
     attachment_metadata = _public_ai_chat_attachment_metadata(chat_attachments or [])
     study_context = _active_detector_study_context(pm)
+    selection_context_text = _format_ai_selection_context(
+        selection_context or []
+    )
     formatted_user_msg = (
         f"[System Context Update]\n{context_summary}{study_context}"
+        f"{selection_context_text}"
         f"\n\nUser Message: {user_message}{attachment_notice}"
     )
     artifact_store = _get_ai_artifact_store_for_session(pm) if attachment_metadata else None
@@ -15729,6 +16703,40 @@ def _stream_ai_chat_response(
                         visual_feedback_msg = _build_visual_verification_chat_message(result)
                     else:
                         result = dispatch_ai_tool(pm, tool_name, args)
+                        automatic_visual_args = _automatic_visual_verification_args(result)
+                        if automatic_visual_args:
+                            tool_call_id = str(
+                                tool_call.get("id")
+                                or f"call_{turn}_{tool_name}_risk_verification"
+                            )
+                            request_payload = _create_visual_verification_request(
+                                automatic_visual_args,
+                                tool_call_id=tool_call_id,
+                            )
+                            yield (
+                                "data: "
+                                f"{json.dumps(_build_visual_verification_request_sse_payload(pm, request_payload))}"
+                                "\n\n"
+                            )
+                            visual_result = _wait_for_visual_verification_result(
+                                request_payload["request_id"]
+                            )
+                            visual_feedback_msg = _build_visual_verification_chat_message(
+                                visual_result
+                            )
+                            visual_status = result["risk_aware_verification"][
+                                "visual_verification"
+                            ]
+                            visual_status["status"] = (
+                                "completed"
+                                if visual_result.get("success")
+                                else "failed"
+                            )
+                            visual_status["request_id"] = visual_result.get(
+                                "request_id"
+                            )
+                            if not visual_result.get("success"):
+                                visual_status["error"] = visual_result.get("error")
                     _record_detector_study_tool_activity(
                         pm,
                         tool_name,
@@ -16022,6 +17030,40 @@ def _stream_ai_chat_response(
                             visual_feedback_messages.append(_build_visual_verification_chat_message(result))
                         else:
                             result = dispatch_ai_tool(pm, tool_name, args)
+                            automatic_visual_args = _automatic_visual_verification_args(result)
+                            if automatic_visual_args:
+                                request_payload = _create_visual_verification_request(
+                                    automatic_visual_args,
+                                    tool_call_id=(
+                                        f"gemini_turn_{turn}_{tool_name}_risk_verification"
+                                    ),
+                                )
+                                yield (
+                                    "data: "
+                                    f"{json.dumps(_build_visual_verification_request_sse_payload(pm, request_payload))}"
+                                    "\n\n"
+                                )
+                                visual_result = _wait_for_visual_verification_result(
+                                    request_payload["request_id"]
+                                )
+                                visual_feedback_messages.append(
+                                    _build_visual_verification_chat_message(
+                                        visual_result
+                                    )
+                                )
+                                visual_status = result["risk_aware_verification"][
+                                    "visual_verification"
+                                ]
+                                visual_status["status"] = (
+                                    "completed"
+                                    if visual_result.get("success")
+                                    else "failed"
+                                )
+                                visual_status["request_id"] = visual_result.get(
+                                    "request_id"
+                                )
+                                if not visual_result.get("success"):
+                                    visual_status["error"] = visual_result.get("error")
                         _record_detector_study_tool_activity(
                             pm,
                             tool_name,
@@ -16148,6 +17190,9 @@ def ai_chat_stream_route():
     turn_limit = _normalize_ai_turn_limit(data.get('turn_limit', 50))
     raw_attachments = data.get("attachment_ids", data.get("attachments"))
     requested_study_id = str(data.get("detector_study_id") or "").strip()
+    requested_execution_mode = str(
+        data.get("execution_mode") or ""
+    ).strip().lower()
     study_interpretation_id = str(
         data.get("study_interpretation_id") or ""
     ).strip()
@@ -16159,6 +17204,10 @@ def ai_chat_stream_route():
         chat_attachments = _resolve_ai_chat_attachments(pm, raw_attachments)
     except AIArtifactValidationError as exc:
         return Response(f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n", mimetype='text/event-stream')
+    selection_context = _resolve_ai_selection_context(
+        pm,
+        data.get("selection_context"),
+    )
 
     if requested_study_id:
         try:
@@ -16168,6 +17217,36 @@ def ai_chat_stream_route():
                 f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n",
                 mimetype='text/event-stream',
             )
+
+    active_study = pm.get_detector_study()
+    active_intake = (
+        active_study.get("intake")
+        if isinstance(active_study, dict)
+        else {}
+    ) or {}
+    if (
+        not study_interpretation_id
+        and requested_execution_mode != "design_only"
+        and active_intake.get("status") == "needs_clarification"
+    ):
+        return Response(
+            "data: "
+            + json.dumps({
+                "type": "error",
+                "message": (
+                    "Confirm the automatic study brief before AIRPET starts "
+                    "construction."
+                ),
+                "error": "Detector study intake has unresolved blocking questions.",
+                "error_type": "study_clarification_required",
+                "detector_study_id": active_study.get("study_id"),
+                "blocking_questions": active_intake.get(
+                    "blocking_questions", []
+                ),
+            })
+            + "\n\n",
+            mimetype="text/event-stream",
+        )
 
     backend_selection_payload = None
     selector_runtime_config = None
@@ -16318,6 +17397,7 @@ def ai_chat_stream_route():
             chat_attachments,
             client_display_message,
             study_interpretation_id,
+            selection_context,
         )
 
     return Response(generate(), mimetype='text/event-stream')
@@ -16333,6 +17413,9 @@ def ai_chat_route():
     turn_limit = _normalize_ai_turn_limit(data.get('turn_limit', 50))
     raw_attachments = data.get("attachment_ids", data.get("attachments"))
     requested_study_id = str(data.get("detector_study_id") or "").strip()
+    requested_execution_mode = str(
+        data.get("execution_mode") or ""
+    ).strip().lower()
     if APP_MODE != "production":
         logger.debug(f"Received turn_limit: {turn_limit}")
 
@@ -16349,11 +17432,35 @@ def ai_chat_route():
         chat_attachments = _resolve_ai_chat_attachments(pm, raw_attachments)
     except AIArtifactValidationError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
+    selection_context = _resolve_ai_selection_context(
+        pm,
+        data.get("selection_context"),
+    )
     if requested_study_id:
         try:
             pm.set_active_detector_study(requested_study_id)
         except ValueError as exc:
             return jsonify({"success": False, "error": str(exc)}), 400
+
+    active_study = pm.get_detector_study()
+    active_intake = (
+        active_study.get("intake")
+        if isinstance(active_study, dict)
+        else {}
+    ) or {}
+    if (
+        requested_execution_mode != "design_only"
+        and active_intake.get("status") == "needs_clarification"
+    ):
+        return jsonify({
+            "success": False,
+            "error": "Detector study intake has unresolved blocking questions.",
+            "error_type": "study_clarification_required",
+            "detector_study_id": active_study.get("study_id"),
+            "blocking_questions": active_intake.get(
+                "blocking_questions", []
+            ),
+        }), 409
 
     backend_selection_payload = None
     selector_runtime_config = None
@@ -16533,8 +17640,10 @@ def ai_chat_route():
     attachment_notice = _build_ai_chat_attachment_notice(chat_attachments)
     attachment_metadata = _public_ai_chat_attachment_metadata(chat_attachments)
     study_context = _active_detector_study_context(pm)
+    selection_context_text = _format_ai_selection_context(selection_context)
     formatted_user_msg = (
         f"[System Context Update]\n{context_summary}{study_context}"
+        f"{selection_context_text}"
         f"\n\nUser Message: {user_message}{attachment_notice}"
     )
     artifact_store = _get_ai_artifact_store_for_session(pm) if attachment_metadata else None
@@ -17121,6 +18230,29 @@ def list_detector_studies_route():
     })
 
 
+def _detector_study_intake_project_context(pm: ProjectManager) -> Dict[str, Any]:
+    state = pm.current_geometry_state
+    logical_volumes = getattr(state, "logical_volumes", {}) or {}
+    sensitive_logical_volumes = sorted(
+        name
+        for name, logical_volume in logical_volumes.items()
+        if getattr(logical_volume, "is_sensitive", False)
+    )
+    assigned_materials = sorted({
+        str(getattr(logical_volume, "material_ref", "") or "").strip()
+        for logical_volume in logical_volumes.values()
+        if str(getattr(logical_volume, "material_ref", "") or "").strip()
+        not in {"", "G4_Galactic"}
+    })
+    return {
+        "active_source_ids": list(
+            getattr(state, "active_source_ids", []) or []
+        ),
+        "sensitive_logical_volumes": sensitive_logical_volumes,
+        "assigned_materials": assigned_materials,
+    }
+
+
 @app.route('/api/ai/studies/ensure', methods=['POST'])
 def ensure_detector_study_route():
     pm = get_project_manager_for_session()
@@ -17138,6 +18270,11 @@ def ensure_detector_study_route():
         }), 400
 
     requested_study_id = str(data.get("study_id") or "").strip()
+    incoming_attachments = (
+        data.get("attachments")
+        if isinstance(data.get("attachments"), list)
+        else []
+    )
     study = (
         pm.get_detector_study(requested_study_id)
         if requested_study_id
@@ -17149,9 +18286,8 @@ def ensure_detector_study_route():
         and continue_active
         and study.get("execution_mode") == execution_mode
     ):
-        incoming_attachments = data.get("attachments")
         merged_attachments = None
-        if isinstance(incoming_attachments, list) and incoming_attachments:
+        if incoming_attachments:
             existing_attachments = (
                 (study.get("brief") or {}).get("attachments")
                 if isinstance(study.get("brief"), dict)
@@ -17171,37 +18307,85 @@ def ensure_detector_study_route():
                 )
                 merged_by_key[str(key)] = attachment
             merged_attachments = list(merged_by_key.values())
+        intake = study.get("intake") or {}
+        requires_clarification = intake.get("status") == "needs_clarification"
         study = pm.update_detector_study(
             study["study_id"],
             append_user_request=goal,
             attachments=merged_attachments,
             phase=(
-                "BUILDING"
+                "INTAKE"
+                if requires_clarification
+                else "BUILDING"
                 if study.get("phase") in {"INTAKE", "PLANNED"}
                 else study.get("phase")
             ),
-            status_message="Continuing detector study from the latest user request.",
+            status_message=(
+                "Study brief needs a few decisions before construction."
+                if requires_clarification
+                else "Continuing detector study from the latest user request."
+            ),
         )
     else:
         try:
+            intake = build_detector_study_intake(
+                goal,
+                execution_mode=execution_mode,
+                attachments=incoming_attachments,
+                project_context=_detector_study_intake_project_context(pm),
+            )
+            suggested = intake.get("suggested_brief") or {}
+            requirements = pm._normalize_detector_study_string_list([
+                *pm._normalize_detector_study_string_list(
+                    data.get("requirements")
+                ),
+                *(suggested.get("requirements") or []),
+            ])
+            assumptions = pm._normalize_detector_study_string_list([
+                *pm._normalize_detector_study_string_list(
+                    data.get("assumptions")
+                ),
+                *(suggested.get("assumptions") or []),
+            ])
+            success_criteria = pm._normalize_detector_study_string_list([
+                *pm._normalize_detector_study_string_list(
+                    data.get("success_criteria")
+                ),
+                *(suggested.get("success_criteria") or []),
+            ])
             study = pm.create_detector_study(
                 goal=goal,
                 execution_mode=execution_mode,
                 title=data.get("title"),
-                attachments=data.get("attachments"),
-                requirements=data.get("requirements"),
-                assumptions=data.get("assumptions"),
-                success_criteria=data.get("success_criteria"),
+                attachments=incoming_attachments,
+                requirements=requirements,
+                assumptions=assumptions,
+                success_criteria=success_criteria,
+                intake=intake,
+            )
+            requires_clarification = (
+                intake.get("status") == "needs_clarification"
             )
             study = pm.update_detector_study(
                 study["study_id"],
-                phase="PLANNED",
-                status_message="Study brief is ready for AI planning.",
+                phase="INTAKE" if requires_clarification else "PLANNED",
+                status_message=(
+                    "Study brief needs a few decisions before construction."
+                    if requires_clarification
+                    else "Automatic study brief is ready for AI planning."
+                ),
             )
         except ValueError as exc:
             return jsonify({"success": False, "error": str(exc)}), 400
 
-    return jsonify({"success": True, "study": study})
+    return jsonify({
+        "success": True,
+        "study": study,
+        "requires_clarification": (
+            (study.get("intake") or {}).get("status")
+            == "needs_clarification"
+        ),
+    })
 
 
 @app.route('/api/ai/studies/active', methods=['GET'])
@@ -17246,6 +18430,28 @@ def detector_study_route(study_id):
                 study_id,
                 data.get("checkpoint_id"),
             )
+        elif action == "resolve_intake":
+            resolved_intake = resolve_detector_study_intake(
+                study.get("intake"),
+                answers=data.get("answers"),
+            )
+            if resolved_intake.get("status") != "ready":
+                return jsonify({
+                    "success": False,
+                    "error": "Answer all blocking questions before continuing.",
+                    "study": {
+                        **study,
+                        "intake": resolved_intake,
+                    },
+                }), 400
+            study = pm.resolve_detector_study_intake(
+                study_id,
+                intake=resolved_intake,
+                goal=data.get("goal"),
+                requirements=data.get("requirements"),
+                assumptions=data.get("assumptions"),
+                success_criteria=data.get("success_criteria"),
+            )
         elif action == "update":
             study = pm.update_detector_study(
                 study_id,
@@ -17261,7 +18467,8 @@ def detector_study_route(study_id):
             return jsonify({
                 "success": False,
                 "error": (
-                    "action must be update, pause, resume, or restore_checkpoint."
+                    "action must be update, resolve_intake, pause, resume, "
+                    "or restore_checkpoint."
                 ),
             }), 400
     except ValueError as exc:

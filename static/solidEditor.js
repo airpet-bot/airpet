@@ -523,9 +523,9 @@ function renderParamsUI(solidData = {}) {
 
         const uiBuilders = {
             box: () => [ 
-                ExpressionInput.create('p_x', 'Size X (mm)', p('x', '100')),
-                ExpressionInput.create('p_y', 'Size Y (mm)', p('y', '100')),
-                ExpressionInput.create('p_z', 'Size Z (mm)', p('z', '100')) 
+                ExpressionInput.create('p_x', 'Full Length X (mm)', p('x', '100')),
+                ExpressionInput.create('p_y', 'Full Length Y (mm)', p('y', '100')),
+                ExpressionInput.create('p_z', 'Full Length Z (mm)', p('z', '100'))
             ],
             tube: () => [
                 ExpressionInput.create('p_rmin', 'Inner Radius (mm)', p('rmin', '0')),
@@ -569,31 +569,31 @@ function renderParamsUI(solidData = {}) {
                 ExpressionInput.create('p_deltaphi', 'Delta Phi (rad)', p('deltaphi', '2*pi'))
             ],
             trd: () => [
-                ExpressionInput.create('p_dx1', 'X Half-Length 1 (mm)', p('dx1', '50')),
-                ExpressionInput.create('p_dx2', 'X Half-Length 2 (mm)', p('dx2', '75')),
-                ExpressionInput.create('p_dy1', 'Y Half-Length 1 (mm)', p('dy1', '50')),
-                ExpressionInput.create('p_dy2', 'Y Half-Length 2 (mm)', p('dy2', '75')),
-                ExpressionInput.create('p_dz', 'Z Half-Length (mm)', p('dz', '100'))
+                ExpressionInput.create('p_x1', 'Full Length X at -Z (mm)', p('x1', '100')),
+                ExpressionInput.create('p_x2', 'Full Length X at +Z (mm)', p('x2', '150')),
+                ExpressionInput.create('p_y1', 'Full Length Y at -Z (mm)', p('y1', '100')),
+                ExpressionInput.create('p_y2', 'Full Length Y at +Z (mm)', p('y2', '150')),
+                ExpressionInput.create('p_z', 'Full Length Z (mm)', p('z', '200'))
             ],
             trap: () => [
                 ExpressionInput.create('p_z', 'Full Length Z (mm)', p('z', '100')),
                 ExpressionInput.create('p_theta', 'Theta (rad)', p('theta', '0')),
                 ExpressionInput.create('p_phi', 'Phi (rad)', p('phi', '0')),
                 document.createElement('hr'),
-                ExpressionInput.create('p_y1', 'Y Full-Length at -z (mm)', p('y1', '50')),
-                ExpressionInput.create('p_x1', 'X Full-Length 1 at -z (mm)', p('x1', '50')),
-                ExpressionInput.create('p_x2', 'X Full-Length 2 at -z (mm)', p('x2', '50')),
+                ExpressionInput.create('p_y1', 'Full Length Y at -Z (mm)', p('y1', '50')),
+                ExpressionInput.create('p_x1', 'Full Length X1 at -Z (mm)', p('x1', '50')),
+                ExpressionInput.create('p_x2', 'Full Length X2 at -Z (mm)', p('x2', '50')),
                 ExpressionInput.create('p_alpha1', 'Alpha 1 at -z (rad)', p('alpha1', '0')),
                 document.createElement('hr'),
-                ExpressionInput.create('p_y2', 'Y Full-Length at +z (mm)', p('y2', '50')),
-                ExpressionInput.create('p_x3', 'X Full-Length 1 at +z (mm)', p('x3', '50')),
-                ExpressionInput.create('p_x4', 'X Full-Length 2 at +z (mm)', p('x4', '50')),
+                ExpressionInput.create('p_y2', 'Full Length Y at +Z (mm)', p('y2', '50')),
+                ExpressionInput.create('p_x3', 'Full Length X3 at +Z (mm)', p('x3', '50')),
+                ExpressionInput.create('p_x4', 'Full Length X4 at +Z (mm)', p('x4', '50')),
                 ExpressionInput.create('p_alpha2', 'Alpha 2 at +z (rad)', p('alpha2', '0')),
             ],
             para: () => [
-                ExpressionInput.create('p_x', 'X Full-Length (mm)', p('x', '50')),
-                ExpressionInput.create('p_y', 'Y Full-Length (mm)', p('y', '60')),
-                ExpressionInput.create('p_z', 'Z Full-Length (mm)', p('z', '70')),
+                ExpressionInput.create('p_x', 'Full Length X (mm)', p('x', '50')),
+                ExpressionInput.create('p_y', 'Full Length Y (mm)', p('y', '60')),
+                ExpressionInput.create('p_z', 'Full Length Z (mm)', p('z', '70')),
                 ExpressionInput.create('p_alpha', 'Alpha (rad)', p('alpha', 'pi/12')),
                 ExpressionInput.create('p_theta', 'Theta (rad)', p('theta', 'pi/12')),
                 ExpressionInput.create('p_phi', 'Phi (rad)', p('phi', 'pi/12'))
@@ -644,22 +644,22 @@ function renderParamsUI(solidData = {}) {
             ],
             twistedtrap: () => [
                 ExpressionInput.create('p_PhiTwist', 'Twist Angle (rad)', p('PhiTwist', 'pi/12')),
-                ExpressionInput.create('p_z', 'Half Length Z (mm)', p('z', '100')),
+                ExpressionInput.create('p_z', 'Full Length Z (mm)', p('z', '200')),
                 ExpressionInput.create('p_Theta', 'Polar Angle Theta (rad)', p('Theta', '0')),
                 ExpressionInput.create('p_Phi', 'Azimuthal Angle Phi (rad)', p('Phi', '0')),
-                ExpressionInput.create('p_y1', 'Half Length Y at -z (mm)', p('y1', '50')),
-                ExpressionInput.create('p_x1', 'Half Length X at -z, -y (mm)', p('x1', '50')),
-                ExpressionInput.create('p_x2', 'Half Length X at -z, +y (mm)', p('x2', '50')),
-                ExpressionInput.create('p_y2', 'Half Length Y at +z (mm)', p('y2', '75')),
-                ExpressionInput.create('p_x3', 'Half Length X at +z, -y (mm)', p('x3', '75')),
-                ExpressionInput.create('p_x4', 'Half Length X at +z, +y (mm)', p('x4', '75')),
+                ExpressionInput.create('p_y1', 'Full Length Y at -Z (mm)', p('y1', '100')),
+                ExpressionInput.create('p_x1', 'Full Length X at -Z, -Y (mm)', p('x1', '100')),
+                ExpressionInput.create('p_x2', 'Full Length X at -Z, +Y (mm)', p('x2', '100')),
+                ExpressionInput.create('p_y2', 'Full Length Y at +Z (mm)', p('y2', '150')),
+                ExpressionInput.create('p_x3', 'Full Length X at +Z, -Y (mm)', p('x3', '150')),
+                ExpressionInput.create('p_x4', 'Full Length X at +Z, +Y (mm)', p('x4', '150')),
                 ExpressionInput.create('p_Alph', 'Tilt Angle Alpha (rad)', p('Alph', '0')),
             ],
             twistedtrd: () => [
-                ExpressionInput.create('p_x1', 'X Half-Length at -z (mm)', p('x1', '50')),
-                ExpressionInput.create('p_x2', 'X Half-Length at +z (mm)', p('x2', '75')),
-                ExpressionInput.create('p_y1', 'Y Half-Length at -z (mm)', p('y1', '50')),
-                ExpressionInput.create('p_y2', 'Y Half-Length at +z (mm)', p('y2', '75')),
+                ExpressionInput.create('p_x1', 'Full Length X at -Z (mm)', p('x1', '100')),
+                ExpressionInput.create('p_x2', 'Full Length X at +Z (mm)', p('x2', '150')),
+                ExpressionInput.create('p_y1', 'Full Length Y at -Z (mm)', p('y1', '100')),
+                ExpressionInput.create('p_y2', 'Full Length Y at +Z (mm)', p('y2', '150')),
                 ExpressionInput.create('p_z', 'Full Length Z (mm)', p('z', '100')),
                 ExpressionInput.create('p_PhiTwist', 'Twist Angle (rad)', p('PhiTwist', 'pi/12'))
             ],
@@ -1182,9 +1182,9 @@ function getRawParamsFromUI() {
         raw_params.startphi = p('p_startphi');
         raw_params.deltaphi = p('p_deltaphi');
     } else if (type === 'trd') {
-        raw_params.dx1 = p('p_dx1'); raw_params.dx2 = p('p_dx2');
-        raw_params.dy1 = p('p_dy1'); raw_params.dy2 = p('p_dy2');
-        raw_params.dz = p('p_dz');
+        raw_params.x1 = p('p_x1'); raw_params.x2 = p('p_x2');
+        raw_params.y1 = p('p_y1'); raw_params.y2 = p('p_y2');
+        raw_params.z = p('p_z');
     } else if (type === 'para') {
         raw_params.x = p('p_x'); raw_params.y = p('p_y'); raw_params.z = p('p_z');
         raw_params.alpha = p('p_alpha'); raw_params.theta = p('p_theta');

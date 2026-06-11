@@ -386,7 +386,24 @@ class GDMLWriter:
         p = solid_obj.raw_parameters
 
         # Determine default units for the solid tag
-        has_length_params = any(key in ['x','y','z','dx','dy','dz','rmin','rmax','r','ax','by','cz','zmax','zcut', 'rlo', 'rhi', 'vertex1_ref'] for key in p) or solid_obj.type in ['box','tube','cone','sphere','orb','torus','para','trd','trap','arb8','hype','eltube','ellipsoid','elcone','paraboloid', 'tet']
+        length_param_names = {
+            'x', 'y', 'z', 'dx', 'dy', 'dz', 'x1', 'x2', 'x3', 'x4',
+            'y1', 'y2', 'rmin', 'rmax', 'r', 'rtor', 'ax', 'by', 'cz',
+            'zmax', 'zcut', 'zcut1', 'zcut2', 'rlo', 'rhi', 'rmin1',
+            'rmax1', 'rmin2', 'rmax2', 'endinnerrad', 'endouterrad',
+            'zlen', 'midinnerrad', 'midouterrad', 'negativeEndz',
+            'positiveEndz', 'vertex1_ref',
+        }
+        length_solid_types = {
+            'box', 'tube', 'cone', 'sphere', 'orb', 'torus', 'para',
+            'trd', 'trap', 'arb8', 'hype', 'eltube', 'ellipsoid',
+            'elcone', 'paraboloid', 'tet', 'twistedbox', 'twistedtrd',
+            'twistedtrap', 'twistedtubs', 'cutTube',
+        }
+        has_length_params = (
+            any(key in length_param_names for key in p)
+            or solid_obj.type in length_solid_types
+        )
         has_angle_params = any(key in ['startphi','deltaphi','starttheta','deltatheta','alpha','theta','phi','inst','outst','phi_twist','twistedangle'] for key in p) or solid_obj.type in ['tube','cone','sphere','torus','para','polycone','polyhedra', 'genericPolycone', 'genericPolyhedra', 'trap', 'twistedbox', 'twistedtrd', 'twistedtrap', 'twistedtubs']
 
         if has_length_params and solid_obj.type not in ['tessellated']: # Tessellated has units on vertex defines
@@ -396,6 +413,9 @@ class GDMLWriter:
 
         solid_el = ET.SubElement(solids_el, solid_obj.type, attrs)
 
+        # Raw primitive dimensions already use GDML semantics. In particular,
+        # x/y/z-style fields are full lengths even when the corresponding
+        # Geant4 C++ constructor accepts half-lengths.
         if solid_obj.type == "box":
             solid_el.set("x", str(p['x']))
             solid_el.set("y", str(p['y']))

@@ -28,10 +28,11 @@ from .gdml_writer import GDMLWriter
 from .step_parser import parse_step_file
 from .objective_formula import evaluate_objective_formula
 from .scoring_artifacts import build_run_manifest_summary, build_scoring_runtime_plan
+from .detector_study_intake import intake_answer_requirements
 
 AUTOSAVE_VERSION_ID = "autosave"
 
-DETECTOR_STUDY_SCHEMA_VERSION = 2
+DETECTOR_STUDY_SCHEMA_VERSION = 3
 DETECTOR_STUDY_EXECUTION_MODES = {
     "design_only",
     "build_validate",
@@ -855,6 +856,23 @@ class ProjectManager:
         study["schema_version"] = DETECTOR_STUDY_SCHEMA_VERSION
         study.setdefault("checkpoints", [])
         study.setdefault("report", None)
+        intake = study.get("intake")
+        if not isinstance(intake, dict):
+            intake = {
+                "schema_version": 1,
+                "status": "ready",
+                "blocking_questions": [],
+                "defaults_applied": [],
+                "inferred": {},
+                "suggested_brief": {},
+                "legacy_migration": True,
+            }
+        intake.setdefault("status", "ready")
+        intake.setdefault("blocking_questions", [])
+        intake.setdefault("defaults_applied", [])
+        intake.setdefault("inferred", {})
+        intake.setdefault("suggested_brief", {})
+        study["intake"] = intake
         coordinator = study.get("coordinator")
         defaults = self._default_detector_study_coordinator(study.get("phase"))
         if not isinstance(coordinator, dict):
@@ -968,6 +986,7 @@ class ProjectManager:
         requirements=None,
         assumptions=None,
         success_criteria=None,
+        intake=None,
     ):
         self._ensure_detector_studies_loaded()
         normalized_goal = str(goal or "").strip()
@@ -1015,6 +1034,16 @@ class ProjectManager:
             },
             "simulation": None,
             "analysis": None,
+            "intake": deepcopy(
+                intake if isinstance(intake, dict) else {
+                    "schema_version": 1,
+                    "status": "ready",
+                    "blocking_questions": [],
+                    "defaults_applied": [],
+                    "inferred": {},
+                    "suggested_brief": {},
+                }
+            ),
             "coordinator": self._default_detector_study_coordinator("INTAKE"),
             "checkpoints": [],
             "report": None,
@@ -1085,6 +1114,7 @@ class ProjectManager:
         analysis=None,
         coordinator_updates=None,
         report=None,
+        intake=None,
         clear_results=False,
         append_user_request=None,
     ):
@@ -1150,6 +1180,10 @@ class ProjectManager:
                 coordinator.update(deepcopy(coordinator_updates))
             if report is not None:
                 study["report"] = deepcopy(report)
+            if intake is not None:
+                study["intake"] = deepcopy(
+                    intake if isinstance(intake, dict) else {}
+                )
 
             coordinator = study.setdefault(
                 "coordinator",
@@ -1187,6 +1221,58 @@ class ProjectManager:
             self.active_detector_study_id = normalized_id
             self._write_detector_studies()
             return deepcopy(study)
+
+    def resolve_detector_study_intake(
+        self,
+        study_id,
+        *,
+        intake,
+        goal=None,
+        requirements=None,
+        assumptions=None,
+        success_criteria=None,
+    ):
+        self._ensure_detector_studies_loaded()
+        normalized_id = str(study_id or "").strip()
+        study = self.get_detector_study(normalized_id)
+        if not study:
+            raise ValueError(f"Detector study '{normalized_id}' was not found.")
+        if not isinstance(intake, dict):
+            raise ValueError("Detector study intake payload is required.")
+
+        unresolved = [
+            item
+            for item in intake.get("blocking_questions") or []
+            if isinstance(item, dict) and not item.get("resolved")
+        ]
+        if unresolved:
+            raise ValueError("Answer all blocking questions before continuing.")
+
+        brief = study.get("brief") or {}
+        merged_requirements = self._normalize_detector_study_string_list([
+            *(requirements if isinstance(requirements, list) else brief.get("requirements") or []),
+            *intake_answer_requirements(intake),
+        ])
+        merged_assumptions = self._normalize_detector_study_string_list(
+            assumptions
+            if isinstance(assumptions, list)
+            else brief.get("assumptions") or []
+        )
+        merged_criteria = self._normalize_detector_study_string_list(
+            success_criteria
+            if isinstance(success_criteria, list)
+            else brief.get("success_criteria") or []
+        )
+        return self.update_detector_study(
+            normalized_id,
+            phase="PLANNED",
+            status_message="Study brief confirmed and ready for AI planning.",
+            goal=goal,
+            requirements=merged_requirements,
+            assumptions=merged_assumptions,
+            success_criteria=merged_criteria,
+            intake=intake,
+        )
 
     def create_detector_study_checkpoint(self, study_id, *, label, phase=None):
         self._ensure_detector_studies_loaded()
@@ -4602,7 +4688,9 @@ class ProjectManager:
                 else:
                     temp_eval_params[key] = raw_expr
 
-            # Second pass for normalization ##
+            # Evaluated primitive parameters keep canonical GDML dimensional
+            # semantics. Renderers convert full lengths to half extents only at
+            # the geometry-library boundary.
             p = temp_eval_params
             ep = solid._evaluated_parameters
 
@@ -4651,11 +4739,11 @@ class ProjectManager:
                 ep['deltatheta'] = p.get('deltatheta', math.pi)
 
             elif solid_type == 'trd':
-                ep['dx1'] = p.get('x1', 0) / 2.0
-                ep['dx2'] = p.get('x2', 0) / 2.0
-                ep['dy1'] = p.get('y1', 0) / 2.0
-                ep['dy2'] = p.get('y2', 0) / 2.0
-                ep['dz'] = p.get('z', 0) / 2.0
+                ep['x1'] = p.get('x1', 0)
+                ep['x2'] = p.get('x2', 0)
+                ep['y1'] = p.get('y1', 0)
+                ep['y2'] = p.get('y2', 0)
+                ep['z'] = p.get('z', 0)
 
             elif solid.type == 'para':
                 ep['x'] = p.get('x', 0)
@@ -4673,31 +4761,31 @@ class ProjectManager:
                  ep['outst'] = p.get('outst', 0)
 
             elif solid_type == 'trap':
-                ep['z'] = p.get('z', 0) / 2.0
+                ep['z'] = p.get('z', 0)
                 ep['theta'] = p.get('theta', 0)
                 ep['phi'] = p.get('phi', 0)
-                ep['y1'] = p.get('y1', 0) / 2.0
-                ep['x1'] = p.get('x1', 0) / 2.0
-                ep['x2'] = p.get('x2', 0) / 2.0
+                ep['y1'] = p.get('y1', 0)
+                ep['x1'] = p.get('x1', 0)
+                ep['x2'] = p.get('x2', 0)
                 ep['alpha1'] = p.get('alpha1', 0)
-                ep['y2'] = p.get('y2', 0) / 2.0
-                ep['x3'] = p.get('x3', 0) / 2.0
-                ep['x4'] = p.get('x4', 0) / 2.0
+                ep['y2'] = p.get('y2', 0)
+                ep['x3'] = p.get('x3', 0)
+                ep['x4'] = p.get('x4', 0)
                 ep['alpha2'] = p.get('alpha2', 0)
                 
             elif solid_type == 'twistedbox':
                 ep['PhiTwist'] = p.get('PhiTwist', 0)
-                ep['x'] = p.get('x', 0) / 2.0
-                ep['y'] = p.get('y', 0) / 2.0
-                ep['z'] = p.get('z', 0) / 2.0
+                ep['x'] = p.get('x', 0)
+                ep['y'] = p.get('y', 0)
+                ep['z'] = p.get('z', 0)
             
             elif solid_type == 'twistedtrd':
                 ep['PhiTwist'] = p.get('PhiTwist', 0)
-                ep['x1'] = p.get('x1', 0) / 2.0
-                ep['x2'] = p.get('x2', 0) / 2.0
-                ep['y1'] = p.get('y1', 0) / 2.0
-                ep['y2'] = p.get('y2', 0) / 2.0
-                ep['z'] = p.get('z', 0) / 2.0
+                ep['x1'] = p.get('x1', 0)
+                ep['x2'] = p.get('x2', 0)
+                ep['y1'] = p.get('y1', 0)
+                ep['y2'] = p.get('y2', 0)
+                ep['z'] = p.get('z', 0)
 
             elif solid_type == 'twistedtrap':
                 ep['PhiTwist'] = p.get('PhiTwist', 0)
@@ -4716,7 +4804,7 @@ class ProjectManager:
                 ep['twistedangle'] = p.get('twistedangle', 0)
                 ep['endinnerrad'] = p.get('endinnerrad', 0)
                 ep['endouterrad'] = p.get('endouterrad', 0)
-                ep['zlen'] = p.get('zlen', 0) / 2.0
+                ep['zlen'] = p.get('zlen', 0)
                 ep['phi'] = p.get('phi', 2 * math.pi)
 
             elif solid_type in ['genericPolycone', 'genericPolyhedra']:
@@ -6793,6 +6881,501 @@ class ProjectManager:
         if isinstance(obj, dict):
             return deepcopy(obj)
         return obj.to_dict() if obj else None
+
+    @staticmethod
+    def _geometry_focus_json_vector(vector):
+        return {
+            axis: float(vector.get(axis, default))
+            for axis, default in (('x', 0.0), ('y', 0.0), ('z', 0.0))
+        }
+
+    @staticmethod
+    def _geometry_focus_json_value(value):
+        if isinstance(value, np.ndarray):
+            return [
+                ProjectManager._geometry_focus_json_value(item)
+                for item in value.tolist()
+            ]
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, dict):
+            return {
+                str(key): ProjectManager._geometry_focus_json_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [
+                ProjectManager._geometry_focus_json_value(item)
+                for item in value
+            ]
+        return deepcopy(value)
+
+    @staticmethod
+    def _geometry_focus_bounds_from_matrix(local_bounds, matrix):
+        mins = local_bounds['min']
+        maxs = local_bounds['max']
+        corners = np.array([
+            [x, y, z, 1.0]
+            for x in (mins[0], maxs[0])
+            for y in (mins[1], maxs[1])
+            for z in (mins[2], maxs[2])
+        ])
+        transformed = (matrix @ corners.T).T[:, :3]
+        transformed_mins = transformed.min(axis=0)
+        transformed_maxs = transformed.max(axis=0)
+        center = (transformed_mins + transformed_maxs) / 2.0
+        size = transformed_maxs - transformed_mins
+        return {
+            'min': {
+                'x': float(transformed_mins[0]),
+                'y': float(transformed_mins[1]),
+                'z': float(transformed_mins[2]),
+            },
+            'max': {
+                'x': float(transformed_maxs[0]),
+                'y': float(transformed_maxs[1]),
+                'z': float(transformed_maxs[2]),
+            },
+            'center': {'x': float(center[0]), 'y': float(center[1]), 'z': float(center[2])},
+            'size': {'x': float(size[0]), 'y': float(size[1]), 'z': float(size[2])},
+        }
+
+    @staticmethod
+    def _geometry_focus_aabb_distance(first, second):
+        first_min = np.array([first['min'][axis] for axis in ('x', 'y', 'z')])
+        first_max = np.array([first['max'][axis] for axis in ('x', 'y', 'z')])
+        second_min = np.array([second['min'][axis] for axis in ('x', 'y', 'z')])
+        second_max = np.array([second['max'][axis] for axis in ('x', 'y', 'z')])
+        separation = np.maximum(
+            np.maximum(first_min - second_max, second_min - first_max),
+            0.0,
+        )
+        return float(np.linalg.norm(separation))
+
+    def inspect_geometry_focus(
+        self,
+        component_type,
+        reference,
+        nearby_limit=6,
+        preflight_report=None,
+    ):
+        """Build a compact, instance-aware geometry report for AI inspection."""
+        if not self.current_geometry_state:
+            raise ValueError('No project geometry state is loaded.')
+
+        ok, error = self.recalculate_geometry_state()
+        if not ok:
+            raise ValueError(f'Geometry evaluation failed: {error}')
+
+        state = self.current_geometry_state
+        component_kind = str(component_type or 'auto').strip().lower()
+        component_kind = {
+            'pv': 'physical_volume',
+            'physical-volume': 'physical_volume',
+            'lv': 'logical_volume',
+            'logical-volume': 'logical_volume',
+        }.get(component_kind, component_kind)
+        target_ref = str(reference or '').strip()
+        if not target_ref:
+            raise ValueError('A geometry component reference is required.')
+
+        matching_pvs = []
+        if component_kind in {'auto', 'physical_volume'}:
+            pv_by_id = self._find_pv_by_id(target_ref)
+            if pv_by_id:
+                matching_pvs = [pv_by_id]
+            else:
+                matching_pvs = [
+                    pv
+                    for lv in state.logical_volumes.values()
+                    if lv.content_type == 'physvol'
+                    for pv in lv.content
+                    if pv.name == target_ref
+                ]
+                matching_pvs.extend(
+                    pv
+                    for assembly in state.assemblies.values()
+                    for pv in assembly.placements
+                    if pv.name == target_ref
+                )
+
+        if component_kind == 'auto':
+            if matching_pvs:
+                component_kind = 'physical_volume'
+            elif target_ref in state.logical_volumes:
+                component_kind = 'logical_volume'
+            elif target_ref in state.solids:
+                component_kind = 'solid'
+            else:
+                raise ValueError(f"Geometry component '{target_ref}' was not found.")
+
+        if component_kind == 'physical_volume' and not matching_pvs:
+            raise ValueError(f"Physical volume '{target_ref}' was not found.")
+        if component_kind == 'logical_volume' and target_ref not in state.logical_volumes:
+            raise ValueError(f"Logical volume '{target_ref}' was not found.")
+        if component_kind == 'solid' and target_ref not in state.solids:
+            raise ValueError(f"Solid '{target_ref}' was not found.")
+        if component_kind not in {'physical_volume', 'logical_volume', 'solid'}:
+            raise ValueError(f"Unsupported geometry component type '{component_type}'.")
+
+        target_pv_ids = {pv.id for pv in matching_pvs}
+        target_lv_names = set()
+        target_solid_names = set()
+        if component_kind == 'physical_volume':
+            target_lv_names = {
+                pv.volume_ref
+                for pv in matching_pvs
+                if pv.volume_ref in state.logical_volumes
+            }
+        elif component_kind == 'logical_volume':
+            target_lv_names = {target_ref}
+        else:
+            target_solid_names = {target_ref}
+            target_lv_names = {
+                lv.name
+                for lv in state.logical_volumes.values()
+                if lv.solid_ref == target_ref
+            }
+
+        for lv_name in target_lv_names:
+            lv = state.logical_volumes.get(lv_name)
+            if lv and lv.solid_ref:
+                target_solid_names.add(lv.solid_ref)
+
+        scene = state.get_threejs_scene_description()
+        scene_by_id = {
+            str(item.get('id')): item
+            for item in scene
+            if isinstance(item, dict) and item.get('id') is not None
+        }
+        children_by_parent = {}
+        for item in scene_by_id.values():
+            parent_id = item.get('parent_id')
+            if parent_id is not None:
+                children_by_parent.setdefault(str(parent_id), []).append(item)
+
+        local_matrices = {}
+        world_matrices = {}
+
+        def local_matrix(item):
+            item_id = str(item.get('id'))
+            if item_id not in local_matrices:
+                placement = PhysicalVolumePlacement('focus', 'focus')
+                placement._evaluated_position = self._geometry_focus_json_vector(
+                    item.get('position') or {}
+                )
+                placement._evaluated_rotation = self._geometry_focus_json_vector(
+                    item.get('rotation') or {}
+                )
+                placement._evaluated_scale = {
+                    axis: float((item.get('scale') or {}).get(axis, 1.0))
+                    for axis in ('x', 'y', 'z')
+                }
+                local_matrices[item_id] = placement.get_transform_matrix()
+            return local_matrices[item_id]
+
+        def world_matrix(item_id, active=None):
+            item_id = str(item_id)
+            if item_id in world_matrices:
+                return world_matrices[item_id]
+            active = set(active or ())
+            if item_id in active:
+                return np.eye(4)
+            active.add(item_id)
+            item = scene_by_id[item_id]
+            parent_id = item.get('parent_id')
+            matrix = local_matrix(item)
+            if parent_id is not None and str(parent_id) in scene_by_id:
+                matrix = world_matrix(str(parent_id), active) @ matrix
+            world_matrices[item_id] = matrix
+            return matrix
+
+        def hierarchy_path(item):
+            parts = []
+            current = item
+            seen = set()
+            while current:
+                current_id = str(current.get('id'))
+                if current_id in seen:
+                    parts.append('[cycle]')
+                    break
+                seen.add(current_id)
+                parts.append(f"{current.get('name') or current.get('volume_ref') or 'unnamed'}[{current_id}]")
+                parent_id = current.get('parent_id')
+                current = scene_by_id.get(str(parent_id)) if parent_id is not None else None
+            return ' / '.join(reversed(parts))
+
+        def item_solid(item):
+            solid_name = item.get('solid_ref_for_threejs')
+            if not solid_name:
+                lv = state.logical_volumes.get(str(item.get('volume_ref') or ''))
+                solid_name = lv.solid_ref if lv else None
+            return state.solids.get(solid_name) if solid_name else None
+
+        def item_world_bounds(item):
+            solid = item_solid(item)
+            local_bounds = self._get_solid_local_bounds(solid) if solid else None
+            if not local_bounds:
+                return None
+            return self._geometry_focus_bounds_from_matrix(
+                local_bounds,
+                world_matrix(str(item.get('id'))),
+            )
+
+        target_scene_items = []
+        for item in scene_by_id.values():
+            if item.get('is_source') or item.get('is_world_volume_placement'):
+                continue
+            if component_kind == 'physical_volume':
+                canonical_id = str(item.get('canonical_id') or item.get('id') or '')
+                if canonical_id in target_pv_ids:
+                    target_scene_items.append(item)
+            elif component_kind == 'logical_volume':
+                if str(item.get('volume_ref') or '') in target_lv_names:
+                    target_scene_items.append(item)
+            elif str(item.get('solid_ref_for_threejs') or '') in target_solid_names:
+                target_scene_items.append(item)
+
+        instances = []
+        for item in target_scene_items[:64]:
+            item_id = str(item.get('id'))
+            world = world_matrix(item_id)
+            world_position, world_rotation, world_scale = PhysicalVolumePlacement.decompose_matrix(world)
+            solid = item_solid(item)
+            local_bounds_definition = self._get_solid_local_bounds(solid) if solid else None
+            local_bounds = (
+                self._geometry_focus_bounds_from_matrix(
+                    local_bounds_definition,
+                    np.eye(4),
+                )
+                if local_bounds_definition
+                else None
+            )
+            instances.append({
+                'instance_id': item_id,
+                'canonical_id': str(item.get('canonical_id') or item_id),
+                'name': item.get('name'),
+                'hierarchy_path': hierarchy_path(item),
+                'local_transform': {
+                    'position_mm': self._geometry_focus_json_vector(item.get('position') or {}),
+                    'rotation_rad': self._geometry_focus_json_vector(item.get('rotation') or {}),
+                    'scale': {
+                        axis: float((item.get('scale') or {}).get(axis, 1.0))
+                        for axis in ('x', 'y', 'z')
+                    },
+                },
+                'world_transform': {
+                    'position_mm': self._geometry_focus_json_vector(world_position),
+                    'rotation_rad': self._geometry_focus_json_vector(world_rotation),
+                    'scale': self._geometry_focus_json_vector(world_scale),
+                },
+                'local_bounding_box_mm': local_bounds,
+                'world_bounding_box_mm': (
+                    self._geometry_focus_bounds_from_matrix(
+                        local_bounds_definition,
+                        world,
+                    )
+                    if local_bounds_definition
+                    else None
+                ),
+            })
+
+        related_lvs = [
+            state.logical_volumes[name]
+            for name in sorted(target_lv_names)
+            if name in state.logical_volumes
+        ]
+        related_solids = [
+            state.solids[name]
+            for name in sorted(target_solid_names)
+            if name in state.solids
+        ]
+        solid_descriptions = [
+            {
+                'name': solid.name,
+                'type': solid.type,
+                'raw_dimensions': self._geometry_focus_json_value(
+                    solid.raw_parameters
+                ),
+                'evaluated_dimensions': self._geometry_focus_json_value(
+                    solid._evaluated_parameters
+                ),
+                'bounding_box_supported': self._get_solid_local_bounds(solid) is not None,
+            }
+            for solid in related_solids
+        ]
+        logical_volume_descriptions = [
+            {
+                'name': lv.name,
+                'solid_ref': lv.solid_ref,
+                'material_ref': lv.material_ref,
+                'is_sensitive': bool(lv.is_sensitive),
+                'content_type': lv.content_type,
+            }
+            for lv in related_lvs
+        ]
+
+        parent_entries = {}
+        child_entries = {}
+        for item in target_scene_items:
+            parent_id = item.get('parent_id')
+            parent = scene_by_id.get(str(parent_id)) if parent_id is not None else None
+            if parent:
+                parent_entries[str(parent.get('id'))] = {
+                    'instance_id': str(parent.get('id')),
+                    'canonical_id': str(parent.get('canonical_id') or parent.get('id')),
+                    'name': parent.get('name'),
+                    'logical_volume': parent.get('volume_ref'),
+                    'hierarchy_path': hierarchy_path(parent),
+                }
+            for child in children_by_parent.get(str(item.get('id')), []):
+                child_entries[str(child.get('id'))] = {
+                    'instance_id': str(child.get('id')),
+                    'canonical_id': str(child.get('canonical_id') or child.get('id')),
+                    'name': child.get('name'),
+                    'logical_volume': child.get('volume_ref'),
+                    'hierarchy_path': hierarchy_path(child),
+                }
+
+        target_instance_ids = {str(item.get('id')) for item in target_scene_items}
+        nearby_candidates = {}
+        target_bounds = [
+            item_world_bounds(item)
+            for item in target_scene_items
+        ]
+        target_bounds = [bounds for bounds in target_bounds if bounds is not None]
+        if target_bounds:
+            for item in scene_by_id.values():
+                item_id = str(item.get('id'))
+                if (
+                    item_id in target_instance_ids
+                    or item.get('is_source')
+                    or item.get('is_world_volume_placement')
+                    or item.get('is_assembly_container')
+                ):
+                    continue
+                bounds = item_world_bounds(item)
+                if bounds is None:
+                    continue
+                distance = min(
+                    self._geometry_focus_aabb_distance(bounds, focus_bounds)
+                    for focus_bounds in target_bounds
+                )
+                nearby_candidates[item_id] = {
+                    'instance_id': item_id,
+                    'canonical_id': str(item.get('canonical_id') or item_id),
+                    'name': item.get('name'),
+                    'logical_volume': item.get('volume_ref'),
+                    'hierarchy_path': hierarchy_path(item),
+                    'aabb_distance_mm': distance,
+                    'aabb_intersects': distance == 0.0,
+                    'world_bounding_box_mm': bounds,
+                }
+        nearby = sorted(
+            nearby_candidates.values(),
+            key=lambda entry: (entry['aabb_distance_mm'], entry['hierarchy_path']),
+        )[:max(0, min(int(nearby_limit), 20))]
+
+        full_preflight = preflight_report or self.run_preflight_checks()
+        spatial_codes = {
+            'daughter_entirely_outside_mother',
+            'daughter_extends_outside_mother',
+            'possible_overlap_aabb',
+            'overlap_report_truncated',
+            'placement_hierarchy_cycle',
+            'placement_hierarchy_cycle_report_truncated',
+            'world_volume_referenced_as_child',
+            'unknown_placement_volume_reference',
+            'missing_placement_volume_reference',
+        }
+        concern_refs = set(target_pv_ids) | target_lv_names | target_solid_names
+        concern_refs.update(pv.name for pv in matching_pvs)
+        concern_refs.update(
+            str(item.get('canonical_id') or item.get('id'))
+            for item in target_scene_items
+        )
+        candidate_issues = [
+            (issue, False)
+            for issue in full_preflight.get('issues', [])
+        ]
+        scoped_lv_names = set(target_lv_names)
+        if component_kind == 'physical_volume':
+            scoped_lv_names.update(
+                pv.volume_ref
+                for pv in matching_pvs
+                if pv.volume_ref in state.logical_volumes
+            )
+        for lv_name in sorted(scoped_lv_names):
+            try:
+                scoped_report = self.build_scoped_preflight_report(
+                    full_preflight,
+                    'logical_volume',
+                    lv_name,
+                )
+            except ValueError:
+                continue
+            candidate_issues.extend(
+                (issue, True)
+                for issue in scoped_report.get('issues', [])
+            )
+
+        concerns = []
+        seen_concerns = set()
+        for issue, is_in_scoped_volume in candidate_issues:
+            refs = issue.get('object_refs') or []
+            if not isinstance(refs, list):
+                refs = [refs]
+            issue_key = (
+                issue.get('severity'),
+                issue.get('code'),
+                issue.get('message'),
+                tuple(str(ref) for ref in refs if ref is not None),
+            )
+            is_directly_related = any(
+                str(ref) in concern_refs for ref in refs if ref is not None
+            )
+            if (
+                issue.get('code') in spatial_codes
+                and (is_directly_related or is_in_scoped_volume)
+                and issue_key not in seen_concerns
+            ):
+                seen_concerns.add(issue_key)
+                concerns.append(deepcopy(issue))
+
+        target_ids = sorted(target_pv_ids) if component_kind == 'physical_volume' else [target_ref]
+        return {
+            'schema_version': 1,
+            'target': {
+                'component_type': component_kind,
+                'requested_reference': target_ref,
+                'object_ids': target_ids,
+                'ambiguous_reference': (
+                    component_kind == 'physical_volume' and len(target_pv_ids) > 1
+                ),
+            },
+            'solid_dimensions': solid_descriptions,
+            'logical_volume_state': logical_volume_descriptions,
+            'instances': instances,
+            'instance_summary': {
+                'count': len(target_scene_items),
+                'returned': len(instances),
+                'multiple_world_instances': len(target_scene_items) > 1,
+                'truncated': len(target_scene_items) > len(instances),
+            },
+            'relationships': {
+                'parents': list(parent_entries.values()),
+                'children': list(child_entries.values()),
+                'nearby_components': nearby,
+            },
+            'geometry_concerns': {
+                'summary': {
+                    'issue_count': len(concerns),
+                    'has_overlap_or_containment_concerns': bool(concerns),
+                    'full_preflight_can_run': full_preflight.get('summary', {}).get('can_run'),
+                },
+                'issues': concerns,
+            },
+        }
 
     def _normalize_update_property_path_parts(self, property_path):
         if not isinstance(property_path, str):
@@ -10631,6 +11214,192 @@ class ProjectManager:
             'issue_fingerprint': issue_fingerprint,
         }
         return report
+
+    def _get_solid_local_bounds(self, solid):
+        """Returns conservative local min/max bounds for supported primitives."""
+        if solid is None:
+            return None
+
+        parameters = solid._evaluated_parameters or {}
+
+        def number(value, default=0.0):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                success, evaluated = self.expression_evaluator.evaluate(str(value))
+                if not success:
+                    return float(default)
+                try:
+                    return float(evaluated)
+                except (TypeError, ValueError):
+                    return float(default)
+
+        def symmetric(x_extent, y_extent, z_extent):
+            x_extent = abs(float(x_extent))
+            y_extent = abs(float(y_extent))
+            z_extent = abs(float(z_extent))
+            if x_extent <= 0 or y_extent <= 0 or z_extent <= 0:
+                return None
+            return {
+                'min': (-x_extent, -y_extent, -z_extent),
+                'max': (x_extent, y_extent, z_extent),
+            }
+
+        solid_type = str(solid.type or '').lower()
+        try:
+            if solid_type in {'box', 'twistedbox'}:
+                return symmetric(
+                    number(parameters.get('x')) / 2.0,
+                    number(parameters.get('y')) / 2.0,
+                    number(parameters.get('z')) / 2.0,
+                )
+
+            if solid_type in {'tube', 'cylinder', 'tubs'}:
+                radius = number(parameters.get('rmax'))
+                return symmetric(radius, radius, number(parameters.get('z')) / 2.0)
+
+            if solid_type == 'cone':
+                radius = max(
+                    number(parameters.get('rmax1')),
+                    number(parameters.get('rmax2')),
+                )
+                return symmetric(radius, radius, number(parameters.get('z')) / 2.0)
+
+            if solid_type == 'sphere':
+                radius = number(parameters.get('rmax'))
+                return symmetric(radius, radius, radius)
+
+            if solid_type == 'orb':
+                radius = number(parameters.get('r'))
+                return symmetric(radius, radius, radius)
+
+            if solid_type in {'trd', 'twistedtrd'}:
+                return symmetric(
+                    max(number(parameters.get('x1')), number(parameters.get('x2'))) / 2.0,
+                    max(number(parameters.get('y1')), number(parameters.get('y2'))) / 2.0,
+                    number(parameters.get('z')) / 2.0,
+                )
+
+            if solid_type == 'para':
+                half_x = number(parameters.get('x')) / 2.0
+                half_y = number(parameters.get('y')) / 2.0
+                half_z = number(parameters.get('z')) / 2.0
+                alpha = number(parameters.get('alpha'))
+                theta = number(parameters.get('theta'))
+                phi = number(parameters.get('phi'))
+                x_extent = (
+                    half_x
+                    + abs(half_y * math.tan(alpha))
+                    + abs(half_z * math.tan(theta) * math.cos(phi))
+                )
+                y_extent = half_y + abs(
+                    half_z * math.tan(theta) * math.sin(phi)
+                )
+                return symmetric(x_extent, y_extent, half_z)
+
+            if solid_type in {'trap', 'twistedtrap'}:
+                half_z = number(parameters.get('z')) / 2.0
+                half_y = max(
+                    number(parameters.get('y1')),
+                    number(parameters.get('y2')),
+                ) / 2.0
+                half_x = max(
+                    number(parameters.get('x1')),
+                    number(parameters.get('x2')),
+                    number(parameters.get('x3')),
+                    number(parameters.get('x4')),
+                ) / 2.0
+                theta = number(
+                    parameters.get('theta', parameters.get('Theta', 0.0))
+                )
+                phi = number(
+                    parameters.get('phi', parameters.get('Phi', 0.0))
+                )
+                alpha = max(
+                    abs(number(parameters.get('alpha1', parameters.get('Alph', 0.0)))),
+                    abs(number(parameters.get('alpha2', parameters.get('Alph', 0.0)))),
+                )
+                x_extent = (
+                    half_x
+                    + abs(half_y * math.tan(alpha))
+                    + abs(half_z * math.tan(theta) * math.cos(phi))
+                )
+                y_extent = half_y + abs(
+                    half_z * math.tan(theta) * math.sin(phi)
+                )
+                return symmetric(x_extent, y_extent, half_z)
+
+            if solid_type == 'hype':
+                half_z = number(parameters.get('z')) / 2.0
+                outer_radius = number(parameters.get('rmax'))
+                outer_stereo = number(parameters.get('outst'))
+                end_radius = math.sqrt(
+                    outer_radius ** 2
+                    + (half_z * math.tan(outer_stereo)) ** 2
+                )
+                return symmetric(end_radius, end_radius, half_z)
+
+            if solid_type == 'twistedtubs':
+                radius = number(parameters.get('endouterrad'))
+                return symmetric(
+                    radius,
+                    radius,
+                    number(parameters.get('zlen')) / 2.0,
+                )
+
+            if solid_type in {'genericpolycone', 'genericpolyhedra'}:
+                points = parameters.get('rzpoints') or []
+                radii = [
+                    abs(number(point.get('r')))
+                    for point in points
+                    if isinstance(point, dict)
+                ]
+                z_values = [
+                    number(point.get('z'))
+                    for point in points
+                    if isinstance(point, dict)
+                ]
+                if not radii or not z_values or max(radii) <= 0:
+                    return None
+                return {
+                    'min': (-max(radii), -max(radii), min(z_values)),
+                    'max': (max(radii), max(radii), max(z_values)),
+                }
+
+            if solid_type == 'xtru':
+                vertices = parameters.get('twoDimVertices') or []
+                sections = parameters.get('sections') or []
+                transformed_vertices = []
+                for section in sections:
+                    if not isinstance(section, dict):
+                        continue
+                    scale = number(section.get('scalingFactor'), 1.0)
+                    x_offset = number(section.get('xOffset'))
+                    y_offset = number(section.get('yOffset'))
+                    z_position = number(section.get('zPosition'))
+                    for vertex in vertices:
+                        if not isinstance(vertex, dict):
+                            continue
+                        transformed_vertices.append((
+                            number(vertex.get('x')) * scale + x_offset,
+                            number(vertex.get('y')) * scale + y_offset,
+                            z_position,
+                        ))
+                if not transformed_vertices:
+                    return None
+                coordinates = np.array(transformed_vertices, dtype=float)
+                mins = coordinates.min(axis=0)
+                maxs = coordinates.max(axis=0)
+                if np.any(maxs - mins <= 0):
+                    return None
+                return {
+                    'min': tuple(float(value) for value in mins),
+                    'max': tuple(float(value) for value in maxs),
+                }
+        except (OverflowError, ValueError, ZeroDivisionError):
+            return None
+
+        return None
 
     def _get_solid_local_half_extents(self, solid):
         """Returns (hx, hy, hz) for supported primitive solids, else None."""
