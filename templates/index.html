@@ -6068,6 +6068,10 @@
                             <input type="checkbox" id="ai_runtime_llama_cpp_supports_vision">
                             Vision-capable model
                         </label>
+                        <label class="ai-runtime-inline-check" for="ai_runtime_llama_cpp_enable_thinking">
+                            <input type="checkbox" id="ai_runtime_llama_cpp_enable_thinking">
+                            Enable extended reasoning
+                        </label>
 
                         <div class="ai-runtime-field">
                             <label for="ai_runtime_llama_cpp_base_url">Base URL</label>
@@ -6084,6 +6088,14 @@
                         <div class="ai-runtime-field">
                             <label for="ai_runtime_llama_cpp_timeout_seconds">Timeout (seconds)</label>
                             <input type="number" id="ai_runtime_llama_cpp_timeout_seconds" step="0.1" min="0.1">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_max_context_tokens">Context window tokens</label>
+                            <input type="number" id="ai_runtime_llama_cpp_max_context_tokens" step="1" min="512">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_llama_cpp_max_output_tokens">Max output tokens per turn</label>
+                            <input type="number" id="ai_runtime_llama_cpp_max_output_tokens" step="1" min="64">
                         </div>
                         <div class="ai-runtime-field">
                             <label for="ai_runtime_llama_cpp_max_retries">Max retries</label>
@@ -6130,6 +6142,14 @@
                         <div class="ai-runtime-field">
                             <label for="ai_runtime_lm_studio_timeout_seconds">Timeout (seconds)</label>
                             <input type="number" id="ai_runtime_lm_studio_timeout_seconds" step="0.1" min="0.1">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_max_context_tokens">Context window tokens</label>
+                            <input type="number" id="ai_runtime_lm_studio_max_context_tokens" step="1" min="512">
+                        </div>
+                        <div class="ai-runtime-field">
+                            <label for="ai_runtime_lm_studio_max_output_tokens">Max output tokens per turn</label>
+                            <input type="number" id="ai_runtime_lm_studio_max_output_tokens" step="1" min="64">
                         </div>
                         <div class="ai-runtime-field">
                             <label for="ai_runtime_lm_studio_max_retries">Max retries</label>

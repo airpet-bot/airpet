@@ -81,6 +81,8 @@ from src.ai_backend_adapters import (
     invoke_text_request_for_backend,
     select_backend_for_text_request,
 )
+from src.ai_chat_orchestrator import ProviderIndependentChatOrchestrator
+from src.ai_tool_dispatcher import AIToolDispatcher, AIToolDispatchHooks
 from src.ai_artifact_store import (
     ARTIFACT_STORE_SCHEMA_VERSION,
     AIArtifactStore,
@@ -13597,42 +13599,23 @@ def dispatch_ai_tool(
     *,
     apply_risk_verification: bool = True,
 ) -> Dict[str, Any]:
-    normalized_args, normalize_error = _normalize_tool_args(tool_name, args)
-    receipt_args = (
-        normalized_args
-        if normalize_error is None and isinstance(normalized_args, dict)
-        else args
-    )
-    receipt_spec = _ai_edit_receipt_spec(tool_name, receipt_args or {})
-    before = _capture_ai_edit_receipt_state(pm, receipt_spec)
-    risk_spec = (
-        _classify_ai_edit_risk(pm, tool_name, receipt_args or {})
-        if apply_risk_verification and normalize_error is None
-        else None
-    )
-
-    result = _dispatch_ai_tool_impl(pm, tool_name, args)
-    if (
-        isinstance(result, dict)
-        and result.get("success") is True
-        and receipt_spec is not None
-    ):
-        result["edit_receipt"] = _build_ai_edit_receipt(
-            pm,
-            tool_name,
-            receipt_spec,
-            before,
+    dispatcher = AIToolDispatcher(
+        AIToolDispatchHooks(
+            normalize_args=_normalize_tool_args,
+            receipt_spec=_ai_edit_receipt_spec,
+            capture_receipt_state=_capture_ai_edit_receipt_state,
+            classify_risk=_classify_ai_edit_risk,
+            execute=_dispatch_ai_tool_impl,
+            build_receipt=_build_ai_edit_receipt,
+            build_risk_verification=_build_ai_risk_aware_verification,
         )
-    if (
-        isinstance(result, dict)
-        and result.get("success") is True
-        and risk_spec is not None
-    ):
-        result["risk_aware_verification"] = _build_ai_risk_aware_verification(
-            pm,
-            risk_spec,
-        )
-    return result
+    )
+    return dispatcher.dispatch(
+        pm,
+        tool_name,
+        args,
+        apply_risk_verification=apply_risk_verification,
+    )
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
@@ -13674,7 +13657,6 @@ def _coerce_optional_int(value: Any) -> Optional[int]:
 AI_TOOL_BUNDLES = {
     "core": {
         "request_visual_verification",
-        "manage_detector_study",
         "get_project_summary",
         "get_component_details",
         "inspect_geometry_focus",
@@ -13687,15 +13669,17 @@ AI_TOOL_BUNDLES = {
         "manage_material",
         "create_primitive_solid",
         "modify_solid",
-        "create_boolean_solid",
         "manage_logical_volume",
         "place_volume",
         "modify_physical_volume",
-        "create_detector_ring",
         "delete_objects",
         "set_volume_appearance",
-        "delete_detector_ring",
         "batch_geometry_update",
+    },
+    "geometry_advanced": {
+        "create_detector_ring",
+        "delete_detector_ring",
+        "create_boolean_solid",
         "insert_physics_template",
         "manage_optical_surface",
         "manage_surface_link",
@@ -13783,12 +13767,28 @@ def _select_ai_tools_for_conversation(
         if isinstance(content, str):
             recent_text.append(content)
     intent_text = " ".join(recent_text).lower()
+    user_intent_text = str(user_message or "").lower()
+    simulation_negation_pattern = (
+        r"\b(?:do not|don't|without|no)\b.{0,24}"
+        r"\b(?:run|launch|start)?\s*(?:a\s+)?simulat\w*"
+    )
+    routing_intent_text = re.sub(
+        simulation_negation_pattern,
+        "",
+        intent_text,
+    )
 
     keyword_groups = {
         "geometry": (
             "geometry", "build", "create", "place", "move", "rotate", "align",
             "volume", "solid", "material", "cad", "gdml", "array", "detector",
             "sensitive", "import", "assembly",
+        ),
+        "geometry_advanced": (
+            "boolean", "subtract", "union", "intersection", "ring", "array",
+            "pattern", "generator", "assembly", "optical surface",
+            "skin surface", "border surface", "ui group", "cad", "gdml",
+            "import", "physics template",
         ),
         "simulation": (
             "simulate", "simulation", "run ", "beam", "source", "gps", "particle",
@@ -13811,10 +13811,24 @@ def _select_ai_tools_for_conversation(
     selected_bundle_names = {
         bundle_name
         for bundle_name, keywords in keyword_groups.items()
-        if any(keyword in intent_text for keyword in keywords)
+        if any(keyword in routing_intent_text for keyword in keywords)
     }
+    simulation_is_explicitly_negated = bool(
+        re.search(simulation_negation_pattern, user_intent_text)
+    )
+    if simulation_is_explicitly_negated:
+        selected_bundle_names.discard("simulation")
+
+    if "geometry_advanced" in selected_bundle_names:
+        selected_bundle_names.add("geometry")
+
     if not selected_bundle_names:
-        return list(AI_GEOMETRY_TOOLS)
+        selected_names = set(AI_TOOL_BUNDLES["core"])
+        return [
+            tool
+            for tool in AI_GEOMETRY_TOOLS
+            if tool.get("name") in selected_names
+        ]
 
     selected_names = set(AI_TOOL_BUNDLES["core"])
     for bundle_name in selected_bundle_names:
@@ -16497,6 +16511,11 @@ def _stream_ai_chat_response(
             )
             use_native_tool_loop = bool(selected_backend_id == "llama_cpp")
             effective_require_tools = False if disable_tools else bool(require_tools or use_native_tool_loop)
+            local_chat_orchestrator = ProviderIndependentChatOrchestrator(
+                selected_backend_id,
+                selector_runtime_config,
+                invoke_text_request_for_backend,
+            )
 
             job_id = None
             version_id = None
@@ -16511,7 +16530,7 @@ def _stream_ai_chat_response(
                     logger.info(f"\n=== Stream Turn {turn + 1}/{turn_limit} ===")
                 yield f"data: {json.dumps({'type': 'turn_start', 'turn': turn + 1, 'turn_limit': turn_limit})}\n\n"
                 
-                invocation_request = TextGenerationRequest(
+                invocation_request = local_chat_orchestrator.build_request(
                     messages=tuple(local_messages),
                     require_tools=effective_require_tools,
                     require_json_mode=require_json_mode,
@@ -16521,12 +16540,14 @@ def _stream_ai_chat_response(
                     tool_schemas=openai_tool_schemas if effective_require_tools else None,
                     tool_choice="auto" if effective_require_tools else None,
                 )
-
-                adapter_response = invoke_text_request_for_backend(
-                    selected_backend_id,
-                    invocation_request,
-                    runtime_config=selector_runtime_config,
+                yield (
+                    "data: "
+                    f"{json.dumps(local_chat_orchestrator.request_event(turn=turn + 1))}"
+                    "\n\n"
                 )
+                turn_result = local_chat_orchestrator.invoke_turn(invocation_request)
+                adapter_response = turn_result.response
+                yield f"data: {json.dumps(turn_result.response_event(turn=turn + 1))}\n\n"
 
                 last_execution_payload = {
                     "backend_id": adapter_response.backend_id,
@@ -16742,6 +16763,36 @@ def _stream_ai_chat_response(
                         tool_name,
                         result,
                     )
+                    progress_result = {
+                        "type": "tool_result",
+                        "turn": turn + 1,
+                        "tool": tool_name,
+                        "success": bool(
+                            isinstance(result, dict)
+                            and result.get("success") is True
+                        ),
+                    }
+                    if isinstance(result, dict):
+                        for key in ("message", "error", "job_id", "version_id"):
+                            if result.get(key) is not None:
+                                progress_result[key] = result.get(key)
+                        receipt = result.get("edit_receipt")
+                        if isinstance(receipt, dict):
+                            progress_result["edit_receipt"] = {
+                                key: receipt.get(key)
+                                for key in (
+                                    "tool_name",
+                                    "changed",
+                                    "target_count",
+                                )
+                                if receipt.get(key) is not None
+                            }
+                        verification = result.get("risk_aware_verification")
+                        if isinstance(verification, dict):
+                            progress_result["risk_class"] = verification.get(
+                                "risk_class"
+                            )
+                    yield f"data: {json.dumps(progress_result)}\n\n"
 
                     if isinstance(result, dict):
                         if "job_id" in result:
@@ -17069,6 +17120,16 @@ def _stream_ai_chat_response(
                             tool_name,
                             result,
                         )
+                        progress_result = {
+                            "type": "tool_result",
+                            "turn": turn + 1,
+                            "tool": tool_name,
+                            "success": bool(result.get("success") is True),
+                        }
+                        for key in ("message", "error", "job_id", "version_id"):
+                            if result.get(key) is not None:
+                                progress_result[key] = result.get(key)
+                        yield f"data: {json.dumps(progress_result)}\n\n"
                         
                         if "job_id" in result: job_id = result["job_id"]
                         if "version_id" in result: version_id = result["version_id"]
@@ -17688,6 +17749,11 @@ def ai_chat_route():
             )
             use_native_tool_loop = bool(selected_backend_id == "llama_cpp")
             effective_require_tools = False if disable_tools else bool(require_tools or use_native_tool_loop)
+            local_chat_orchestrator = ProviderIndependentChatOrchestrator(
+                selected_backend_id,
+                selector_runtime_config,
+                invoke_text_request_for_backend,
+            )
 
             job_id = None
             version_id = None
@@ -17701,7 +17767,7 @@ def ai_chat_route():
                 print(f"\n=== Turn {turn + 1}/{turn_limit} ===", flush=True)
                 if APP_MODE != "production":
                     logger.debug(f"Messages: {len(local_messages)}, Tools: {effective_require_tools}")
-                invocation_request = TextGenerationRequest(
+                invocation_request = local_chat_orchestrator.build_request(
                     messages=tuple(local_messages),
                     require_tools=effective_require_tools,
                     require_json_mode=require_json_mode,
@@ -17721,11 +17787,9 @@ def ai_chat_route():
                     for ts in openai_tool_schemas[:1]:  # Just log first tool as sample
                         if APP_MODE != "production":
                             logger.debug(f"Sample tool: {ts.get('name')} with {len(ts.get('function', {}).get('parameters', {}).get('properties', {}))} params")
-                adapter_response = invoke_text_request_for_backend(
-                    selected_backend_id,
-                    invocation_request,
-                    runtime_config=selector_runtime_config,
-                )
+                adapter_response = local_chat_orchestrator.invoke_turn(
+                    invocation_request
+                ).response
 
                 last_execution_payload = {
                     "backend_id": adapter_response.backend_id,
@@ -18511,7 +18575,14 @@ def get_ai_context_stats():
         try:
             runtime_model = model_id.split('::', 1)[1]
             if runtime_model:
-                max_context_tokens = 16_384
+                runtime_config = _resolve_effective_runtime_config()
+                runtime_backend = _runtime_backend_config(
+                    runtime_config,
+                    "llama_cpp",
+                )
+                max_context_tokens = _coerce_optional_int(
+                    runtime_backend.get("max_context_tokens")
+                ) or 16_384
         except Exception:
             pass
     elif model_id.startswith('lm_studio::'):
@@ -18519,7 +18590,14 @@ def get_ai_context_stats():
         try:
             runtime_model = model_id.split('::', 1)[1]
             if runtime_model:
-                max_context_tokens = 32_768
+                runtime_config = _resolve_effective_runtime_config()
+                runtime_backend = _runtime_backend_config(
+                    runtime_config,
+                    "lm_studio",
+                )
+                max_context_tokens = _coerce_optional_int(
+                    runtime_backend.get("max_context_tokens")
+                ) or 32_768
         except Exception:
             pass
     elif model_id and model_id != '--export--':

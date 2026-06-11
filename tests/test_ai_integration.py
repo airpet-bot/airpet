@@ -93,6 +93,78 @@ def test_ai_tool_routing_uses_recent_context_for_short_followup():
     assert "configure_incident_beam" in selected_names
 
 
+def test_ai_tool_routing_respects_explicit_no_simulation_instruction():
+    selected = _select_ai_tools_for_conversation(
+        [],
+        (
+            "Create one silicon detector tile at the origin. "
+            "Do not run a simulation."
+        ),
+    )
+    selected_names = {tool["name"] for tool in selected}
+
+    assert "create_primitive_solid" in selected_names
+    assert "manage_logical_volume" in selected_names
+    assert "run_simulation" not in selected_names
+    assert "run_detector_study" not in selected_names
+    assert len(selected) < 20
+
+
+def test_ai_tool_routing_keeps_no_simulation_constraint_for_short_followup():
+    selected = _select_ai_tools_for_conversation(
+        [{
+            "role": "user",
+            "content": (
+                "Create one silicon tile at the origin. "
+                "Do not run a simulation."
+            ),
+        }],
+        "Make it 2 mm thicker.",
+    )
+    selected_names = {tool["name"] for tool in selected}
+
+    assert "modify_solid" in selected_names
+    assert "run_simulation" not in selected_names
+    assert "run_detector_study" not in selected_names
+
+
+def test_ai_tool_routing_uses_compact_core_for_unclassified_requests():
+    selected = _select_ai_tools_for_conversation([], "What can you help me with?")
+    selected_names = {tool["name"] for tool in selected}
+
+    assert "get_project_summary" in selected_names
+    assert "search_components" in selected_names
+    assert "run_simulation" not in selected_names
+    assert len(selected) < 10
+
+
+def test_context_stats_uses_saved_local_backend_context_override(client):
+    save_response = client.post(
+        "/api/ai/backends/runtime_config",
+        json={
+            "runtime_config": {
+                "backends": {
+                    "llama_cpp": {
+                        "enabled": True,
+                        "model": "qwen-local",
+                        "max_context_tokens": 131072,
+                    },
+                },
+            },
+        },
+    )
+    assert save_response.status_code == 200
+
+    response = client.get(
+        "/api/ai/context_stats?model=llama_cpp::qwen-local"
+    )
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["context_source"] == "llama_cpp"
+    assert payload["max_context_tokens"] == 131072
+
+
 def test_get_simulation_analysis_ai_schema_exposes_sensitive_detector_filter():
     analysis_tool = next(
         tool for tool in AI_GEOMETRY_TOOLS
@@ -964,6 +1036,22 @@ def test_ai_chat_stream_persists_final_reply_in_history_for_local_adapter(client
         complete_events = [evt for evt in events if evt.get('type') == 'complete']
         assert complete_events, events
         assert complete_events[-1]['message'] == 'All set.'
+        request_events = [
+            evt for evt in events
+            if evt.get('type') == 'model_request_start'
+        ]
+        response_events = [
+            evt for evt in events
+            if evt.get('type') == 'model_response'
+        ]
+        assert request_events[0]['generation_policy']['max_output_tokens'] == 2048
+        assert request_events[0]['generation_policy']['extended_reasoning'] is False
+        assert response_events[0]['usage'] == {
+            'prompt_tokens': 7,
+            'completion_tokens': 3,
+        }
+        invocation_request = MockInvokeAdapter.call_args.args[1]
+        assert invocation_request.max_output_tokens == 2048
 
         history_response = client.get('/api/ai/history')
         assert history_response.status_code == 200
@@ -1026,6 +1114,16 @@ def test_ai_chat_stream_persists_prompt_reply_and_tool_activity_in_history_for_l
         assert complete_events[-1]['message'] == 'Done. Created the SiPM grid on kapton.'
         assert MockInvokeAdapter.call_count == 2
         MockDispatchTool.assert_called_once()
+        tool_result_events = [
+            evt for evt in events if evt.get('type') == 'tool_result'
+        ]
+        assert tool_result_events == [{
+            'type': 'tool_result',
+            'turn': 1,
+            'tool': 'manage_define',
+            'success': True,
+            'message': 'Define updated.',
+        }]
 
         history_response = client.get('/api/ai/history')
         assert history_response.status_code == 200

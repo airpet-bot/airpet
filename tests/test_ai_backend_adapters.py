@@ -454,6 +454,30 @@ def test_llama_cpp_adapter_builds_openai_chat_payload_for_text_first_json_mode()
     assert payload["response_format"] == {"type": "json_object"}
     assert payload["max_tokens"] == 128
     assert payload["temperature"] == 0.1
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_llama_cpp_adapter_applies_runtime_generation_defaults():
+    adapter = LlamaCppTextAdapter(
+        LlamaCppAdapterConfig.from_runtime_config({
+            "backends": {
+                "llama_cpp": {
+                    "max_output_tokens": 3072,
+                    "enable_thinking": "true",
+                },
+            },
+        })
+    )
+
+    payload = adapter.build_payload(
+        TextGenerationRequest(
+            messages=(TextMessage(role="user", content="Use a tool."),),
+            require_json_mode=False,
+        )
+    )
+
+    assert payload["max_tokens"] == 3072
+    assert payload["chat_template_kwargs"] == {"enable_thinking": True}
 
 
 def test_text_message_serializes_tool_fields_for_openai_history():
@@ -563,6 +587,27 @@ def test_lm_studio_adapter_builds_openai_chat_payload_for_text_first_json_mode()
     assert payload["response_format"] == {"type": "json_object"}
     assert payload["max_tokens"] == 256
     assert payload["temperature"] == 0.2
+
+
+def test_lm_studio_adapter_applies_bounded_default_output_tokens():
+    adapter = LMStudioTextAdapter(
+        LMStudioAdapterConfig.from_runtime_config({
+            "backends": {
+                "lm_studio": {
+                    "max_output_tokens": 1536,
+                },
+            },
+        })
+    )
+
+    payload = adapter.build_payload(
+        TextGenerationRequest(
+            messages=(TextMessage(role="user", content="Hello."),),
+            require_json_mode=False,
+        )
+    )
+
+    assert payload["max_tokens"] == 1536
 
 
 class _FakeResponse:

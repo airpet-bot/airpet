@@ -696,6 +696,9 @@ function initRuntimeConfigUi() {
             retry_backoff_seconds: document.getElementById(`ai_runtime_${backendId}_retry_backoff_seconds`),
             verify_tls: document.getElementById(`ai_runtime_${backendId}_verify_tls`),
             supports_vision: document.getElementById(`ai_runtime_${backendId}_supports_vision`),
+            max_context_tokens: document.getElementById(`ai_runtime_${backendId}_max_context_tokens`),
+            max_output_tokens: document.getElementById(`ai_runtime_${backendId}_max_output_tokens`),
+            enable_thinking: document.getElementById(`ai_runtime_${backendId}_enable_thinking`),
             headers_json: document.getElementById(`ai_runtime_${backendId}_headers_json`),
         };
     });
@@ -778,6 +781,9 @@ function collectRuntimeConfigFormState() {
             retry_backoff_seconds: fields.retry_backoff_seconds?.value ?? '',
             verify_tls: !!fields.verify_tls?.checked,
             supports_vision: !!fields.supports_vision?.checked,
+            max_context_tokens: fields.max_context_tokens?.value ?? '',
+            max_output_tokens: fields.max_output_tokens?.value ?? '',
+            enable_thinking: !!fields.enable_thinking?.checked,
             headers_json: fields.headers_json?.value ?? '',
         };
     });
@@ -801,6 +807,9 @@ function applyRuntimeConfigFormState(formState) {
         if (fields.retry_backoff_seconds) fields.retry_backoff_seconds.value = values.retry_backoff_seconds ?? '';
         if (fields.verify_tls) fields.verify_tls.checked = !!values.verify_tls;
         if (fields.supports_vision) fields.supports_vision.checked = !!values.supports_vision;
+        if (fields.max_context_tokens) fields.max_context_tokens.value = values.max_context_tokens ?? '';
+        if (fields.max_output_tokens) fields.max_output_tokens.value = values.max_output_tokens ?? '';
+        if (fields.enable_thinking) fields.enable_thinking.checked = !!values.enable_thinking;
         if (fields.headers_json) fields.headers_json.value = values.headers_json ?? '{}';
     });
 }
@@ -829,6 +838,25 @@ async function refreshRuntimeConfigDiagnostics() {
     }
 }
 
+async function refreshAvailableAiModels() {
+    const status = await APIService.checkAiServiceStatus();
+    if (!status?.success) return;
+
+    let diagnostics = status.local_backend_diagnostics || {};
+    try {
+        const response = await APIService.getAiBackendDiagnostics(['llama_cpp', 'lm_studio']);
+        if (response?.success && Array.isArray(response.diagnostics)) {
+            diagnostics = response.diagnostics.reduce((acc, item) => {
+                if (item?.backend_id) acc[item.backend_id] = item;
+                return acc;
+            }, {});
+        }
+    } catch (_err) {
+    }
+    UIManager.populateAiModelSelector(status.models || [], diagnostics);
+    await refreshContextStats();
+}
+
 async function loadRuntimeConfigProfile({ quiet = false } = {}) {
     if (!quiet) {
         setRuntimeConfigError('', 'neutral');
@@ -848,6 +876,7 @@ async function loadRuntimeConfigProfile({ quiet = false } = {}) {
         }
 
         await refreshRuntimeConfigDiagnostics();
+        await refreshAvailableAiModels();
 
         if (!quiet) {
             setRuntimeConfigError('Runtime profile reloaded from this session. Saved defaults are session-scoped, and request overrides still take precedence.', 'ok');
@@ -883,6 +912,7 @@ async function handleSaveRuntimeConfigProfile() {
         setRuntimeConfigError('Saved. These defaults now apply to diagnostics/chat for this session unless a request sends explicit runtime overrides.', 'ok');
 
         await refreshRuntimeConfigDiagnostics();
+        await refreshAvailableAiModels();
     } catch (err) {
         const message = `Failed to save runtime profile: ${err.message || err}`;
         setRuntimeConfigStatus('Runtime profile: save failed.', 'error');
@@ -910,6 +940,7 @@ async function handleClearRuntimeConfigProfile() {
         setRuntimeConfigError('Saved session profile cleared. Built-in backend defaults are now active for diagnostics/chat.', 'ok');
 
         await refreshRuntimeConfigDiagnostics();
+        await refreshAvailableAiModels();
     } catch (err) {
         const message = `Failed to clear runtime profile: ${err.message || err}`;
         setRuntimeConfigStatus('Runtime profile: clear failed.', 'error');
@@ -1691,6 +1722,43 @@ function updateThinkingIndicator(indicator, progress) {
         appendProgressEntry(
             `turn_start:${currentTurn}:${currentTurnLimit}`,
             `<strong>Turn ${currentTurn}/${currentTurnLimit}:</strong> Processing...`
+        );
+    } else if (progress.type === 'model_request_start') {
+        const backendLabel = progress.backendId || 'model';
+        const reasoningLabel = progress.generationPolicy?.extended_reasoning
+            ? 'extended reasoning on'
+            : 'tool-focused mode';
+        if (toggleSummary) {
+            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} • waiting for ${backendLabel}`;
+        }
+        appendProgressEntry(
+            `model_request_start:${currentTurn}:${backendLabel}`,
+            `<strong>Model request:</strong> ${backendLabel} (${reasoningLabel})`
+        );
+    } else if (progress.type === 'model_response') {
+        const elapsed = Number(progress.elapsedSeconds);
+        const elapsedLabel = Number.isFinite(elapsed) ? `${elapsed.toFixed(1)} s` : 'completed';
+        const completionTokens = Number(progress.usage?.completion_tokens);
+        const tokenLabel = Number.isFinite(completionTokens)
+            ? `, ${completionTokens} output tokens`
+            : '';
+        if (toggleSummary) {
+            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} • model replied in ${elapsedLabel}`;
+        }
+        appendProgressEntry(
+            `model_response:${currentTurn}:${elapsedLabel}:${tokenLabel}`,
+            `<strong>Model response:</strong> ${elapsedLabel}${tokenLabel}`
+        );
+    } else if (progress.type === 'tool_result') {
+        const toolName = progress.tool || 'tool';
+        const statusLabel = progress.success ? 'completed' : 'failed';
+        if (toggleSummary) {
+            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} • ${toolName} ${statusLabel}`;
+        }
+        appendProgressEntry(
+            `tool_result:${currentTurn}:${toolName}:${statusLabel}`,
+            `<strong>${toolName}:</strong> ${statusLabel}`,
+            progress.success ? 'thinking-tools' : 'thinking-step'
         );
     } else if (progress.type === 'tool_calls' && progress.tools && progress.tools.length > 0) {
         currentTurn = progress.turn;

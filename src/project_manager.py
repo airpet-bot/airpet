@@ -29,6 +29,11 @@ from .step_parser import parse_step_file
 from .objective_formula import evaluate_objective_formula
 from .scoring_artifacts import build_run_manifest_summary, build_scoring_runtime_plan
 from .detector_study_intake import intake_answer_requirements
+from .simulation_workflow_services import (
+    Geant4MacroGenerationService,
+    GeometryInspectionService,
+    GeometryPreflightService,
+)
 
 AUTOSAVE_VERSION_ID = "autosave"
 
@@ -6959,6 +6964,20 @@ class ProjectManager:
         nearby_limit=6,
         preflight_report=None,
     ):
+        return GeometryInspectionService(self).inspect_focus(
+            component_type,
+            reference,
+            nearby_limit=nearby_limit,
+            preflight_report=preflight_report,
+        )
+
+    def _inspect_geometry_focus_impl(
+        self,
+        component_type,
+        reference,
+        nearby_limit=6,
+        preflight_report=None,
+    ):
         """Build a compact, instance-aware geometry report for AI inspection."""
         if not self.current_geometry_state:
             raise ValueError('No project geometry state is loaded.')
@@ -11597,6 +11616,9 @@ class ProjectManager:
         return cycles, metadata
 
     def run_preflight_checks(self):
+        return GeometryPreflightService(self).run()
+
+    def _run_preflight_checks_impl(self):
         """Runs lightweight geometry preflight checks prior to simulation."""
         report = {
             'version': 1,
@@ -12677,6 +12699,15 @@ class ProjectManager:
             macro_content.pop()
 
     def generate_macro_file(self, job_id, sim_params, build_dir, run_dir, version_dir):
+        return Geant4MacroGenerationService(self).generate(
+            job_id,
+            sim_params,
+            build_dir,
+            run_dir,
+            version_dir,
+        )
+
+    def _generate_macro_file_impl(self, job_id, sim_params, build_dir, run_dir, version_dir):
         """
         Generates a Geant4 macro file from simulation parameters.
 

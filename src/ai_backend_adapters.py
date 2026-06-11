@@ -18,6 +18,30 @@ def _normalize_base_url(base_url: str) -> str:
     return re.sub(r'/v\d+/?$', '', base_url.rstrip('/'))
 
 
+def _runtime_int(value: Any, default: int, *, minimum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, parsed)
+
+
+def _runtime_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 @dataclass(frozen=True)
 class BackendRequirements:
     """Capability requirements for selecting a backend adapter."""
@@ -173,6 +197,8 @@ class LlamaCppAdapterConfig:
     max_retries: int = 1
     retry_backoff_seconds: float = 0.25
     verify_tls: bool = True
+    max_output_tokens: int = 2048
+    enable_thinking: bool = False
     headers: Tuple[Tuple[str, str], ...] = ()
 
     @staticmethod
@@ -192,6 +218,12 @@ class LlamaCppAdapterConfig:
             max_retries=max(0, int(cfg.get("max_retries", 1))),
             retry_backoff_seconds=max(0.0, float(cfg.get("retry_backoff_seconds", 0.25))),
             verify_tls=bool(cfg.get("verify_tls", True)),
+            max_output_tokens=_runtime_int(
+                cfg.get("max_output_tokens"),
+                2048,
+                minimum=64,
+            ),
+            enable_thinking=_runtime_bool(cfg.get("enable_thinking"), False),
             headers=header_items,
         )
 
@@ -215,8 +247,14 @@ class LlamaCppTextAdapter:
         }
         if request.temperature is not None:
             payload["temperature"] = request.temperature
-        if request.max_output_tokens is not None:
-            payload["max_tokens"] = request.max_output_tokens
+        payload["max_tokens"] = (
+            request.max_output_tokens
+            if request.max_output_tokens is not None
+            else self.config.max_output_tokens
+        )
+        payload["chat_template_kwargs"] = {
+            "enable_thinking": self.config.enable_thinking,
+        }
         if request.stop:
             payload["stop"] = list(request.stop)
 
@@ -296,6 +334,7 @@ class LMStudioAdapterConfig:
     max_retries: int = 1
     retry_backoff_seconds: float = 0.25
     verify_tls: bool = True
+    max_output_tokens: int = 2048
     headers: Tuple[Tuple[str, str], ...] = ()
 
     @staticmethod
@@ -315,6 +354,11 @@ class LMStudioAdapterConfig:
             max_retries=max(0, int(cfg.get("max_retries", 1))),
             retry_backoff_seconds=max(0.0, float(cfg.get("retry_backoff_seconds", 0.25))),
             verify_tls=bool(cfg.get("verify_tls", True)),
+            max_output_tokens=_runtime_int(
+                cfg.get("max_output_tokens"),
+                2048,
+                minimum=64,
+            ),
             headers=header_items,
         )
 
@@ -338,8 +382,11 @@ class LMStudioTextAdapter:
         }
         if request.temperature is not None:
             payload["temperature"] = request.temperature
-        if request.max_output_tokens is not None:
-            payload["max_tokens"] = request.max_output_tokens
+        payload["max_tokens"] = (
+            request.max_output_tokens
+            if request.max_output_tokens is not None
+            else self.config.max_output_tokens
+        )
         if request.stop:
             payload["stop"] = list(request.stop)
 

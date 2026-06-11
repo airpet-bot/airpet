@@ -16,6 +16,9 @@ export const LOCAL_BACKEND_RUNTIME_DEFAULTS = Object.freeze({
         retry_backoff_seconds: 0.25,
         verify_tls: true,
         supports_vision: false,
+        max_context_tokens: 16384,
+        max_output_tokens: 2048,
+        enable_thinking: false,
         headers: Object.freeze({}),
     }),
     lm_studio: Object.freeze({
@@ -28,6 +31,8 @@ export const LOCAL_BACKEND_RUNTIME_DEFAULTS = Object.freeze({
         retry_backoff_seconds: 0.25,
         verify_tls: true,
         supports_vision: false,
+        max_context_tokens: 32768,
+        max_output_tokens: 2048,
         headers: Object.freeze({}),
     }),
 });
@@ -80,6 +85,9 @@ function normalizeBackendConfig(runtimeConfig, backendId) {
         retry_backoff_seconds: Number(raw.retry_backoff_seconds ?? defaults.retry_backoff_seconds ?? 0),
         verify_tls: coerceBoolean(raw.verify_tls, defaults.verify_tls),
         supports_vision: coerceBoolean(raw.supports_vision, defaults.supports_vision),
+        max_context_tokens: Number(raw.max_context_tokens ?? defaults.max_context_tokens ?? 0),
+        max_output_tokens: Number(raw.max_output_tokens ?? defaults.max_output_tokens ?? 0),
+        enable_thinking: coerceBoolean(raw.enable_thinking, defaults.enable_thinking),
         headers: normalizeHeadersObject(raw.headers ?? defaults.headers),
     };
 }
@@ -99,6 +107,9 @@ export function runtimeConfigToFormState(runtimeConfig = {}) {
             retry_backoff_seconds: String(normalized.retry_backoff_seconds),
             verify_tls: !!normalized.verify_tls,
             supports_vision: !!normalized.supports_vision,
+            max_context_tokens: String(normalized.max_context_tokens),
+            max_output_tokens: String(normalized.max_output_tokens),
+            enable_thinking: !!normalized.enable_thinking,
             headers_json: JSON.stringify(normalized.headers, null, 2),
         };
     });
@@ -186,6 +197,20 @@ export function buildRuntimeConfigPayloadFromFormState(formState = {}) {
         );
         if (!retryBackoff.ok) return { ok: false, error: retryBackoff.error };
 
+        const maxContextTokens = parseFiniteNumber(
+            raw.max_context_tokens ?? defaults.max_context_tokens,
+            `${backendLabel} context window tokens`,
+            { min: 512, integer: true }
+        );
+        if (!maxContextTokens.ok) return { ok: false, error: maxContextTokens.error };
+
+        const maxOutputTokens = parseFiniteNumber(
+            raw.max_output_tokens ?? defaults.max_output_tokens,
+            `${backendLabel} max output tokens`,
+            { min: 64, integer: true }
+        );
+        if (!maxOutputTokens.ok) return { ok: false, error: maxOutputTokens.error };
+
         const parsedHeaders = parseHeadersJson(raw.headers_json, backendLabel);
         if (!parsedHeaders.ok) return { ok: false, error: parsedHeaders.error };
 
@@ -199,6 +224,11 @@ export function buildRuntimeConfigPayloadFromFormState(formState = {}) {
             retry_backoff_seconds: retryBackoff.value,
             verify_tls: coerceBoolean(raw.verify_tls, defaults.verify_tls),
             supports_vision: coerceBoolean(raw.supports_vision, defaults.supports_vision),
+            max_context_tokens: maxContextTokens.value,
+            max_output_tokens: maxOutputTokens.value,
+            enable_thinking: backendId === 'llama_cpp'
+                ? coerceBoolean(raw.enable_thinking, defaults.enable_thinking)
+                : false,
             headers: parsedHeaders.value,
         };
     }

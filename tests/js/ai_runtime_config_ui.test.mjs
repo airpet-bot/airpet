@@ -16,12 +16,17 @@ test('runtimeConfigToFormState applies deterministic defaults for both local bac
     assert.equal(formState.backends.llama_cpp.timeout_seconds, '600');
     assert.equal(formState.backends.llama_cpp.verify_tls, true);
     assert.equal(formState.backends.llama_cpp.supports_vision, false);
+    assert.equal(formState.backends.llama_cpp.max_context_tokens, '16384');
+    assert.equal(formState.backends.llama_cpp.max_output_tokens, '2048');
+    assert.equal(formState.backends.llama_cpp.enable_thinking, false);
     assert.equal(formState.backends.llama_cpp.headers_json, '{}');
 
     assert.equal(formState.backends.lm_studio.base_url, 'http://127.0.0.1:1234');
     assert.equal(formState.backends.lm_studio.timeout_seconds, '45');
     assert.equal(formState.backends.lm_studio.verify_tls, true);
     assert.equal(formState.backends.lm_studio.supports_vision, false);
+    assert.equal(formState.backends.lm_studio.max_context_tokens, '32768');
+    assert.equal(formState.backends.lm_studio.max_output_tokens, '2048');
 });
 
 test('runtimeConfigToFormState supports session shape and legacy backend-key shape', () => {
@@ -69,6 +74,9 @@ test('buildRuntimeConfigPayloadFromFormState parses booleans, numbers, and heade
                 retry_backoff_seconds: '0.5',
                 verify_tls: false,
                 supports_vision: true,
+                max_context_tokens: '131072',
+                max_output_tokens: '4096',
+                enable_thinking: true,
                 headers_json: '{"Authorization":"Bearer abc"}',
             },
             lm_studio: {
@@ -80,6 +88,8 @@ test('buildRuntimeConfigPayloadFromFormState parses booleans, numbers, and heade
                 max_retries: '0',
                 retry_backoff_seconds: '0',
                 verify_tls: true,
+                max_context_tokens: '32768',
+                max_output_tokens: '1024',
                 headers_json: '{}',
             },
         },
@@ -91,6 +101,9 @@ test('buildRuntimeConfigPayloadFromFormState parses booleans, numbers, and heade
     assert.equal(result.runtimeConfig.backends.llama_cpp.max_retries, 2);
     assert.equal(result.runtimeConfig.backends.llama_cpp.retry_backoff_seconds, 0.5);
     assert.equal(result.runtimeConfig.backends.llama_cpp.supports_vision, true);
+    assert.equal(result.runtimeConfig.backends.llama_cpp.max_context_tokens, 131072);
+    assert.equal(result.runtimeConfig.backends.llama_cpp.max_output_tokens, 4096);
+    assert.equal(result.runtimeConfig.backends.llama_cpp.enable_thinking, true);
     assert.deepEqual(result.runtimeConfig.backends.llama_cpp.headers, {
         Authorization: 'Bearer abc',
     });
@@ -98,6 +111,7 @@ test('buildRuntimeConfigPayloadFromFormState parses booleans, numbers, and heade
     assert.equal(result.runtimeConfig.backends.lm_studio.enabled, false);
     assert.equal(result.runtimeConfig.backends.lm_studio.max_retries, 0);
     assert.equal(result.runtimeConfig.backends.lm_studio.verify_tls, true);
+    assert.equal(result.runtimeConfig.backends.lm_studio.max_output_tokens, 1024);
 });
 
 test('buildRuntimeConfigPayloadFromFormState returns actionable validation errors', () => {

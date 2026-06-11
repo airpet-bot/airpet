@@ -1092,8 +1092,40 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
                     continue;
                 }
 
+                window.dispatchEvent(new CustomEvent('airpet:ai-progress', {
+                    detail: data,
+                }));
+
                 if (data.type === 'turn_start') {
                     onProgress?.({ type: 'turn_start', turn: data.turn, turnLimit: data.turn_limit });
+                } else if (data.type === 'model_request_start') {
+                    onProgress?.({
+                        type: 'model_request_start',
+                        turn: data.turn,
+                        backendId: data.backend_id,
+                        generationPolicy: data.generation_policy,
+                    });
+                } else if (data.type === 'model_response') {
+                    onProgress?.({
+                        type: 'model_response',
+                        turn: data.turn,
+                        backendId: data.backend_id,
+                        model: data.model,
+                        elapsedSeconds: data.elapsed_seconds,
+                        usage: data.usage,
+                        generationPolicy: data.generation_policy,
+                    });
+                } else if (data.type === 'tool_result') {
+                    onProgress?.({
+                        type: 'tool_result',
+                        turn: data.turn,
+                        tool: data.tool,
+                        success: data.success,
+                        message: data.message,
+                        error: data.error,
+                        editReceipt: data.edit_receipt,
+                        riskClass: data.risk_class,
+                    });
                 } else if (data.type === 'tool_calls') {
                     if (data.tools && data.tools.length > 0) {
                         recentTools = [...recentTools, ...data.tools].slice(-3);
