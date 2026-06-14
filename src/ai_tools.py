@@ -1025,7 +1025,11 @@ AI_GEOMETRY_TOOLS = [
     },
     {
         "name": "create_boolean_solid",
-        "description": "Create a new boolean solid from existing solids.",
+        "description": (
+            "Create a new boolean solid from existing solids. Every union operand must be explicitly "
+            "positioned and rotated into the intended relationship; an omitted transform is the identity "
+            "and may leave a smaller operand hidden inside the base."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -1040,8 +1044,24 @@ AI_GEOMETRY_TOOLS = [
                             "transform": {
                                 "type": "object",
                                 "properties": {
-                                    "position": {"type": "object"},
-                                    "rotation": {"type": "object"}
+                                    "position": {
+                                        "type": "object",
+                                        "description": "Local translation in length expressions, normally mm.",
+                                        "properties": {
+                                            "x": {"type": "string"},
+                                            "y": {"type": "string"},
+                                            "z": {"type": "string"}
+                                        }
+                                    },
+                                    "rotation": {
+                                        "type": "object",
+                                        "description": "Local Euler rotation. Prefer explicit angle expressions such as '90*deg'; bare numeric values are interpreted as degrees.",
+                                        "properties": {
+                                            "x": {"type": "string"},
+                                            "y": {"type": "string"},
+                                            "z": {"type": "string"}
+                                        }
+                                    }
                                 }
                             }
                         }

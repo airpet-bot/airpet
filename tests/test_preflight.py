@@ -1156,6 +1156,118 @@ def test_preflight_flags_possible_overlap_warning():
     assert 'possible_overlap_aabb' in codes
 
 
+def test_preflight_flags_boolean_union_operand_hidden_inside_base():
+    pm = _make_pm()
+    _, err = pm.add_solid(
+        'main_pipe',
+        'tube',
+        {'rmin': '35', 'rmax': '40', 'z': '200', 'startphi': '0', 'deltaphi': '360'},
+    )
+    assert err is None
+    _, err = pm.add_solid(
+        'branch_pipe',
+        'tube',
+        {'rmin': '25', 'rmax': '30', 'z': '100', 'startphi': '0', 'deltaphi': '360'},
+    )
+    assert err is None
+    _, err = pm.add_boolean_solid(
+        'bad_t_body',
+        [
+            {'op': 'base', 'solid_ref': 'main_pipe'},
+            {'op': 'union', 'solid_ref': 'branch_pipe'},
+        ],
+    )
+    assert err is None
+
+    report = pm.run_preflight_checks()
+    issues = [
+        issue
+        for issue in report['issues']
+        if issue['code'] == 'boolean_union_operand_contained'
+    ]
+
+    assert len(issues) == 1
+    assert issues[0]['object_refs'] == ['bad_t_body', 'branch_pipe']
+    assert report['summary']['can_run'] is True
+
+
+def test_preflight_accepts_perpendicular_boolean_branch_with_explicit_angle():
+    pm = _make_pm()
+    _, err = pm.add_solid(
+        'main_pipe_ok',
+        'tube',
+        {'rmin': '35', 'rmax': '40', 'z': '200', 'startphi': '0', 'deltaphi': '360'},
+    )
+    assert err is None
+    _, err = pm.add_solid(
+        'branch_pipe_ok',
+        'tube',
+        {'rmin': '25', 'rmax': '30', 'z': '100', 'startphi': '0', 'deltaphi': '360'},
+    )
+    assert err is None
+    _, err = pm.add_boolean_solid(
+        'good_t_body',
+        [
+            {'op': 'base', 'solid_ref': 'main_pipe_ok'},
+            {
+                'op': 'union',
+                'solid_ref': 'branch_pipe_ok',
+                'transform': {
+                    'position': {'x': '0', 'y': '-50', 'z': '0'},
+                    'rotation': {'x': '90*deg', 'y': '0*deg', 'z': '0*deg'},
+                },
+            },
+        ],
+    )
+    assert err is None
+
+    report = pm.run_preflight_checks()
+    boolean_codes = {
+        issue['code']
+        for issue in report['issues']
+        if issue['code'].startswith('boolean_')
+    }
+
+    assert 'boolean_union_operand_contained' not in boolean_codes
+    assert 'boolean_union_operand_disconnected' not in boolean_codes
+    assert 'boolean_transform_bare_angle' not in boolean_codes
+
+
+def test_preflight_blocks_legacy_bare_boolean_rotation():
+    pm = _make_pm()
+    _, err = pm.add_solid(
+        'legacy_rotation_base',
+        'box',
+        {'x': '100', 'y': '100', 'z': '100'},
+    )
+    assert err is None
+    _, err = pm.add_solid(
+        'legacy_rotation_operand',
+        'box',
+        {'x': '20', 'y': '20', 'z': '20'},
+    )
+    assert err is None
+    _, err = pm.add_boolean_solid(
+        'legacy_rotation_boolean',
+        [
+            {'op': 'base', 'solid_ref': 'legacy_rotation_base'},
+            {
+                'op': 'union',
+                'solid_ref': 'legacy_rotation_operand',
+                'transform': {'rotation': {'x': '90', 'y': '0', 'z': '0'}},
+            },
+        ],
+    )
+    assert err is None
+
+    report = pm.run_preflight_checks()
+
+    assert 'boolean_transform_bare_angle' in {
+        issue['code'] for issue in report['issues']
+    }
+    assert report['summary']['can_run'] is False
+
+
 def test_simulation_run_is_blocked_when_preflight_has_errors():
     app.config['TESTING'] = True
     with app.test_client() as client:

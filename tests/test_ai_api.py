@@ -11,7 +11,12 @@ from src.project_manager import ProjectManager
 from src.expression_evaluator import ExpressionEvaluator
 from src.geometry_types import DivisionVolume, EnvironmentState, ReplicaVolume
 from src.scoring_artifacts import build_run_manifest_summary
-from app import dispatch_ai_tool, app as flask_app, _persist_final_stream_reply
+from app import (
+    _normalize_boolean_recipe,
+    _persist_final_stream_reply,
+    app as flask_app,
+    dispatch_ai_tool,
+)
 
 @pytest.fixture
 def pm():
@@ -1439,6 +1444,23 @@ def test_ai_tool_create_tube_with_alias_params(pm):
     assert s.raw_parameters['z'] == "2*(50)"
     # 360 deg should map to 2*pi rad
     assert abs(ep['deltaphi'] - 6.283185307179586) < 1e-6
+
+
+def test_ai_tool_create_tube_accepts_cone_style_first_end_aliases(pm):
+    res = dispatch_ai_tool(pm, "create_primitive_solid", {
+        "name": "AI_Tube_First_End_Alias",
+        "solid_type": "tube",
+        "params": {
+            "rmin1": "12",
+            "rmax1": "18",
+            "z": "40",
+        },
+    })
+
+    assert res["success"], res
+    solid = pm.current_geometry_state.solids["AI_Tube_First_End_Alias"]
+    assert solid._evaluated_parameters["rmin"] == 12
+    assert solid._evaluated_parameters["rmax"] == 18
 
 
 def test_ai_tool_create_tube_with_unit_suffix_and_camelcase(pm):
@@ -7704,6 +7726,66 @@ def test_ai_tool_create_boolean_accepts_action_and_solid_aliases(pm):
 
     assert res['success'], res
     assert "BoolAlias" in pm.current_geometry_state.solids
+
+
+def test_ai_tool_create_boolean_normalizes_bare_rotation_to_degrees(pm):
+    pm.add_solid("RotationBase", "box", {"x": "20", "y": "20", "z": "20"})
+    pm.add_solid(
+        "RotationBranch",
+        "tube",
+        {"rmin": "0", "rmax": "2", "z": "25", "startphi": "0", "deltaphi": "360"},
+    )
+
+    res = dispatch_ai_tool(pm, "create_boolean_solid", {
+        "name": "RotatedBoolean",
+        "recipe": [
+            {"op": "base", "solid_ref": "RotationBase"},
+            {
+                "op": "union",
+                "solid_ref": "RotationBranch",
+                "transform": {
+                    "rotation": {"x": "90", "y": 0, "z": "-45"},
+                },
+            },
+        ],
+    })
+
+    assert res["success"], res
+    recipe = pm.current_geometry_state.solids["RotatedBoolean"].raw_parameters["recipe"]
+    assert recipe[1]["transform"]["rotation"] == {
+        "x": "(90)*deg",
+        "y": "(0)*deg",
+        "z": "(-45)*deg",
+    }
+
+    ok, error = pm.recalculate_geometry_state()
+    assert ok, error
+    evaluated = recipe[1]["transform"]["_evaluated_rotation"]
+    assert evaluated["x"] == pytest.approx(-np.pi / 2)
+    assert evaluated["y"] == pytest.approx(0)
+    assert evaluated["z"] == pytest.approx(np.pi / 4)
+
+
+def test_boolean_editor_recipe_normalizes_bare_rotation_to_radians():
+    recipe = _normalize_boolean_recipe(
+        [
+            {"op": "base", "solid_ref": "Base"},
+            {
+                "op": "union",
+                "solid_ref": "Operand",
+                "transform": {
+                    "rotation": {"x": "1.5708", "y": 0, "z": "-0.25"},
+                },
+            },
+        ],
+        bare_rotation_unit="rad",
+    )
+
+    assert recipe[1]["transform"]["rotation"] == {
+        "x": "(1.5708)*rad",
+        "y": "(0)*rad",
+        "z": "(-0.25)*rad",
+    }
 
 
 def test_ai_tool_create_boolean_invalid_recipe_returns_repair_hint(pm):

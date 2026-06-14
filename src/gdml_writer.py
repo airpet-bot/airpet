@@ -305,12 +305,26 @@ class GDMLWriter:
                 if isinstance(pos, str):
                     ET.SubElement(boolean_el, "positionref", {"ref": pos})
                 elif isinstance(pos, dict):
-                    ET.SubElement(boolean_el, "position", pos)
+                    ET.SubElement(
+                        boolean_el,
+                        "position",
+                        {
+                            "unit": DEFAULT_OUTPUT_LUNIT,
+                            **{axis: str(value) for axis, value in pos.items()},
+                        },
+                    )
 
                 if isinstance(rot, str):
                     ET.SubElement(boolean_el, "rotationref", {"ref": rot})
                 elif isinstance(rot, dict):
-                    ET.SubElement(boolean_el, "rotation", rot)
+                    ET.SubElement(
+                        boolean_el,
+                        "rotation",
+                        {
+                            "unit": DEFAULT_OUTPUT_AUNIT,
+                            **{axis: str(value) for axis, value in rot.items()},
+                        },
+                    )
             
             # The result of this operation becomes the 'first' solid for the next iteration
             current_solid_ref = boolean_name
@@ -338,7 +352,7 @@ class GDMLWriter:
                 
                 # Write position if it exists and is non-zero
                 pos = transform.get('position')
-                if isinstance(pos, dict) and any(float(v) != 0 for v in pos.values()):
+                if isinstance(pos, dict):
                     pos_attrs = {"unit": "mm"}
                     for axis, val in pos.items():
                         pos_attrs[axis] = str(val)
@@ -348,8 +362,8 @@ class GDMLWriter:
 
                 # Write rotation if it exists and is non-zero
                 rot = transform.get('rotation')
-                if isinstance(rot, dict) and any(float(v) != 0 for v in rot.values()):
-                    rot_attrs = {"unit": "rad"}
+                if isinstance(rot, dict):
+                    rot_attrs = {"unit": DEFAULT_OUTPUT_AUNIT}
                     for axis, val in rot.items():
                         rot_attrs[axis] = str(val)
                     ET.SubElement(node_el, "rotation", rot_attrs)

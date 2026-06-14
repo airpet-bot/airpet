@@ -4928,8 +4928,16 @@ class ProjectManager:
                     transform = item.get('transform', {})
                     if transform:
                          # Use the same helper to evaluate the nested transforms
-                         transform['_evaluated_position'] = evaluate_transform_part(transform.get('position'), {'x':0, 'y':0, 'z':0})
-                         transform['_evaluated_rotation'] = evaluate_transform_part(transform.get('rotation'), {'x':0, 'y':0, 'z':0})
+                         transform['_evaluated_position'] = evaluate_transform_part(
+                             transform.get('position'),
+                             {'x': 0, 'y': 0, 'z': 0},
+                             rotation=False,
+                         )
+                         transform['_evaluated_rotation'] = evaluate_transform_part(
+                             transform.get('rotation'),
+                             {'x': 0, 'y': 0, 'z': 0},
+                             rotation=True,
+                         )
 
         # --- Evaluate Source Positions ---
         for source in state.sources.values():
@@ -11234,10 +11242,65 @@ class ProjectManager:
         }
         return report
 
-    def _get_solid_local_bounds(self, solid):
-        """Returns conservative local min/max bounds for supported primitives."""
+    def _transform_local_bounds(self, bounds, transform):
+        if not bounds:
+            return None
+
+        transform = transform if isinstance(transform, dict) else {}
+        placement = PhysicalVolumePlacement('solid-bounds', 'solid-bounds')
+        try:
+            placement._evaluated_position = {
+                axis: float((transform.get('_evaluated_position') or {}).get(axis, 0.0))
+                for axis in ('x', 'y', 'z')
+            }
+            placement._evaluated_rotation = {
+                axis: float((transform.get('_evaluated_rotation') or {}).get(axis, 0.0))
+                for axis in ('x', 'y', 'z')
+            }
+        except (TypeError, ValueError):
+            return None
+        placement._evaluated_scale = {'x': 1.0, 'y': 1.0, 'z': 1.0}
+
+        local_min = np.array(bounds['min'], dtype=float)
+        local_max = np.array(bounds['max'], dtype=float)
+        corners = np.array([
+            [x, y, z, 1.0]
+            for x in (local_min[0], local_max[0])
+            for y in (local_min[1], local_max[1])
+            for z in (local_min[2], local_max[2])
+        ])
+        transformed = (placement.get_transform_matrix() @ corners.T).T[:, :3]
+        return {
+            'min': tuple(float(value) for value in transformed.min(axis=0)),
+            'max': tuple(float(value) for value in transformed.max(axis=0)),
+        }
+
+    @staticmethod
+    def _union_local_bounds(first, second):
+        if not first:
+            return second
+        if not second:
+            return first
+        return {
+            'min': tuple(
+                min(first['min'][axis], second['min'][axis])
+                for axis in range(3)
+            ),
+            'max': tuple(
+                max(first['max'][axis], second['max'][axis])
+                for axis in range(3)
+            ),
+        }
+
+    def _get_solid_local_bounds(self, solid, _active_solid_names=None):
+        """Returns conservative local min/max bounds, including boolean recipes."""
         if solid is None:
             return None
+
+        active_solid_names = set(_active_solid_names or ())
+        if solid.name in active_solid_names:
+            return None
+        active_solid_names.add(solid.name)
 
         parameters = solid._evaluated_parameters or {}
 
@@ -11266,6 +11329,65 @@ class ProjectManager:
 
         solid_type = str(solid.type or '').lower()
         try:
+            if solid_type == 'boolean':
+                recipe = (
+                    solid.raw_parameters.get('recipe', [])
+                    if isinstance(solid.raw_parameters, dict)
+                    else []
+                )
+                if not isinstance(recipe, list) or not recipe:
+                    return None
+
+                base = recipe[0] if isinstance(recipe[0], dict) else {}
+                base_solid = self.current_geometry_state.solids.get(base.get('solid_ref'))
+                result = self._get_solid_local_bounds(
+                    base_solid,
+                    active_solid_names,
+                )
+                result = self._transform_local_bounds(result, base.get('transform'))
+                if result is None:
+                    return None
+
+                for item in recipe[1:]:
+                    if not isinstance(item, dict):
+                        continue
+                    operand_solid = self.current_geometry_state.solids.get(item.get('solid_ref'))
+                    operand = self._get_solid_local_bounds(
+                        operand_solid,
+                        active_solid_names,
+                    )
+                    operand = self._transform_local_bounds(
+                        operand,
+                        item.get('transform'),
+                    )
+                    if operand is None:
+                        continue
+
+                    operation = str(item.get('op') or '').lower()
+                    if operation == 'union':
+                        result = self._union_local_bounds(result, operand)
+                    elif operation == 'intersection':
+                        intersection_min = tuple(
+                            max(result['min'][axis], operand['min'][axis])
+                            for axis in range(3)
+                        )
+                        intersection_max = tuple(
+                            min(result['max'][axis], operand['max'][axis])
+                            for axis in range(3)
+                        )
+                        if any(
+                            intersection_max[axis] <= intersection_min[axis]
+                            for axis in range(3)
+                        ):
+                            return None
+                        result = {
+                            'min': intersection_min,
+                            'max': intersection_max,
+                        }
+                    # Subtraction cannot expand the base bounds.
+
+                return result
+
             if solid_type in {'box', 'twistedbox'}:
                 return symmetric(
                     number(parameters.get('x')) / 2.0,
@@ -11421,27 +11543,17 @@ class ProjectManager:
         return None
 
     def _get_solid_local_half_extents(self, solid):
-        """Returns (hx, hy, hz) for supported primitive solids, else None."""
-        p = solid._evaluated_parameters or {}
-        solid_type = solid.type
-
-        try:
-            if solid_type == 'box':
-                return (float(p.get('x', 0.0)) / 2.0, float(p.get('y', 0.0)) / 2.0, float(p.get('z', 0.0)) / 2.0)
-            if solid_type in ['tube', 'cylinder', 'tubs']:
-                rmax = float(p.get('rmax', 0.0))
-                z = float(p.get('z', 0.0))
-                return (rmax, rmax, z / 2.0)
-            if solid_type in ['sphere']:
-                rmax = float(p.get('rmax', 0.0))
-                return (rmax, rmax, rmax)
-            if solid_type in ['orb']:
-                r = float(p.get('r', 0.0))
-                return (r, r, r)
-        except Exception:
+        """Returns conservative symmetric half extents for supported solids."""
+        bounds = self._get_solid_local_bounds(solid)
+        if not bounds:
             return None
 
-        return None
+        local_min = np.array(bounds['min'], dtype=float)
+        local_max = np.array(bounds['max'], dtype=float)
+        extents = np.maximum(np.abs(local_min), np.abs(local_max))
+        if np.any(~np.isfinite(extents)) or np.any(extents <= 0):
+            return None
+        return tuple(float(value) for value in extents)
 
     def _compute_pv_aabb(self, pv):
         state = self.current_geometry_state
@@ -11453,19 +11565,20 @@ class ProjectManager:
         if not solid:
             return None
 
-        half_extents = self._get_solid_local_half_extents(solid)
-        if not half_extents:
+        local_bounds = self._get_solid_local_bounds(solid)
+        if not local_bounds:
             return None
 
-        hx, hy, hz = half_extents
-        if hx <= 0 or hy <= 0 or hz <= 0:
+        local_min = np.array(local_bounds['min'], dtype=float)
+        local_max = np.array(local_bounds['max'], dtype=float)
+        if np.any(local_max <= local_min):
             return None
 
         corners = np.array([
-            [sx * hx, sy * hy, sz * hz, 1.0]
-            for sx in (-1.0, 1.0)
-            for sy in (-1.0, 1.0)
-            for sz in (-1.0, 1.0)
+            [x, y, z, 1.0]
+            for x in (local_min[0], local_max[0])
+            for y in (local_min[1], local_max[1])
+            for z in (local_min[2], local_max[2])
         ])
 
         matrix = pv.get_transform_matrix()
@@ -12139,6 +12252,141 @@ class ProjectManager:
                         object_refs=[solid.name],
                         hint='Check CAD import quality; this may indicate degenerate geometry.',
                     )
+
+        # 5b) Boolean-recipe topology checks.
+        bare_angle_pattern = re.compile(
+            r'^[+-]?(?:\d+\.?\d*|\d*\.\d+)(?:[eE][+-]?\d+)?$'
+        )
+        for solid in state.solids.values():
+            if str(solid.type or '').lower() != 'boolean':
+                continue
+
+            recipe = (
+                solid.raw_parameters.get('recipe', [])
+                if isinstance(solid.raw_parameters, dict)
+                else []
+            )
+            if not isinstance(recipe, list) or not recipe:
+                continue
+
+            base = recipe[0] if isinstance(recipe[0], dict) else {}
+            base_solid = state.solids.get(base.get('solid_ref'))
+            current_bounds = self._get_solid_local_bounds(base_solid)
+            current_bounds = self._transform_local_bounds(
+                current_bounds,
+                base.get('transform'),
+            )
+
+            for step_index, item in enumerate(recipe[1:], start=1):
+                if not isinstance(item, dict):
+                    continue
+
+                transform = item.get('transform')
+                transform = transform if isinstance(transform, dict) else {}
+                raw_rotation = transform.get('rotation')
+                if isinstance(raw_rotation, dict):
+                    bare_axes = []
+                    for axis, value in raw_rotation.items():
+                        if isinstance(value, bool):
+                            continue
+                        is_bare_number = isinstance(value, (int, float)) or (
+                            isinstance(value, str)
+                            and bare_angle_pattern.fullmatch(value.strip())
+                        )
+                        if is_bare_number and abs(float(value)) > (2.0 * math.pi):
+                            bare_axes.append(str(axis))
+                    if bare_axes:
+                        self._preflight_add_issue(
+                            report,
+                            'error',
+                            'boolean_transform_bare_angle',
+                            (
+                                f"Boolean solid '{solid.name}' step {step_index} uses a bare numeric "
+                                f"rotation larger than 2*pi on axis/axes {', '.join(sorted(bare_axes))}. "
+                                "This likely represents degrees but is being interpreted as radians."
+                            ),
+                            object_refs=[solid.name, str(item.get('solid_ref') or '')],
+                            hint="Use explicit angle expressions such as '90*deg' or '1.57079632679*rad'.",
+                            metadata={
+                                'step_index': step_index,
+                                'axes': sorted(bare_axes),
+                            },
+                        )
+
+                operand_solid = state.solids.get(item.get('solid_ref'))
+                operand_bounds = self._get_solid_local_bounds(operand_solid)
+                operand_bounds = self._transform_local_bounds(
+                    operand_bounds,
+                    transform,
+                )
+                operation = str(item.get('op') or '').lower()
+                if not current_bounds or not operand_bounds:
+                    continue
+
+                current_min = np.array(current_bounds['min'], dtype=float)
+                current_max = np.array(current_bounds['max'], dtype=float)
+                operand_min = np.array(operand_bounds['min'], dtype=float)
+                operand_max = np.array(operand_bounds['max'], dtype=float)
+
+                if operation == 'union':
+                    tolerance = 1e-9
+                    fully_contained = bool(
+                        np.all(operand_min >= current_min - tolerance)
+                        and np.all(operand_max <= current_max + tolerance)
+                    )
+                    overlap = np.minimum(current_max, operand_max) - np.maximum(
+                        current_min,
+                        operand_min,
+                    )
+                    disconnected = bool(np.any(overlap <= tolerance))
+
+                    if fully_contained:
+                        self._preflight_add_issue(
+                            report,
+                            'warning',
+                            'boolean_union_operand_contained',
+                            (
+                                f"Boolean union '{solid.name}' step {step_index} operand "
+                                f"'{item.get('solid_ref')}' is fully contained by the current "
+                                "conservative bounds and may add no visible geometry."
+                            ),
+                            object_refs=[solid.name, str(item.get('solid_ref') or '')],
+                            hint=(
+                                'Check the union operand position and rotation. A branch or connector '
+                                'usually needs to extend beyond the current solid bounds.'
+                            ),
+                            metadata={'step_index': step_index},
+                        )
+                    elif disconnected:
+                        self._preflight_add_issue(
+                            report,
+                            'warning',
+                            'boolean_union_operand_disconnected',
+                            (
+                                f"Boolean union '{solid.name}' step {step_index} operand "
+                                f"'{item.get('solid_ref')}' does not intersect the current "
+                                "conservative bounds and may be a detached component."
+                            ),
+                            object_refs=[solid.name, str(item.get('solid_ref') or '')],
+                            hint='Move or rotate the operand so it intersects the intended parent shape.',
+                            metadata={'step_index': step_index},
+                        )
+
+                    current_bounds = self._union_local_bounds(
+                        current_bounds,
+                        operand_bounds,
+                    )
+                elif operation == 'intersection':
+                    intersection_min = np.maximum(current_min, operand_min)
+                    intersection_max = np.minimum(current_max, operand_max)
+                    if np.any(intersection_max <= intersection_min):
+                        current_bounds = None
+                    else:
+                        current_bounds = {
+                            'min': tuple(float(value) for value in intersection_min),
+                            'max': tuple(float(value) for value in intersection_max),
+                        }
+                # Subtraction preserves conservative outer bounds.
 
         # 6) Mother-daughter containment checks (AABB heuristic).
         for parent_lv in state.logical_volumes.values():

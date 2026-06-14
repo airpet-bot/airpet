@@ -83,6 +83,9 @@ import {
     replaceScoringMesh,
     setMeshTallyEnabled,
 } from './scoringUi.js';
+import {
+    initializeLeftPanelLayout,
+} from './panelLayout.js';
 
 // --- Module-level variables for DOM elements ---
 let newProjectButton, saveProjectButton, exportGdmlButton,
@@ -95,6 +98,8 @@ let newProjectButton, saveProjectButton, exportGdmlButton,
     toggleWireframeButton, toggleGridButton, toggleAxesButton,
     cameraModeOriginButton, cameraModeSelectedButton,
     toggleSnapToGridButton, gridSnapSizeInput, angleSnapSizeInput,
+    leftPanel, leftPanelRail, leftPanelResizeHandle,
+    toggleLeftPanelBtn, restoreLeftPanelBtn,
     bottomPanel, bottomPanelResizeHandle, toggleBottomPanelBtn,
     aiPromptInput, aiGenerateButton, aiModelSelect, aiBackendStatusEl,
     setApiKeyButton, apiKeyModal, apiKeyInput, saveApiKeyButton, cancelApiKeyButton,
@@ -366,7 +371,12 @@ export function initUI(cb) {
     scoringPanelRoot = document.getElementById('scoring_panel_root');
 
 
-    // Bottom panel (AI and simulation)
+    // Left and bottom workspace panels
+    leftPanel = document.getElementById('left_panel_container');
+    leftPanelRail = document.getElementById('left_panel_rail');
+    leftPanelResizeHandle = document.getElementById('leftPanelResizeHandle');
+    toggleLeftPanelBtn = document.getElementById('toggleLeftPanelBtn');
+    restoreLeftPanelBtn = document.getElementById('restoreLeftPanelBtn');
     bottomPanel = document.getElementById('bottom_panel');
     bottomPanelResizeHandle = document.getElementById('bottomPanelResizeHandle');
     toggleBottomPanelBtn = document.getElementById('toggleBottomPanelBtn');
@@ -708,6 +718,14 @@ export function initUI(cb) {
         if (projectListDropdown.style.display === 'block') {
             projectListDropdown.style.display = 'none';
         }
+    });
+
+    initializeLeftPanelLayout({
+        panel: leftPanel,
+        rail: leftPanelRail,
+        resizeHandle: leftPanelResizeHandle,
+        toggleButton: toggleLeftPanelBtn,
+        restoreButton: restoreLeftPanelBtn,
     });
 
     // Listener for the bottom panel collapse/restore button (single-click toggle)
@@ -1097,7 +1115,10 @@ function updateBottomPanelToggleButton() {
     if (!toggleBottomPanelBtn || !bottomPanel) return;
     const isMinimized = bottomPanel.classList.contains('minimized');
     toggleBottomPanelBtn.textContent = isMinimized ? '↑' : '↓';
-    toggleBottomPanelBtn.title = isMinimized ? 'Restore Panel' : 'Minimize Panel';
+    toggleBottomPanelBtn.title = isMinimized
+        ? 'Expand bottom panel'
+        : 'Collapse bottom panel';
+    toggleBottomPanelBtn.setAttribute('aria-expanded', String(!isMinimized));
 }
 
 function setBottomPanelMinimizedState(isMinimized) {

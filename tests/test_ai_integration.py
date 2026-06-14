@@ -1166,6 +1166,139 @@ def test_ai_chat_stream_persists_prompt_reply_and_tool_activity_in_history_for_l
         assert final_messages, history
 
 
+def test_ai_chat_stream_recovers_action_promise_without_tool_call(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.invoke_text_request_for_backend') as MockInvokeAdapter, \
+         patch('app.dispatch_ai_tool') as MockDispatchTool:
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        MockInvokeAdapter.side_effect = [
+            MagicMock(
+                backend_id='llama_cpp',
+                model='qwen-local',
+                text=(
+                    "I apologize - I keep typing rmin1 instead of rmin. "
+                    "Let me try with the alias innerradius."
+                ),
+                usage={},
+                raw_response={},
+            ),
+            MagicMock(
+                backend_id='llama_cpp',
+                model='qwen-local',
+                text='Creating the tube now.',
+                usage={},
+                raw_response={
+                    "choices": [{
+                        "message": {
+                            "content": "Creating the tube now.",
+                            "tool_calls": [{
+                                "id": "tube-call",
+                                "type": "function",
+                                "function": {
+                                    "name": "create_primitive_solid",
+                                    "arguments": json.dumps({
+                                        "name": "ConnectorTube",
+                                        "solid_type": "tube",
+                                        "params": {
+                                            "rmin": "12",
+                                            "rmax": "18",
+                                            "z": "40",
+                                        },
+                                    }),
+                                },
+                            }],
+                        },
+                    }],
+                },
+            ),
+            MagicMock(
+                backend_id='llama_cpp',
+                model='qwen-local',
+                text='The connector tube has been created.',
+                usage={},
+                raw_response={},
+            ),
+        ]
+        MockDispatchTool.return_value = {
+            "success": True,
+            "message": "Solid 'ConnectorTube' created.",
+        }
+
+        response = client.post('/api/ai/chat/stream', json={
+            'message': 'Build the connector from the attached reference.',
+            'model': 'llama_cpp::qwen-local',
+        })
+
+        assert response.status_code == 200
+        events = _parse_sse_data_events(response)
+        retries = [
+            event for event in events
+            if event.get("type") == "tool_followthrough_retry"
+        ]
+        assert len(retries) == 1
+        assert retries[0]["attempt"] == 1
+        assert MockInvokeAdapter.call_count == 3
+        MockDispatchTool.assert_called_once()
+        assert any(
+            event.get("type") == "complete"
+            and event.get("message") == "The connector tube has been created."
+            for event in events
+        )
+
+        recovery_request = MockInvokeAdapter.call_args_list[1].args[1]
+        assert any(
+            msg.role == "user"
+            and "AIRPET Tool Follow-through" in msg.content
+            for msg in recovery_request.messages
+        )
+
+
+def test_ai_chat_stream_reports_repeated_action_promise_stall(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.invoke_text_request_for_backend') as MockInvokeAdapter:
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        stalled_response = MagicMock(
+            backend_id='llama_cpp',
+            model='qwen-local',
+            text='Let me try with the alias innerradius.',
+            usage={},
+            raw_response={},
+        )
+        MockInvokeAdapter.side_effect = [
+            stalled_response,
+            stalled_response,
+            stalled_response,
+        ]
+
+        response = client.post('/api/ai/chat/stream', json={
+            'message': 'Continue building the connector.',
+            'model': 'llama_cpp::qwen-local',
+        })
+
+        assert response.status_code == 200
+        events = _parse_sse_data_events(response)
+        retries = [
+            event for event in events
+            if event.get("type") == "tool_followthrough_retry"
+        ]
+        assert [event["attempt"] for event in retries] == [1, 2]
+        assert MockInvokeAdapter.call_count == 3
+        complete = [
+            event for event in events
+            if event.get("type") == "complete"
+        ][-1]
+        assert "repeatedly promised" in complete["message"]
+        assert "No additional geometry was changed" in complete["message"]
+
+
 def test_ai_chat_stream_disable_tools_overrides_llama_native_tool_loop(client):
     with patch('app.get_project_manager_for_session') as MockPMGetter, \
          patch('app.invoke_text_request_for_backend') as MockInvokeAdapter:

@@ -18,17 +18,103 @@
         }
 
         #left_panel_container {
-            width: 350px;
-            min-width: 300px;
-            flex-shrink: 0;
-            /* Fixed width for now */
+            --left-panel-width: 350px;
+            width: var(--left-panel-width);
+            min-width: 0;
+            flex: 0 0 var(--left-panel-width);
             height: 100vh;
             background-color: #e9e9e9;
-            /* Slightly different background */
-            border-right: 1px solid #ccc;
             display: flex;
             flex-direction: column;
             overflow: hidden;
+        }
+
+        #left_panel_container.collapsed {
+            width: 0;
+            flex-basis: 0;
+            border: none;
+            visibility: hidden;
+        }
+
+        #left_panel_rail {
+            width: 8px;
+            flex: 0 0 8px;
+            height: 100vh;
+            position: relative;
+            z-index: 1200;
+            background: linear-gradient(to right, #dbe2ea, #cfd7e1);
+            border-left: 1px solid #c5ced8;
+            border-right: 1px solid #c5ced8;
+        }
+
+        #leftPanelResizeHandle {
+            position: absolute;
+            inset: 0;
+            cursor: ew-resize;
+            touch-action: none;
+        }
+
+        #leftPanelResizeHandle::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: 2px;
+            height: 56px;
+            border-radius: 999px;
+            background: rgba(71, 85, 105, 0.55);
+        }
+
+        #left_panel_rail:hover,
+        #left_panel_rail.resizing {
+            background: linear-gradient(to right, #dbeafe, #bfdbfe);
+        }
+
+        #left_panel_rail.collapsed #leftPanelResizeHandle {
+            cursor: default;
+        }
+
+        #left_panel_tabs {
+            flex-shrink: 0;
+        }
+
+        .panel-collapse-button {
+            flex: 0 0 32px;
+            padding: 0 10px;
+            border: none;
+            border-left: 1px solid #ddd;
+            background: transparent;
+            color: #555;
+            font-size: 16px;
+            line-height: 1;
+            cursor: pointer;
+        }
+
+        .panel-collapse-button:hover {
+            background-color: #d8d8d8;
+        }
+
+        #restoreLeftPanelBtn {
+            position: absolute;
+            top: 38px;
+            left: 0;
+            z-index: 2;
+            width: 28px;
+            height: 34px;
+            padding: 0;
+            border: 1px solid #aeb8c5;
+            border-radius: 0 8px 8px 0;
+            background: #eff6ff;
+            color: #1d4ed8;
+            font-size: 20px;
+            line-height: 1;
+            cursor: pointer;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18);
+        }
+
+        #restoreLeftPanelBtn:hover {
+            background: #dbeafe;
         }
 
         /* Tab headers */
@@ -1176,19 +1262,6 @@
 
         #toggleBottomPanelBtn {
             margin-left: auto;
-            /* This is the magic that pushes the button to the right */
-            padding: 0 12px;
-            font-size: 16px;
-            line-height: 1;
-            border: none;
-            background-color: transparent;
-            cursor: pointer;
-            color: #555;
-            flex-shrink: 0;
-        }
-
-        #toggleBottomPanelBtn:hover {
-            background-color: #d8d8d8;
         }
 
         #bottom_panel.minimized {
@@ -4055,6 +4128,9 @@
             <button class="tab_button" data-tab="tab_defines">Defines</button>
             <button class="tab_button" data-tab="tab_properties">Properties</button>
             <button class="tab_button" data-tab="tab_solids">Solids</button>
+            <button id="toggleLeftPanelBtn" class="panel-collapse-button" type="button"
+                aria-controls="left_panel_container" aria-expanded="true"
+                title="Collapse left panel">‹</button>
         </div>
         <div id="left_panel_content" class="tab_content_area">
             <div id="tab_structure" class="tab_pane active">
@@ -4283,6 +4359,13 @@
             </div>
         </div>
     </div>
+    <div id="left_panel_rail">
+        <div id="leftPanelResizeHandle" role="separator" aria-label="Resize left panel"
+            aria-orientation="vertical" aria-valuemin="260" aria-valuemax="720" aria-valuenow="350"
+            tabindex="0" title="Drag or use arrow keys to resize the left panel"></div>
+        <button id="restoreLeftPanelBtn" type="button" aria-controls="left_panel_container"
+            aria-expanded="false" title="Expand left panel" hidden>›</button>
+    </div>
     <div id="main_content_area">
         <div id="menu_bar">
             <ul>
@@ -4396,7 +4479,9 @@
             <div id="bottom_panel_tabs" class="tab_navigation">
                 <button class="tab_button active" data-tab="tab_ai_panel">AI Assistant</button>
                 <button class="tab_button" data-tab="tab_sim_panel">Simulation</button>
-                <button id="toggleBottomPanelBtn" title="Minimize Panel">↓</button>
+                <button id="toggleBottomPanelBtn" class="panel-collapse-button" type="button"
+                    aria-controls="bottom_panel_content" aria-expanded="true"
+                    title="Collapse bottom panel">↓</button>
             </div>
             <div id="bottom_panel_content" class="tab_content_area">
                 <!-- AI Panel Content -->
@@ -6775,7 +6860,7 @@
             }
         }
     </script>
-    <script type="module" src="{{ url_for('static', filename='main.js') }}?v=31"></script>
+    <script type="module" src="{{ url_for('static', filename='main.js') }}?v=32"></script>
     {% if app_mode != 'local' %}
     <div id="app-footer"
         style="position: fixed; bottom: 5px; left: 10px; font-size: 11px; z-index: 2000; color: #888;">

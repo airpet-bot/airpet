@@ -1955,6 +1955,23 @@ function updateThinkingIndicator(indicator, progress) {
             `model_response:${currentTurn}:${elapsedLabel}:${tokenLabel}`,
             `<strong>Model response:</strong> ${elapsedLabel}${tokenLabel}`
         );
+    } else if (progress.type === 'tool_followthrough_retry') {
+        const attempt = Number(progress.attempt) || 1;
+        const maxAttempts = Number(progress.maxAttempts) || attempt;
+        if (toggleSummary) {
+            toggleSummary.textContent = (
+                `${formatCurrentTurnCounter()} • recovering missing tool call `
+                + `(${attempt}/${maxAttempts})`
+            );
+        }
+        appendProgressEntry(
+            `tool_followthrough_retry:${currentTurn}:${attempt}`,
+            (
+                '<strong>Tool follow-through:</strong> the model described an '
+                + `action without calling a tool; retrying (${attempt}/${maxAttempts}).`
+            ),
+            'thinking-step'
+        );
     } else if (progress.type === 'tool_result') {
         const toolName = progress.tool || 'tool';
         const statusLabel = progress.success ? 'completed' : 'failed';

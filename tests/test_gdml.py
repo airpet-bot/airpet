@@ -47,6 +47,56 @@ def test_sensitive_detector_auxinfo_round_trip():
     assert roundtrip_state.logical_volumes["World"].is_sensitive is False
 
 
+def test_boolean_multi_union_exports_expression_transforms():
+    pm = ProjectManager(ExpressionEvaluator())
+    pm.create_empty_project()
+    pm.add_solid(
+        "multi_union_base",
+        "tube",
+        {"rmin": "0", "rmax": "20", "z": "100", "startphi": "0", "deltaphi": "360"},
+    )
+    pm.add_solid(
+        "multi_union_branch",
+        "tube",
+        {"rmin": "0", "rmax": "10", "z": "60", "startphi": "0", "deltaphi": "360"},
+    )
+    pm.add_solid(
+        "multi_union_flange",
+        "tube",
+        {"rmin": "0", "rmax": "30", "z": "10", "startphi": "0", "deltaphi": "360"},
+    )
+    result, error = pm.add_boolean_solid(
+        "multi_union_with_angle",
+        [
+            {"op": "base", "solid_ref": "multi_union_base"},
+            {
+                "op": "union",
+                "solid_ref": "multi_union_branch",
+                "transform": {
+                    "position": {"x": "0", "y": "-30", "z": "0"},
+                    "rotation": {"x": "90*deg", "y": "0*deg", "z": "0*deg"},
+                },
+            },
+            {
+                "op": "union",
+                "solid_ref": "multi_union_flange",
+                "transform": {
+                    "position": {"x": "0", "y": "-60", "z": "0"},
+                    "rotation": {"x": "90*deg", "y": "0*deg", "z": "0*deg"},
+                },
+            },
+        ],
+    )
+    assert error is None
+    assert result is not None
+
+    gdml = pm.export_to_gdml_string()
+
+    assert '<multiUnion name="multi_union_with_angle">' in gdml
+    assert 'x="90*deg"' in gdml
+    assert 'unit="rad"' in gdml
+
+
 def test_topological_sort():
     state = GeometryState()
     
@@ -1135,5 +1185,4 @@ def test_gdml_border_surface_round_trip():
     imported_pv2 = imported_state._find_pv_by_id(imported_border.physvol2_ref)
     assert imported_pv1 is not None and imported_pv1.name == "box_pv"
     assert imported_pv2 is not None and imported_pv2.name == "box_pv"
-
 

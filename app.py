@@ -8073,7 +8073,10 @@ def add_boolean_solid_route():
 
     data = request.get_json()
     name_suggestion = data.get('name')
-    recipe = _normalize_boolean_recipe(data.get('recipe'))
+    recipe = _normalize_boolean_recipe(
+        data.get('recipe'),
+        bare_rotation_unit='rad',
+    )
     
     success, error_msg = pm.add_boolean_solid(name_suggestion, recipe)
 
@@ -8088,7 +8091,10 @@ def update_boolean_solid_route():
 
     data = request.get_json()
     solid_name = data.get('id') # The name of the solid to update
-    recipe = _normalize_boolean_recipe(data.get('recipe'))
+    recipe = _normalize_boolean_recipe(
+        data.get('recipe'),
+        bare_rotation_unit='rad',
+    )
     
     success, error_msg = pm.update_boolean_solid(solid_name, recipe)
 
@@ -9552,6 +9558,10 @@ PRIMITIVE_SOLID_PARAM_ALIASES = {
     "tube": {
         "innerradius": "rmin",
         "outerradius": "rmax",
+        "innerradius1": "rmin",
+        "outerradius1": "rmax",
+        "rmin1": "rmin",
+        "rmax1": "rmax",
         "zlen": "z",
         "startangle": "startphi",
         "spanangle": "deltaphi"
@@ -9600,15 +9610,24 @@ def _normalize_param_alias_key(key: str) -> str:
     return re.sub(r'[^a-z0-9]', '', str(key).lower())
 
 
-def _coerce_angle_expr_if_bare_number(expr: Any) -> Any:
+def _coerce_angle_expr_if_bare_number(
+    expr: Any,
+    default_unit: str = 'deg',
+) -> Any:
+    if isinstance(expr, bool):
+        return expr
+
+    if isinstance(expr, (int, float)):
+        return f"({expr})*{default_unit}"
+
     if not isinstance(expr, str):
         return expr
 
-    s = expr.strip().lower()
-    if any(tok in s for tok in ('deg', 'rad', 'pi', '*', '/', '+', '-', '(', ')')):
-        return expr
+    stripped = expr.strip()
+    if re.fullmatch(r'[+-]?(?:\d+\.?\d*|\d*\.\d+)(?:[eE][+-]?\d+)?', stripped):
+        return f"({stripped})*{default_unit}"
 
-    return f"({expr})*deg"
+    return expr
 
 
 def normalize_primitive_solid_params(solid_type: Any, raw_params: Any) -> Any:
@@ -9948,7 +9967,11 @@ def _validate_create_primitive_solid_args(args: Dict[str, Any]) -> Optional[str]
     )
 
 
-def _normalize_boolean_recipe(recipe: Any) -> Any:
+def _normalize_boolean_recipe(
+    recipe: Any,
+    *,
+    bare_rotation_unit: str = 'deg',
+) -> Any:
     recipe = _parse_json_like(recipe)
     if isinstance(recipe, dict):
         recipe = recipe.get('recipe') or recipe.get('operations') or recipe.get('ops')
@@ -9989,10 +10012,28 @@ def _normalize_boolean_recipe(recipe: Any) -> Any:
 
         t = mapped.get('transform')
         if isinstance(t, dict):
+            t = dict(t)
             if 'position' not in t and 'pos' in t:
                 t['position'] = t.get('pos')
             if 'rotation' not in t and 'rot' in t:
                 t['rotation'] = t.get('rot')
+            rotation = t.get('rotation')
+            if isinstance(rotation, dict):
+                t['rotation'] = {
+                    axis: _coerce_angle_expr_if_bare_number(
+                        value,
+                        bare_rotation_unit,
+                    )
+                    for axis, value in rotation.items()
+                }
+            elif isinstance(rotation, list) and len(rotation) == 3:
+                t['rotation'] = [
+                    _coerce_angle_expr_if_bare_number(
+                        value,
+                        bare_rotation_unit,
+                    )
+                    for value in rotation
+                ]
             mapped['transform'] = t
 
         normalized.append(mapped)
@@ -14381,6 +14422,55 @@ def _build_executable_tool_calls(parsed_tool_calls: List[Dict[str, Any]], turn: 
     return executable_calls
 
 
+AI_TOOL_FOLLOWTHROUGH_MAX_RETRIES = 2
+AI_TOOL_FOLLOWTHROUGH_PATTERNS = (
+    re.compile(
+        r"\b(?:let me|i(?:'ll| will)|i(?:'m| am) going to)\s+"
+        r"(?:try|retry|create|add|modify|update|place|build|construct|fix|"
+        r"correct|use|call|apply|continue|proceed|inspect|check)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:trying|retrying|proceeding|continuing)\s+(?:now|with|to)\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _assistant_promises_unfinished_tool_action(text: Any) -> bool:
+    """Detect short action promises that should have included a tool call."""
+    if not isinstance(text, str):
+        return False
+
+    normalized = " ".join(text.split()).strip()
+    if not normalized or len(normalized) > 800 or normalized.endswith("?"):
+        return False
+
+    return any(pattern.search(normalized) for pattern in AI_TOOL_FOLLOWTHROUGH_PATTERNS)
+
+
+def _build_tool_followthrough_recovery_message() -> str:
+    return (
+        "[AIRPET Tool Follow-through]\n"
+        "Your previous response promised an AIRPET action but did not include an "
+        "executable tool call. Do not apologize or narrate another attempt. Call "
+        "the appropriate tool now, or state one concrete blocker if action is "
+        "impossible. For create_primitive_solid, a tube uses params rmin, rmax, "
+        "and z; a cone uses rmin1, rmax1, rmin2, rmax2, and z. Prefer these "
+        "canonical names."
+    )
+
+
+def _build_tool_followthrough_stall_message() -> str:
+    return (
+        "AIRPET stopped this request because the model repeatedly promised to "
+        "perform an action without issuing an executable tool call. No additional "
+        "geometry was changed during those stalled turns. The model can retry from "
+        "the current project state, but it must call an AIRPET tool rather than "
+        "describe what it will do."
+    )
+
+
 def _infer_local_backend_selector_from_model_id(model_id: Any) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
     if not isinstance(model_id, str):
         return None, None
@@ -15402,6 +15492,9 @@ _MULTIMODAL_ISSUE_CODE_FAMILY_EXACT_HINTS: Dict[str, str] = {
     "invalid_radial_bounds": "dimension_hints",
     "low_facet_count": "dimension_hints",
     "possible_overlap_aabb": "dimension_hints",
+    "boolean_union_operand_contained": "dimension_hints",
+    "boolean_union_operand_disconnected": "dimension_hints",
+    "boolean_transform_bare_angle": "dimension_hints",
     "overlap_report_truncated": "dimension_hints",
     "missing_world_volume_reference": "other_mutations",
     "unknown_world_volume_reference": "other_mutations",
@@ -16633,6 +16726,7 @@ def _stream_ai_chat_response(
                 "model": None,
                 "usage": None,
             }
+            tool_followthrough_retries = 0
 
             for turn in range(turn_limit):
                 if APP_MODE != 'production':
@@ -16709,7 +16803,34 @@ def _stream_ai_chat_response(
                     backend_selection_payload["resolved_model"] = adapter_response.model
 
                 if not executable_tool_calls:
-                    final_text = assistant_text or adapter_response.text or "Done."
+                    if (
+                        effective_require_tools
+                        and _assistant_promises_unfinished_tool_action(assistant_text)
+                    ):
+                        if tool_followthrough_retries < AI_TOOL_FOLLOWTHROUGH_MAX_RETRIES:
+                            tool_followthrough_retries += 1
+                            recovery_event = {
+                                "type": "tool_followthrough_retry",
+                                "turn": turn + 1,
+                                "attempt": tool_followthrough_retries,
+                                "max_attempts": AI_TOOL_FOLLOWTHROUGH_MAX_RETRIES,
+                                "message": (
+                                    "The model described a pending action without "
+                                    "calling a tool; AIRPET requested immediate "
+                                    "tool follow-through."
+                                ),
+                            }
+                            yield f"data: {json.dumps(recovery_event)}\n\n"
+                            local_messages.append(
+                                TextMessage(
+                                    role="user",
+                                    content=_build_tool_followthrough_recovery_message(),
+                                )
+                            )
+                            continue
+                        final_text = _build_tool_followthrough_stall_message()
+                    else:
+                        final_text = assistant_text or adapter_response.text or "Done."
                     local_extra_payload = dict(chat_extra_payload or {})
                     local_extra_payload["backend_execution"] = last_execution_payload
                     _persist_final_stream_reply(
@@ -16746,6 +16867,7 @@ def _stream_ai_chat_response(
                     yield f"data: {json.dumps(complete_payload)}\n\n"
                     return
 
+                tool_followthrough_retries = 0
                 for tool_call in executable_tool_calls:
                     tool_name = tool_call.get("name")
                     if not tool_name:
@@ -17913,6 +18035,7 @@ def ai_chat_route():
                 "model": None,
                 "usage": None,
             }
+            tool_followthrough_retries = 0
 
             for turn in range(turn_limit):
                 print(f"\n=== Turn {turn + 1}/{turn_limit} ===", flush=True)
@@ -17996,7 +18119,22 @@ def ai_chat_route():
                     backend_selection_payload["resolved_model"] = adapter_response.model
 
                 if not executable_tool_calls:
-                    final_text = assistant_text or adapter_response.text or "Done."
+                    if (
+                        effective_require_tools
+                        and _assistant_promises_unfinished_tool_action(assistant_text)
+                    ):
+                        if tool_followthrough_retries < AI_TOOL_FOLLOWTHROUGH_MAX_RETRIES:
+                            tool_followthrough_retries += 1
+                            local_messages.append(
+                                TextMessage(
+                                    role="user",
+                                    content=_build_tool_followthrough_recovery_message(),
+                                )
+                            )
+                            continue
+                        final_text = _build_tool_followthrough_stall_message()
+                    else:
+                        final_text = assistant_text or adapter_response.text or "Done."
                     local_extra_payload = dict(chat_extra_payload or {})
                     local_extra_payload["backend_execution"] = last_execution_payload
 
@@ -18009,6 +18147,7 @@ def ai_chat_route():
                         return jsonify(res_json)
                     return res_obj
 
+                tool_followthrough_retries = 0
                 for tool_call in executable_tool_calls:
                     tool_name = tool_call.get("name")
                     if not tool_name:
