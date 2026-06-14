@@ -135,7 +135,17 @@ def test_ai_health_check_stays_successful_when_one_provider_returns_bad_payload(
 def test_ai_backend_diagnostics_route_reports_healthy_and_timeout_statuses(client):
     def fake_get(url, timeout=0):
         if url == 'http://llama.local/v1/models':
-            return StubResponse(payload={'data': [{'id': 'llama-3.2'}]}, ok=True, status_code=200)
+            return StubResponse(
+                payload={
+                    'models': [{
+                        'name': 'llama-3.2',
+                        'capabilities': ['completion', 'multimodal'],
+                    }],
+                    'data': [{'id': 'llama-3.2'}],
+                },
+                ok=True,
+                status_code=200,
+            )
         if url == 'http://lm.local/v1/models':
             raise requests.exceptions.ConnectTimeout('timed out')
         raise AssertionError(f"Unexpected URL: {url}")
@@ -160,6 +170,12 @@ def test_ai_backend_diagnostics_route_reports_healthy_and_timeout_statuses(clien
     assert by_backend['llama_cpp']['status'] == 'healthy'
     assert by_backend['llama_cpp']['readiness_code'] == 'ok'
     assert by_backend['llama_cpp']['models'] == ['llama-3.2']
+    assert by_backend['llama_cpp']['advertised_capabilities'] == {
+        'supports_vision': True,
+    }
+    assert by_backend['llama_cpp']['capability_evidence'] == [
+        'v1/models models[].capabilities includes multimodal vision',
+    ]
     assert by_backend['llama_cpp']['effective_capability_overrides'] == {
         'supports_tools': True,
         'supports_json_mode': True,

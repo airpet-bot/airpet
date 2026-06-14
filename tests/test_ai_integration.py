@@ -5,6 +5,7 @@ from app import (
     app,
     dispatch_ai_tool,
     LOCAL_BACKEND_RUNTIME_CONFIG_SESSION_KEY,
+    _normalize_ai_turn_limit,
     _select_ai_tools_for_conversation,
 )
 from src.project_manager import ProjectManager
@@ -25,6 +26,14 @@ def test_ai_geometry_tools_schema_is_valid_for_gemini_generate_content_config():
     )
 
     assert cfg is not None
+
+
+def test_ai_turn_limit_supports_long_runs_with_a_runaway_safety_cap():
+    assert _normalize_ai_turn_limit(None) == 500
+    assert _normalize_ai_turn_limit(125) == 125
+    assert _normalize_ai_turn_limit("500") == 500
+    assert _normalize_ai_turn_limit(9999) == 500
+    assert _normalize_ai_turn_limit(0) == 1
 
 
 def test_run_simulation_ai_schema_exposes_advanced_simulation_options():
@@ -1212,6 +1221,74 @@ def test_ai_chat_stream_disable_tools_overrides_llama_native_tool_loop(client):
         assert request.require_json_mode is False
         assert request.tool_schemas is None
         assert request.tool_choice is None
+
+
+def test_ai_chat_stream_auto_detects_advertised_llama_vision(client):
+    with patch('app.get_project_manager_for_session') as MockPMGetter, \
+         patch('app.invoke_text_request_for_backend') as MockInvokeAdapter, \
+         patch('app.requests.get') as MockGet:
+        evaluator = ExpressionEvaluator()
+        pm = ProjectManager(evaluator)
+        pm.create_empty_project()
+        MockPMGetter.return_value = pm
+
+        MockGet.return_value = MagicMock(
+            ok=True,
+            status_code=200,
+            json=lambda: {
+                'models': [{
+                    'name': 'vision-local',
+                    'capabilities': ['completion', 'multimodal'],
+                }],
+                'data': [{'id': 'vision-local'}],
+            },
+        )
+        MockInvokeAdapter.return_value = MagicMock(
+            backend_id='llama_cpp',
+            model='vision-local',
+            text='The image is visible.',
+            usage={},
+            raw_response={},
+        )
+
+        response = client.post('/api/ai/chat/stream', json={
+            'message': 'Inspect this image.',
+            'model': 'llama_cpp::vision-local',
+            'backend_selector': {
+                'preferred_backend_id': 'llama_cpp',
+                'allow_fallback': False,
+                'runtime_config': {
+                    'backends': {
+                        'llama_cpp': {
+                            'enabled': True,
+                            'base_url': 'http://vision.local',
+                            'model': 'vision-local',
+                            'supports_vision': False,
+                        },
+                    },
+                },
+                'requirements': {
+                    'disable_tools': True,
+                    'require_tools': False,
+                    'require_json_mode': False,
+                    'require_vision': True,
+                },
+            },
+        })
+
+        assert response.status_code == 200
+        events = _parse_sse_data_events(response)
+        complete_events = [
+            event for event in events
+            if event.get('type') == 'complete'
+        ]
+        assert complete_events, events
+        complete_event = complete_events[-1]
+        assert complete_event['backend_selection']['resolved_backend_id'] == 'llama_cpp'
+        assert complete_event['backend_selection']['auto_detected_capabilities'] == {
+            'supports_vision': True,
+        }
+        assert MockInvokeAdapter.call_args.kwargs['runtime_config']['backends']['llama_cpp']['capabilities']['supports_vision'] is True
 
 
 def test_ai_chat_stream_disable_tools_ignores_tool_shaped_local_text(client):

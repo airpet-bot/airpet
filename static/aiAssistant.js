@@ -1,5 +1,5 @@
 // static/aiAssistant.js
-import * as APIService from './apiService.js?v=22';
+import * as APIService from './apiService.js';
 import * as UIManager from './uiManager.js';
 import { formatBackendDiagnosticsError } from './backendDiagnosticsUi.js';
 import {
@@ -21,7 +21,7 @@ import {
     normalizeDetectorStudy,
 } from './detectorStudyUi.js';
 
-let messageList, promptInput, generateButton, clearButton, modelSelect, contextStatsEl;
+let messageList, promptInput, generateButton, stopButton, clearButton, modelSelect, contextStatsEl;
 let attachmentInput, attachButton, visualCheckButton, autoVisualCheckToggle, attachmentTray;
 let executionModeSelect, studyCard, studyTitle, studyPhase, studyProgress;
 let studyGoal, studySummary, studyQuietStatus, studyRefreshButton, studyNewButton;
@@ -38,7 +38,11 @@ let localUnsavedMessages = [];
 let pendingAttachments = [];
 let currentRecentTools = [];
 let currentTurn = 1;
-let currentTurnLimit = 50;
+let currentTurnLimit = 500;
+let currentTurnPolicy = 'automatic';
+let activeAiAbortController = null;
+let stopRequested = false;
+let turnPolicySelect, turnLimitInput, turnLimitCustom, turnPolicyHint;
 
 let runtimeConfigButton, runtimeConfigStatusEl;
 let runtimeConfigModal, runtimeConfigErrorEl;
@@ -56,6 +60,10 @@ let renderedStudyBriefRevision = null;
 
 const AUTO_VISUAL_CHECK_STORAGE_KEY = 'airpet_auto_visual_check_enabled';
 const AI_EXECUTION_MODE_STORAGE_KEY = 'airpet_ai_execution_mode';
+const AI_TURN_POLICY_STORAGE_KEY = 'airpet_ai_turn_policy';
+const AI_CUSTOM_TURN_LIMIT_STORAGE_KEY = 'airpet_ai_custom_turn_limit';
+const AI_AUTOMATIC_TURN_LIMIT = 500;
+const AI_CUSTOM_TURN_LIMIT_DEFAULT = 100;
 
 const VISUAL_CHECK_TRIGGER_TOOLS = new Set([
     'create_primitive_solid',
@@ -86,11 +94,13 @@ const VISUAL_CHECK_TRIGGER_TOOLS = new Set([
     'set_active_source',
     'rename_ui_group',
 ]);
+const LIVE_PROJECT_REFRESH_TOOLS = new Set(VISUAL_CHECK_TRIGGER_TOOLS);
 
 export function init(callbacks) {
     messageList = document.getElementById('ai_message_list');
     promptInput = document.getElementById('ai_prompt_input');
     generateButton = document.getElementById('ai_generate_button');
+    stopButton = document.getElementById('ai_stop_button');
     clearButton = document.getElementById('clear_chat_btn');
     modelSelect = document.getElementById('ai_model_select');
     contextStatsEl = document.getElementById('ai_context_stats');
@@ -123,8 +133,13 @@ export function init(callbacks) {
     studyBlockingQuestions = document.getElementById('ai_study_blocking_questions');
     studyBriefStatus = document.getElementById('ai_study_brief_status');
     studyBriefConfirm = document.getElementById('ai_study_brief_confirm');
+    turnPolicySelect = document.getElementById('ai_turn_policy');
+    turnLimitInput = document.getElementById('ai_turn_limit');
+    turnLimitCustom = document.getElementById('ai_turn_limit_custom');
+    turnPolicyHint = document.getElementById('ai_turn_policy_hint');
 
     initRuntimeConfigUi();
+    initTurnPolicyControls();
 
     if (callbacks && callbacks.onGeometryUpdate) {
         onGeometryUpdateCallback = callbacks.onGeometryUpdate;
@@ -137,6 +152,9 @@ export function init(callbacks) {
     }
 
     generateButton.addEventListener('click', handleSend);
+    if (stopButton) {
+        stopButton.addEventListener('click', handleStop);
+    }
     promptInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -166,14 +184,20 @@ export function init(callbacks) {
 
     if (executionModeSelect) {
         const savedMode = localStorage.getItem(AI_EXECUTION_MODE_STORAGE_KEY);
-        if (['design_only', 'build_validate', 'full_study'].includes(savedMode)) {
-            executionModeSelect.value = savedMode;
-        }
+        executionModeSelect.value = normalizeExecutionMode(savedMode);
         executionModeSelect.addEventListener('change', () => {
             localStorage.setItem(
                 AI_EXECUTION_MODE_STORAGE_KEY,
                 executionModeSelect.value,
             );
+            renderActiveDetectorStudy(activeDetectorStudy);
+            if (getExecutionMode() === 'build_validate') {
+                scheduleDetectorStudyPoll();
+                queueDetectorStudyInterpretation();
+            } else if (detectorStudyPollTimer) {
+                clearTimeout(detectorStudyPollTimer);
+                detectorStudyPollTimer = null;
+            }
             updateExecutionModeHint();
         });
         updateExecutionModeHint();
@@ -212,6 +236,10 @@ export function init(callbacks) {
             studyReportToggle.textContent = studyReportPanel.hidden
                 ? 'View report'
                 : 'Hide report';
+            if (!studyReportPanel.hidden) {
+                studyReportPanel.focus({ preventScroll: true });
+                studyReportPanel.scrollIntoView({ block: 'nearest' });
+            }
         });
     }
 
@@ -266,19 +294,22 @@ export function init(callbacks) {
     refreshActiveDetectorStudy({ scheduleNext: true });
 }
 
+function normalizeExecutionMode(mode) {
+    if (mode === 'build_validate' || mode === 'full_study') {
+        return 'build_validate';
+    }
+    return 'interactive';
+}
+
 function getExecutionMode() {
-    const mode = executionModeSelect?.value;
-    return ['design_only', 'build_validate', 'full_study'].includes(mode)
-        ? mode
-        : 'build_validate';
+    return normalizeExecutionMode(executionModeSelect?.value);
 }
 
 function updateExecutionModeHint() {
-    if (!studyQuietStatus || activeDetectorStudy) return;
+    if (!studyQuietStatus) return;
     const hints = {
-        design_only: 'AIRPET will design and edit, but will not create a managed study.',
-        build_validate: 'AIRPET will build, visually inspect, and preflight the detector.',
-        full_study: 'AIRPET will build, validate, run, monitor, and summarize the study.',
+        interactive: 'Fast chat and direct edits. AIRPET verifies risky geometry changes without creating a managed study.',
+        build_validate: 'AIRPET plans, asks only blocking questions, builds, visually verifies, and preflights the request.',
     };
     studyQuietStatus.textContent = hints[getExecutionMode()];
 }
@@ -286,21 +317,23 @@ function updateExecutionModeHint() {
 function renderActiveDetectorStudy(study) {
     activeDetectorStudy = normalizeDetectorStudy(study);
     if (!studyCard) return;
-    if (!activeDetectorStudy) {
+    if (!activeDetectorStudy || getExecutionMode() === 'interactive') {
         studyCard.hidden = true;
-        studyCard.classList.remove(
-            'complete',
-            'needs-attention',
-            'needs-clarification',
-        );
-        if (studyReportPanel) {
-            studyReportPanel.hidden = true;
-            studyReportPanel.textContent = '';
+        if (!activeDetectorStudy) {
+            studyCard.classList.remove(
+                'complete',
+                'needs-attention',
+                'needs-clarification',
+            );
+            if (studyReportPanel) {
+                studyReportPanel.hidden = true;
+                studyReportPanel.textContent = '';
+            }
+            if (studyBriefPanel) studyBriefPanel.hidden = true;
+            if (studyBlockingQuestions) studyBlockingQuestions.innerHTML = '';
+            studyBriefDirty = false;
+            renderedStudyBriefRevision = null;
         }
-        if (studyBriefPanel) studyBriefPanel.hidden = true;
-        if (studyBlockingQuestions) studyBlockingQuestions.innerHTML = '';
-        studyBriefDirty = false;
-        renderedStudyBriefRevision = null;
         updateExecutionModeHint();
         return;
     }
@@ -557,7 +590,11 @@ function scheduleDetectorStudyPoll() {
         clearTimeout(detectorStudyPollTimer);
         detectorStudyPollTimer = null;
     }
-    if (!activeDetectorStudy || activeDetectorStudy.terminal) return;
+    if (
+        getExecutionMode() === 'interactive'
+        || !activeDetectorStudy
+        || activeDetectorStudy.terminal
+    ) return;
     const delay = ['RUNNING', 'ANALYZING'].includes(activeDetectorStudy.phase)
         ? 1500
         : 6000;
@@ -582,7 +619,8 @@ async function refreshActiveDetectorStudy({ scheduleNext = false } = {}) {
 
 function queueDetectorStudyInterpretation() {
     if (
-        detectorStudyInterpretationInFlight
+        getExecutionMode() === 'interactive'
+        || detectorStudyInterpretationInFlight
         || isProcessing
         || activeDetectorStudy?.coordinator?.interpretation_status !== 'pending'
         || detectorStudyInterpretationAttemptedIds.has(activeDetectorStudy?.study_id)
@@ -616,6 +654,7 @@ async function runDetectorStudyInterpretation({ force = false } = {}) {
     detectorStudyInterpretationAttemptedIds.add(studyId);
     detectorStudyInterpretationInFlight = true;
     setLoading(true);
+    const runController = beginAbortableAiRun();
     if (studyQuietStatus) {
         studyQuietStatus.textContent = 'Interpreting the completed study against its success criteria...';
     }
@@ -636,6 +675,7 @@ async function runDetectorStudyInterpretation({ force = false } = {}) {
             null,
             [],
             {
+                signal: runController.signal,
                 detectorStudyId: studyId,
                 studyInterpretationId: studyId,
                 disableTools: true,
@@ -643,12 +683,16 @@ async function runDetectorStudyInterpretation({ force = false } = {}) {
                 clientDisplayMessage: 'AIRPET automatic detector study interpretation',
             },
         );
+        finishAbortableAiRun(runController);
         if (result?.message) {
             addMessageToUI('model', `**Detector study conclusion**\n\n${result.message}`);
         }
     } catch (err) {
-        console.warn('Automatic detector study interpretation failed:', err);
+        if (err?.type !== 'ai_stream_cancelled') {
+            console.warn('Automatic detector study interpretation failed:', err);
+        }
     } finally {
+        finishAbortableAiRun(runController);
         detectorStudyInterpretationInFlight = false;
         setLoading(false);
         await refreshActiveDetectorStudy({ scheduleNext: false });
@@ -657,7 +701,7 @@ async function runDetectorStudyInterpretation({ force = false } = {}) {
 
 async function ensureDetectorStudyForTurn(message, attachments) {
     const executionMode = getExecutionMode();
-    if (executionMode === 'design_only') return null;
+    if (executionMode === 'interactive') return null;
     const response = await APIService.ensureDetectorStudy({
         goal: message,
         execution_mode: executionMode,
@@ -1144,10 +1188,136 @@ function waitForRenderFrames(frameCount = 2) {
     return promise;
 }
 
-function normalizeAiTurnLimit(value, fallback = 10) {
+function normalizeAiTurnLimit(value, fallback = AI_CUSTOM_TURN_LIMIT_DEFAULT) {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed)) return fallback;
-    return Math.min(50, Math.max(1, parsed));
+    return Math.min(AI_AUTOMATIC_TURN_LIMIT, Math.max(1, parsed));
+}
+
+function initTurnPolicyControls() {
+    if (!turnPolicySelect || !turnLimitInput) return;
+
+    const savedPolicy = localStorage.getItem(AI_TURN_POLICY_STORAGE_KEY);
+    turnPolicySelect.value = savedPolicy === 'custom' ? 'custom' : 'automatic';
+    turnLimitInput.value = String(normalizeAiTurnLimit(
+        localStorage.getItem(AI_CUSTOM_TURN_LIMIT_STORAGE_KEY),
+        AI_CUSTOM_TURN_LIMIT_DEFAULT,
+    ));
+
+    turnPolicySelect.addEventListener('change', () => {
+        localStorage.setItem(AI_TURN_POLICY_STORAGE_KEY, turnPolicySelect.value);
+        updateTurnPolicyControls();
+    });
+    turnLimitInput.addEventListener('change', () => {
+        const normalized = normalizeAiTurnLimit(
+            turnLimitInput.value,
+            AI_CUSTOM_TURN_LIMIT_DEFAULT,
+        );
+        turnLimitInput.value = String(normalized);
+        localStorage.setItem(AI_CUSTOM_TURN_LIMIT_STORAGE_KEY, String(normalized));
+    });
+
+    updateTurnPolicyControls();
+}
+
+function updateTurnPolicyControls() {
+    const isCustom = turnPolicySelect?.value === 'custom';
+    if (turnLimitCustom) turnLimitCustom.hidden = !isCustom;
+    if (turnPolicyHint) {
+        turnPolicyHint.textContent = isCustom
+            ? 'AIRPET stops when this many model/tool turns have run.'
+            : `Runs until the model finishes, with a ${AI_AUTOMATIC_TURN_LIMIT}-turn safety cap.`;
+    }
+}
+
+function getTurnConfiguration(explicitTurnLimit = null) {
+    if (
+        explicitTurnLimit !== null
+        && explicitTurnLimit !== undefined
+        && explicitTurnLimit !== ''
+        && Number.isFinite(Number(explicitTurnLimit))
+    ) {
+        return {
+            policy: 'custom',
+            limit: normalizeAiTurnLimit(explicitTurnLimit),
+        };
+    }
+
+    const policy = turnPolicySelect?.value === 'custom' ? 'custom' : 'automatic';
+    return {
+        policy,
+        limit: policy === 'automatic'
+            ? AI_AUTOMATIC_TURN_LIMIT
+            : normalizeAiTurnLimit(turnLimitInput?.value),
+    };
+}
+
+function formatCurrentTurnCounter() {
+    return currentTurnPolicy === 'automatic'
+        ? `Turn ${currentTurn}`
+        : `Turn ${currentTurn}/${currentTurnLimit}`;
+}
+
+function beginAbortableAiRun() {
+    const controller = new AbortController();
+    activeAiAbortController = controller;
+    stopRequested = false;
+    updateStopButton();
+    return controller;
+}
+
+function finishAbortableAiRun(controller) {
+    if (activeAiAbortController === controller) {
+        activeAiAbortController = null;
+        stopRequested = false;
+        updateStopButton();
+    }
+}
+
+function updateStopButton() {
+    if (!stopButton) return;
+    const hasActiveRun = Boolean(activeAiAbortController);
+    stopButton.hidden = !hasActiveRun;
+    stopButton.disabled = !hasActiveRun || stopRequested;
+    stopButton.textContent = stopRequested ? 'Stopping...' : 'Stop';
+}
+
+function handleStop() {
+    if (!activeAiAbortController || stopRequested) return;
+    stopRequested = true;
+    activeAiAbortController.abort();
+    updateStopButton();
+    UIManager.showTemporaryStatus?.(
+        'Stopping AI after the current model or tool operation returns...',
+        2500,
+    );
+}
+
+async function handleLiveStreamProgress(indicator, progress, toolsUsed = null) {
+    if (progress?.type === 'tool_calls' && Array.isArray(progress.tools)) {
+        progress.tools.forEach((toolName) => toolsUsed?.add(toolName));
+    }
+    updateThinkingIndicator(indicator, progress);
+
+    const shouldRefresh = (
+        progress?.type === 'tool_result'
+        && progress.success
+        && LIVE_PROJECT_REFRESH_TOOLS.has(progress.tool)
+        && progress.editReceipt?.changed !== false
+    );
+    if (!shouldRefresh || typeof onGeometryUpdateCallback !== 'function') return;
+
+    try {
+        await onGeometryUpdateCallback({
+            success: true,
+            refresh_project_state: true,
+            live_ai_update: true,
+            message: `AI completed ${progress.tool}.`,
+        });
+        await waitForRenderFrames(1);
+    } catch (syncErr) {
+        console.warn('Live AI geometry refresh failed:', syncErr);
+    }
 }
 
 async function handleDynamicVisualVerificationRequest(requestPayload) {
@@ -1201,13 +1371,14 @@ async function handleSend() {
         return;
     }
 
-    const turnLimitInput = document.getElementById('ai_turn_limit');
-    const turnLimit = normalizeAiTurnLimit(turnLimitInput ? turnLimitInput.value : null, 10);
+    const turnConfig = getTurnConfiguration();
+    const turnLimit = turnConfig.limit;
 
     setLoading(true);
     const attachmentsForTurn = [...pendingAttachments];
     const attachmentIds = attachmentsForTurn.map(item => item.artifact_id).filter(Boolean);
     let thinkingIndicator = null;
+    let runController = null;
     
     try {
         const study = await ensureDetectorStudyForTurn(
@@ -1233,21 +1404,23 @@ async function handleSend() {
         currentRecentTools = [];
         currentTurn = 1;
         currentTurnLimit = turnLimit;
+        currentTurnPolicy = turnConfig.policy;
         const toolsUsed = new Set();
         const selectionContext = getSelectionContextCallback();
         thinkingIndicator = createThinkingIndicator();
+        runController = beginAbortableAiRun();
 
-        const result = await APIService.streamAiChatMessage(message, model, turnLimit, (progress) => {
-            if (progress?.type === 'tool_calls' && Array.isArray(progress.tools)) {
-                progress.tools.forEach((toolName) => toolsUsed.add(toolName));
-            }
-            updateThinkingIndicator(thinkingIndicator, progress);
-        }, attachmentIds, {
+        const result = await APIService.streamAiChatMessage(message, model, turnLimit, (progress) => (
+            handleLiveStreamProgress(thinkingIndicator, progress, toolsUsed)
+        ), attachmentIds, {
+            signal: runController.signal,
             onVisualVerificationRequest: handleDynamicVisualVerificationRequest,
             detectorStudyId: study?.study_id || null,
             executionMode: getExecutionMode(),
             selectionContext,
         });
+        finishAbortableAiRun(runController);
+        runController = null;
         removeThinkingIndicator(thinkingIndicator);
         addMessageToUI('model', result.message);
         
@@ -1269,17 +1442,25 @@ async function handleSend() {
                     toolsUsed: [...toolsUsed],
                 }),
                 displayMessage: buildAutomaticVisualSelfCritiqueDisplayMessage(message),
-                turnLimit,
+                turnLimit: turnConfig.policy === 'custom' ? turnLimit : null,
             });
         }
     } catch (err) {
         if (thinkingIndicator) removeThinkingIndicator(thinkingIndicator);
+        if (err?.type === 'ai_stream_cancelled' && onGeometryUpdateCallback) {
+            await onGeometryUpdateCallback({
+                success: true,
+                refresh_project_state: true,
+                message: 'AI run stopped; preserving completed edits.',
+            });
+        }
         await handleAiChatError(err, {
             attachmentIds,
             attachmentsForTurn,
             restorePendingAttachments: true,
         });
     } finally {
+        finishAbortableAiRun(runController);
         setLoading(false);
         queueDetectorStudyInterpretation();
         scrollToBottom();
@@ -1295,6 +1476,14 @@ async function handleAiChatError(err, {
     if (restorePendingAttachments && attachmentIds.length > 0 && pendingAttachments.length === 0) {
         pendingAttachments = attachmentsForTurn;
         renderPendingAttachments();
+    }
+
+    if (err?.type === 'ai_stream_cancelled') {
+        addMessageToUI(
+            'system',
+            'AI run stopped. Edits completed before the stop request have been kept.',
+        );
+        return;
     }
 
     const backendError = formatBackendDiagnosticsError(err);
@@ -1393,17 +1582,17 @@ async function runVisualSelfCritique({
         return;
     }
 
-    const turnLimitInput = document.getElementById('ai_turn_limit');
-    const resolvedTurnLimit = Number.isFinite(Number(turnLimit))
-        ? normalizeAiTurnLimit(turnLimit, 10)
-        : normalizeAiTurnLimit(turnLimitInput ? turnLimitInput.value : null, 10);
+    const turnConfig = getTurnConfiguration(turnLimit);
+    const resolvedTurnLimit = turnConfig.limit;
 
     setLoading(true);
     setVisualCheckBusy(true);
     currentRecentTools = [];
     currentTurn = 1;
     currentTurnLimit = resolvedTurnLimit;
+    currentTurnPolicy = turnConfig.policy;
     let thinkingIndicator = null;
+    let runController = null;
 
     try {
         UIManager.showTemporaryStatus?.(
@@ -1431,14 +1620,16 @@ async function runVisualSelfCritique({
         }
         scrollToBottom();
         thinkingIndicator = createThinkingIndicator();
+        runController = beginAbortableAiRun();
 
         const result = await APIService.streamAiChatMessage(
             message,
             model,
             resolvedTurnLimit,
-            (progress) => updateThinkingIndicator(thinkingIndicator, progress),
+            (progress) => handleLiveStreamProgress(thinkingIndicator, progress),
             attachmentIds,
             {
+                signal: runController.signal,
                 disableTools: !automatic,
                 requireTools: automatic,
                 requireJsonMode: automatic,
@@ -1448,6 +1639,8 @@ async function runVisualSelfCritique({
                 selectionContext: getSelectionContextCallback(),
             },
         );
+        finishAbortableAiRun(runController);
+        runController = null;
 
         removeThinkingIndicator(thinkingIndicator);
         addMessageToUI('model', result.message);
@@ -1463,8 +1656,16 @@ async function runVisualSelfCritique({
         await loadHistory(true);
     } catch (err) {
         removeThinkingIndicator(thinkingIndicator);
+        if (err?.type === 'ai_stream_cancelled' && onGeometryUpdateCallback) {
+            await onGeometryUpdateCallback({
+                success: true,
+                refresh_project_state: true,
+                message: 'AI visual check stopped; preserving completed edits.',
+            });
+        }
         await handleAiChatError(err);
     } finally {
+        finishAbortableAiRun(runController);
         setLoading(false);
         setVisualCheckBusy(false);
         scrollToBottom();
@@ -1615,9 +1816,13 @@ function setLoading(loading) {
     generateButton.classList.toggle('loading', loading);
     generateButton.disabled = loading;
     promptInput.disabled = loading;
+    if (modelSelect) modelSelect.disabled = loading;
+    if (turnPolicySelect) turnPolicySelect.disabled = loading;
+    if (turnLimitInput) turnLimitInput.disabled = loading;
     if (attachButton) attachButton.disabled = loading;
     if (visualCheckButton) visualCheckButton.disabled = loading;
     if (executionModeSelect) executionModeSelect.disabled = loading;
+    updateStopButton();
 }
 
 function scrollToBottom() {
@@ -1715,13 +1920,14 @@ function updateThinkingIndicator(indicator, progress) {
     if (progress.type === 'turn_start') {
         currentTurn = progress.turn;
         currentTurnLimit = progress.turnLimit;
+        const turnCounter = formatCurrentTurnCounter();
 
         if (toggleSummary) {
-            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} in progress`;
+            toggleSummary.textContent = `${turnCounter} in progress`;
         }
         appendProgressEntry(
             `turn_start:${currentTurn}:${currentTurnLimit}`,
-            `<strong>Turn ${currentTurn}/${currentTurnLimit}:</strong> Processing...`
+            `<strong>${turnCounter}:</strong> Processing...`
         );
     } else if (progress.type === 'model_request_start') {
         const backendLabel = progress.backendId || 'model';
@@ -1729,7 +1935,7 @@ function updateThinkingIndicator(indicator, progress) {
             ? 'extended reasoning on'
             : 'tool-focused mode';
         if (toggleSummary) {
-            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} • waiting for ${backendLabel}`;
+            toggleSummary.textContent = `${formatCurrentTurnCounter()} • waiting for ${backendLabel}`;
         }
         appendProgressEntry(
             `model_request_start:${currentTurn}:${backendLabel}`,
@@ -1743,7 +1949,7 @@ function updateThinkingIndicator(indicator, progress) {
             ? `, ${completionTokens} output tokens`
             : '';
         if (toggleSummary) {
-            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} • model replied in ${elapsedLabel}`;
+            toggleSummary.textContent = `${formatCurrentTurnCounter()} • model replied in ${elapsedLabel}`;
         }
         appendProgressEntry(
             `model_response:${currentTurn}:${elapsedLabel}:${tokenLabel}`,
@@ -1753,7 +1959,7 @@ function updateThinkingIndicator(indicator, progress) {
         const toolName = progress.tool || 'tool';
         const statusLabel = progress.success ? 'completed' : 'failed';
         if (toggleSummary) {
-            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} • ${toolName} ${statusLabel}`;
+            toggleSummary.textContent = `${formatCurrentTurnCounter()} • ${toolName} ${statusLabel}`;
         }
         appendProgressEntry(
             `tool_result:${currentTurn}:${toolName}:${statusLabel}`,
@@ -1772,8 +1978,8 @@ function updateThinkingIndicator(indicator, progress) {
         if (toggleSummary) {
             const liveToolSummary = currentRecentTools.join(', ');
             toggleSummary.textContent = liveToolSummary
-                ? `Turn ${currentTurn}/${currentTurnLimit} • ${liveToolSummary}`
-                : `Turn ${currentTurn}/${currentTurnLimit} • tool activity`;
+                ? `${formatCurrentTurnCounter()} • ${liveToolSummary}`
+                : `${formatCurrentTurnCounter()} • tool activity`;
         }
 
         const toolList = progress.tools.join(', ');
@@ -1784,7 +1990,7 @@ function updateThinkingIndicator(indicator, progress) {
         );
     } else if (progress.type === 'visual_verification_request') {
         if (toggleSummary) {
-            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} • visual checkpoint`;
+            toggleSummary.textContent = `${formatCurrentTurnCounter()} • visual checkpoint`;
         }
         appendProgressEntry(
             `visual_verification_request:${progress.requestId || Date.now()}`,
@@ -1806,11 +2012,11 @@ function updateThinkingIndicator(indicator, progress) {
         }
 
         if (toggleSummary) {
-            toggleSummary.textContent = `Turn ${currentTurn}/${currentTurnLimit} resumed`;
+            toggleSummary.textContent = `${formatCurrentTurnCounter()} resumed`;
         }
         appendProgressEntry(
             `resumed:${currentTurn}:${currentRecentTools.join(',')}`,
-            `<strong>Resumed:</strong> continuing turn ${currentTurn}/${currentTurnLimit}.`,
+            `<strong>Resumed:</strong> continuing ${formatCurrentTurnCounter().toLowerCase()}.`,
             'thinking-tools'
         );
     }

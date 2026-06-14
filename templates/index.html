@@ -1552,6 +1552,9 @@
 
         #ai_input_area {
             flex-shrink: 0;
+            max-height: min(70%, 520px);
+            overflow-y: auto;
+            overscroll-behavior: contain;
             padding: 10px 15px;
             background-color: white;
             border-top: 1px solid #dee2e6;
@@ -1565,9 +1568,11 @@
             align-items: center;
             gap: 10px;
             padding: 0 5px;
+            flex-wrap: wrap;
         }
 
-        .ai-mode-control {
+        .ai-mode-control,
+        .ai-model-control {
             display: inline-flex;
             align-items: center;
             gap: 7px;
@@ -1585,8 +1590,25 @@
             font: inherit;
         }
 
+        .ai-model-control {
+            min-width: min(360px, 42vw);
+        }
+
+        #ai_model_select {
+            min-width: 160px;
+            max-width: 320px;
+            flex: 1;
+            border: 1px solid #cbd5e1;
+            border-radius: 999px;
+            background: #f8fafc;
+            color: #0f172a;
+            padding: 5px 10px;
+            font: inherit;
+        }
+
         #ai_study_quiet_status {
             flex: 1;
+            min-width: 180px;
             color: #64748b;
             font-size: 11px;
             overflow: hidden;
@@ -1835,10 +1857,14 @@
         }
 
         #ai_study_report_panel {
-            max-height: 180px;
+            min-height: 96px;
+            max-height: min(38vh, 320px);
             margin: 8px 0 0;
             padding: 8px;
             overflow: auto;
+            resize: vertical;
+            scrollbar-gutter: stable;
+            overscroll-behavior: contain;
             border: 1px solid rgba(14, 116, 144, 0.18);
             border-radius: 8px;
             background: rgba(255, 255, 255, 0.72);
@@ -1940,7 +1966,8 @@
         }
 
         #ai_attach_button,
-        #ai_visual_check_button {
+        #ai_visual_check_button,
+        #ai_stop_button {
             height: 42px;
             flex: 0 0 auto;
             border-radius: 20px;
@@ -1965,6 +1992,45 @@
 
         #ai_visual_check_button:hover:not(:disabled) {
             background: #dbeafe;
+        }
+
+        #ai_stop_button {
+            background: #fff1f2;
+            border-color: #fecdd3;
+            color: #9f1239;
+            font-weight: 700;
+        }
+
+        #ai_stop_button:hover:not(:disabled) {
+            background: #ffe4e6;
+        }
+
+        #ai_stop_button[hidden] {
+            display: none;
+        }
+
+        .ai-turn-limit-custom[hidden] {
+            display: none;
+        }
+
+        #ai_turn_policy,
+        #ai_turn_limit {
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            background: #fff;
+            color: #0f172a;
+            padding: 3px 6px;
+            font-size: 11px;
+        }
+
+        #ai_turn_limit {
+            width: 58px;
+        }
+
+        #ai_turn_policy_hint {
+            max-width: 270px;
+            color: #64748b;
+            line-height: 1.3;
         }
 
         .ai-auto-visual-check {
@@ -4383,25 +4449,38 @@
                                     <button id="ai_study_brief_confirm" type="button">Save and continue</button>
                                 </div>
                             </div>
-                            <pre id="ai_study_report_panel" hidden></pre>
+                            <pre id="ai_study_report_panel" role="region" aria-label="Detector study report" tabindex="0" hidden></pre>
                         </div>
                         <div class="ai-primary-controls">
                             <label class="ai-mode-control" for="ai_execution_mode">
                                 AI mode
                                 <select id="ai_execution_mode">
-                                    <option value="design_only">Design only</option>
-                                    <option value="build_validate" selected>Build and validate</option>
-                                    <option value="full_study">Full study</option>
+                                    <option value="interactive" selected>Interactive</option>
+                                    <option value="build_validate">Build &amp; Validate</option>
                                 </select>
                             </label>
+                            <label class="ai-model-control" for="ai_model_select">
+                                Model
+                                <select id="ai_model_select"></select>
+                            </label>
+                            <span class="ai-model-info ai-backend-status" id="ai_backend_status" title="Selected backend readiness status">Backend: n/a</span>
                             <span id="ai_study_quiet_status">Describe what you want AIRPET to build.</span>
                             <details id="ai_advanced_settings" class="ai-advanced-settings">
                                 <summary>Advanced</summary>
                                 <div class="ai-status-bar">
                                     <div class="ai-status-left">
-                                        <span class="ai-model-info">Model: <select id="ai_model_select"></select></span>
-                                        <span class="ai-model-info ai-backend-status" id="ai_backend_status" title="Local backend readiness status">Backend: n/a</span>
-                                        <span class="ai-model-info">Max turns: <input type="number" id="ai_turn_limit" value="50" min="1" max="50" style="width: 44px; font-size: 11px;"></span>
+                                        <label class="ai-model-info" for="ai_turn_policy">
+                                            Run
+                                            <select id="ai_turn_policy">
+                                                <option value="automatic" selected>Until complete</option>
+                                                <option value="custom">Custom turn limit</option>
+                                            </select>
+                                        </label>
+                                        <label id="ai_turn_limit_custom" class="ai-model-info ai-turn-limit-custom" for="ai_turn_limit" hidden>
+                                            Limit
+                                            <input type="number" id="ai_turn_limit" value="100" min="1" max="500" step="1">
+                                        </label>
+                                        <span class="ai-model-info" id="ai_turn_policy_hint">Runs until the model finishes, with a 500-turn safety cap.</span>
                                         <span class="ai-model-info" id="ai_context_stats">Context: n/a</span>
                                         <label class="ai-model-info ai-auto-visual-check" title="After geometry-changing AI tool calls, automatically send AIRPET screenshots and metadata back to the model for one critique/repair pass.">
                                             <input type="checkbox" id="ai_auto_visual_check_toggle">
@@ -4422,6 +4501,7 @@
                             <button id="ai_attach_button" title="Attach detector diagram image or PDF">Attach</button>
                             <button id="ai_visual_check_button" title="Capture AIRPET screenshots and metadata, then ask a vision-capable model to critique and repair the detector">Visual Check</button>
                             <textarea id="ai_prompt_input" placeholder="Type a message or geometry instruction..." rows="1"></textarea>
+                            <button id="ai_stop_button" type="button" title="Stop after the current model or tool operation returns" hidden>Stop</button>
                             <button id="ai_generate_button" title="Send message">
                                 <span class="button-text">➤</span>
                                 <div class="loader"></div>
@@ -6066,7 +6146,7 @@
                         </label>
                         <label class="ai-runtime-inline-check" for="ai_runtime_llama_cpp_supports_vision">
                             <input type="checkbox" id="ai_runtime_llama_cpp_supports_vision">
-                            Vision-capable model
+                            Vision-capable model (auto-detected when advertised)
                         </label>
                         <label class="ai-runtime-inline-check" for="ai_runtime_llama_cpp_enable_thinking">
                             <input type="checkbox" id="ai_runtime_llama_cpp_enable_thinking">
@@ -6695,8 +6775,7 @@
             }
         }
     </script>
-    <script type="module" src="{{ url_for('static', filename='aiAssistant.js') }}?v=21"></script>
-    <script type="module" src="{{ url_for('static', filename='main.js') }}?v=30"></script>
+    <script type="module" src="{{ url_for('static', filename='main.js') }}?v=31"></script>
     {% if app_mode != 'local' %}
     <div id="app-footer"
         style="position: fixed; bottom: 5px; left: 10px; font-size: 11px; z-index: 2000; color: #888;">

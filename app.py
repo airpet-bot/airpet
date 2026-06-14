@@ -89,6 +89,7 @@ from src.ai_artifact_store import (
     AIArtifactValidationError,
 )
 from src.detector_study_intake import (
+    build_attachment_aware_policy,
     build_detector_study_intake,
     resolve_detector_study_intake,
 )
@@ -8657,6 +8658,8 @@ def _probe_openai_compatible_models_endpoint(
         "http_status": None,
         "model_count": 0,
         "models": [],
+        "advertised_capabilities": {},
+        "capability_evidence": [],
     }
 
     try:
@@ -8741,6 +8744,26 @@ def _probe_openai_compatible_models_endpoint(
         if isinstance(item, dict):
             model_ids.append(item.get("id"))
 
+    advertised_capabilities: Dict[str, bool] = {}
+    capability_evidence: List[str] = []
+    model_records = payload.get("models") if isinstance(payload, dict) else None
+    if isinstance(model_records, list):
+        for item in model_records:
+            if not isinstance(item, dict):
+                continue
+            raw_capabilities = item.get("capabilities")
+            if not isinstance(raw_capabilities, list):
+                continue
+            normalized_capabilities = {
+                str(capability).strip().lower()
+                for capability in raw_capabilities
+                if str(capability).strip()
+            }
+            if normalized_capabilities.intersection({"multimodal", "vision", "image", "images"}):
+                advertised_capabilities["supports_vision"] = True
+                capability_evidence.append("v1/models models[].capabilities includes multimodal vision")
+                break
+
     models = _normalize_model_names(model_ids)
     return {
         **base_payload,
@@ -8751,7 +8774,52 @@ def _probe_openai_compatible_models_endpoint(
         "http_status": http_status,
         "model_count": len(models),
         "models": models,
+        "advertised_capabilities": advertised_capabilities,
+        "capability_evidence": capability_evidence,
     }
+
+
+def _augment_selector_runtime_config_with_advertised_capabilities(
+    *,
+    backend_id: Optional[str],
+    runtime_config: Optional[Dict[str, Any]],
+    require_vision: bool,
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, bool]]:
+    if backend_id not in {"llama_cpp", "lm_studio"} or not require_vision:
+        return runtime_config, {}
+
+    backend_cfg = _runtime_backend_config(runtime_config, backend_id)
+    if _coerce_bool(backend_cfg.get("auto_detect_capabilities"), True) is False:
+        return runtime_config, {}
+
+    current = _resolve_effective_local_capability_overrides(
+        backend_id,
+        runtime_config=runtime_config,
+    ) or {}
+    if current.get("supports_vision"):
+        return runtime_config, {}
+
+    diagnostic = build_local_backend_readiness_diagnostic(
+        backend_id,
+        runtime_config=runtime_config,
+    )
+    advertised = diagnostic.get("advertised_capabilities")
+    if not isinstance(advertised, dict) or not advertised.get("supports_vision"):
+        return runtime_config, {}
+
+    discovered = {"supports_vision": True}
+    augmented = _merge_runtime_config_dicts(
+        runtime_config or {},
+        {
+            "backends": {
+                backend_id: {
+                    "supports_vision": True,
+                    "capabilities": discovered,
+                },
+            },
+        },
+    )
+    return augmented, discovered
 
 
 def build_local_backend_readiness_diagnostic(
@@ -10497,13 +10565,29 @@ def _reconcile_detector_study(
     return study
 
 
-def _active_detector_study_context(pm: ProjectManager) -> str:
+def _normalize_ai_execution_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"interactive", "design_only"}:
+        return "interactive"
+    if normalized in {"build_validate", "full_study"}:
+        return normalized
+    return "interactive"
+
+
+def _active_detector_study_context(
+    pm: ProjectManager,
+    *,
+    execution_mode: Optional[str] = None,
+) -> str:
+    if _normalize_ai_execution_mode(execution_mode) == "interactive":
+        return ""
     study = pm.get_detector_study()
     if not study:
         return ""
     brief = study.get("brief") if isinstance(study.get("brief"), dict) else {}
     coordinator = study.get("coordinator") or {}
     intake = study.get("intake") or {}
+    attachment_policy = intake.get("attachment_policy") or {}
     analysis = study.get("analysis") or {}
     report = study.get("report") or {}
     success_criteria = brief.get("success_criteria") or []
@@ -10515,6 +10599,20 @@ def _active_detector_study_context(pm: ProjectManager) -> str:
         for item in intake.get("blocking_questions") or []
         if isinstance(item, dict) and item.get("answer")
     ]
+    if study.get("execution_mode") == "full_study":
+        workflow_guidance = (
+            "AIRPET owns the full-study phase gates, will require visual "
+            "verification of the current revision before launch, will run "
+            "preflight, and will automatically link, monitor, analyze, and "
+            "report the simulation."
+        )
+    else:
+        workflow_guidance = (
+            "AIRPET owns the managed build gates: keep the brief current, "
+            "build progressively, visually verify meaningful spatial "
+            "milestones, and run preflight. Launch Geant4 only when the "
+            "user's request explicitly asks for a simulation or run."
+        )
     return (
         "\n\n## Active AIRPET Detector Study\n"
         f"Study ID: {study.get('study_id')}\n"
@@ -10527,6 +10625,7 @@ def _active_detector_study_context(pm: ProjectManager) -> str:
         f"Intake status: {intake.get('status', 'ready')}\n"
         f"Inferred study settings: {json.dumps(intake.get('inferred') or {})}\n"
         f"Applied defaults: {json.dumps(intake.get('defaults_applied') or [])}\n"
+        f"Attachment-aware orchestration policy: {json.dumps(attachment_policy)}\n"
         f"Clarification answers: {json.dumps(clarification_answers)}\n"
         f"Geometry revision: {coordinator.get('geometry_revision', 0)}\n"
         f"Visual verified revision: {coordinator.get('visual_verified_revision')}\n"
@@ -10535,9 +10634,7 @@ def _active_detector_study_context(pm: ProjectManager) -> str:
         f"Analysis: {json.dumps(analysis, default=str)}\n"
         f"Report warnings: {json.dumps(report.get('warnings') or [])}\n"
         "Keep this study brief current with manage_detector_study. "
-        "AIRPET owns the phase gates, will require visual verification of the "
-        "current revision before a full-study launch, will run preflight, and "
-        "will automatically link, monitor, analyze, and report the simulation."
+        f"{workflow_guidance}"
     )
 
 
@@ -14345,7 +14442,7 @@ AI_CHAT_ATTACHMENT_ALLOWED_MIME_TYPES = {
 }
 
 
-def _normalize_ai_turn_limit(value: Any, *, default: int = 50, minimum: int = 1, maximum: int = 50) -> int:
+def _normalize_ai_turn_limit(value: Any, *, default: int = 500, minimum: int = 1, maximum: int = 500) -> int:
     if isinstance(value, bool):
         parsed = default
     elif isinstance(value, (int, float)):
@@ -14446,6 +14543,14 @@ def _build_ai_chat_attachment_notice(attachments: List[Dict[str, Any]]) -> str:
             f"{item.get('original_filename') or item.get('artifact_id')} "
             f"({item.get('mime_type')}, artifact_id={item.get('artifact_id')})"
         )
+    lines.extend([
+        "",
+        "Attachment handling:",
+        "- Treat visible features as evidence, not as a complete technical specification.",
+        "- Distinguish observed facts, stated dimensions, and inferred assumptions.",
+        "- Preserve task-relevant topology, interfaces, axes, scale, and alignment before adding detail.",
+        "- Ask only when missing information materially changes the requested result; otherwise proceed with an explicit assumption.",
+    ])
     return "\n".join(lines)
 
 
@@ -16433,6 +16538,7 @@ def _stream_ai_chat_response(
     client_display_message: Optional[str] = None,
     study_interpretation_id: Optional[str] = None,
     selection_context: Optional[List[Dict[str, Any]]] = None,
+    execution_mode: Optional[str] = None,
 ):
     """Generator function for streaming AI chat progress via SSE."""
     import time
@@ -16461,7 +16567,10 @@ def _stream_ai_chat_response(
     context_summary = pm.get_summarized_context()
     attachment_notice = _build_ai_chat_attachment_notice(chat_attachments or [])
     attachment_metadata = _public_ai_chat_attachment_metadata(chat_attachments or [])
-    study_context = _active_detector_study_context(pm)
+    study_context = _active_detector_study_context(
+        pm,
+        execution_mode=execution_mode,
+    )
     selection_context_text = _format_ai_selection_context(
         selection_context or []
     )
@@ -16573,7 +16682,6 @@ def _stream_ai_chat_response(
                     if APP_MODE != 'production':
                         logger.info(f"Stream Tool Calls: {tool_names}")
                     yield f"data: {json.dumps({'type': 'tool_calls', 'turn': turn + 1, 'tools': tool_names})}\n\n"
-                    time.sleep(1.5)
 
                 assistant_history_entry = {
                     "role": "assistant",
@@ -16827,7 +16935,10 @@ def _stream_ai_chat_response(
                             )
                         )
 
-            turn_limit_text = "Turn limit reached. Please try a more specific request."
+            turn_limit_text = (
+                f"AIRPET reached the configured {turn_limit}-turn safety limit. "
+                "Completed edits were preserved; continue the request or raise the custom limit."
+            )
             _persist_final_stream_reply(
                 pm.chat_history,
                 role="assistant",
@@ -17141,7 +17252,6 @@ def _stream_ai_chat_response(
                 
                 if tool_names:
                     yield f"data: {json.dumps({'type': 'tool_calls', 'turn': turn + 1, 'tools': tool_names})}\n\n"
-                    time.sleep(1.5)
                 
                 if not has_tool_call:
                     final_text = getattr(response, 'text', None)
@@ -17190,7 +17300,10 @@ def _stream_ai_chat_response(
                                 "parts": visual_parts,
                             })
             
-            turn_limit_text = "Turn limit reached. Please try a more specific request."
+            turn_limit_text = (
+                f"AIRPET reached the configured {turn_limit}-turn safety limit. "
+                "Completed edits were preserved; continue the request or raise the custom limit."
+            )
             _persist_final_stream_reply(
                 pm.chat_history,
                 role="model",
@@ -17248,7 +17361,7 @@ def ai_chat_stream_route():
     user_message = data.get('message')
     client_display_message = data.get('client_display_message')
     model_id = data.get('model', 'models/gemini-3.1-flash-lite-preview')
-    turn_limit = _normalize_ai_turn_limit(data.get('turn_limit', 50))
+    turn_limit = _normalize_ai_turn_limit(data.get('turn_limit', 500))
     raw_attachments = data.get("attachment_ids", data.get("attachments"))
     requested_study_id = str(data.get("detector_study_id") or "").strip()
     requested_execution_mode = str(
@@ -17285,9 +17398,17 @@ def ai_chat_stream_route():
         if isinstance(active_study, dict)
         else {}
     ) or {}
+    effective_execution_mode = (
+        requested_execution_mode
+        or (
+            str(active_study.get("execution_mode") or "").strip().lower()
+            if study_interpretation_id and isinstance(active_study, dict)
+            else ""
+        )
+    )
     if (
         not study_interpretation_id
-        and requested_execution_mode != "design_only"
+        and _normalize_ai_execution_mode(effective_execution_mode) != "interactive"
         and active_intake.get("status") == "needs_clarification"
     ):
         return Response(
@@ -17379,6 +17500,15 @@ def ai_chat_stream_route():
         }
         selector_requirements = dict(requirements_payload)
 
+        runtime_config, auto_detected_capabilities = (
+            _augment_selector_runtime_config_with_advertised_capabilities(
+                backend_id=preferred_backend_id,
+                runtime_config=runtime_config,
+                require_vision=text_request.require_vision,
+            )
+        )
+        selector_runtime_config = runtime_config
+
         try:
             selection = select_backend_for_text_request(
                 request=text_request,
@@ -17400,6 +17530,7 @@ def ai_chat_stream_route():
             "used_fallback": selection.used_fallback,
             "tried": list(selection.tried),
             "selector_source": "model_prefix" if selector_inferred_from_model else "request_payload",
+            "auto_detected_capabilities": auto_detected_capabilities,
         }
 
     selected_backend_id = backend_selection_payload.get("resolved_backend_id") if backend_selection_payload else None
@@ -17416,7 +17547,10 @@ def ai_chat_stream_route():
     chat_extra_payload = {}
     if backend_selection_payload:
         chat_extra_payload["backend_selection"] = backend_selection_payload
-    if pm.active_detector_study_id:
+    if (
+        pm.active_detector_study_id
+        and _normalize_ai_execution_mode(effective_execution_mode) != "interactive"
+    ):
         chat_extra_payload["detector_study_id"] = pm.active_detector_study_id
     attachment_error = _validate_ai_chat_attachment_backend_support(
         chat_attachments,
@@ -17459,6 +17593,7 @@ def ai_chat_stream_route():
             client_display_message,
             study_interpretation_id,
             selection_context,
+            effective_execution_mode,
         )
 
     return Response(generate(), mimetype='text/event-stream')
@@ -17471,7 +17606,7 @@ def ai_chat_route():
     user_message = data.get('message')
     client_display_message = data.get('client_display_message')
     model_id = data.get('model', 'models/gemini-3.1-flash-lite-preview')
-    turn_limit = _normalize_ai_turn_limit(data.get('turn_limit', 50))
+    turn_limit = _normalize_ai_turn_limit(data.get('turn_limit', 500))
     raw_attachments = data.get("attachment_ids", data.get("attachments"))
     requested_study_id = str(data.get("detector_study_id") or "").strip()
     requested_execution_mode = str(
@@ -17510,7 +17645,7 @@ def ai_chat_route():
         else {}
     ) or {}
     if (
-        requested_execution_mode != "design_only"
+        _normalize_ai_execution_mode(requested_execution_mode) != "interactive"
         and active_intake.get("status") == "needs_clarification"
     ):
         return jsonify({
@@ -17614,6 +17749,15 @@ def ai_chat_route():
         }
         selector_requirements = dict(requirements_payload)
 
+        runtime_config, auto_detected_capabilities = (
+            _augment_selector_runtime_config_with_advertised_capabilities(
+                backend_id=preferred_backend_id,
+                runtime_config=runtime_config,
+                require_vision=text_request.require_vision,
+            )
+        )
+        selector_runtime_config = runtime_config
+
         try:
             selection = select_backend_for_text_request(
                 request=text_request,
@@ -17655,6 +17799,7 @@ def ai_chat_route():
             "used_fallback": selection.used_fallback,
             "tried": list(selection.tried),
             "selector_source": "model_prefix" if selector_inferred_from_model else "request_payload",
+            "auto_detected_capabilities": auto_detected_capabilities,
         }
 
     selected_backend_id = backend_selection_payload.get("resolved_backend_id") if backend_selection_payload else None
@@ -17673,7 +17818,10 @@ def ai_chat_route():
     chat_extra_payload = {}
     if backend_selection_payload:
         chat_extra_payload["backend_selection"] = backend_selection_payload
-    if pm.active_detector_study_id:
+    if (
+        pm.active_detector_study_id
+        and _normalize_ai_execution_mode(requested_execution_mode) != "interactive"
+    ):
         chat_extra_payload["detector_study_id"] = pm.active_detector_study_id
     attachment_error = _validate_ai_chat_attachment_backend_support(
         chat_attachments,
@@ -17700,7 +17848,10 @@ def ai_chat_route():
     context_summary = pm.get_summarized_context()
     attachment_notice = _build_ai_chat_attachment_notice(chat_attachments)
     attachment_metadata = _public_ai_chat_attachment_metadata(chat_attachments)
-    study_context = _active_detector_study_context(pm)
+    study_context = _active_detector_study_context(
+        pm,
+        execution_mode=requested_execution_mode,
+    )
     selection_context_text = _format_ai_selection_context(selection_context)
     formatted_user_msg = (
         f"[System Context Update]\n{context_summary}{study_context}"
@@ -18325,7 +18476,7 @@ def ensure_detector_study_route():
     execution_mode = str(
         data.get("execution_mode") or "full_study"
     ).strip().lower()
-    if execution_mode == "design_only":
+    if _normalize_ai_execution_mode(execution_mode) == "interactive":
         return jsonify({"success": True, "study": None})
     if not goal:
         return jsonify({
@@ -18350,13 +18501,13 @@ def ensure_detector_study_route():
         and continue_active
         and study.get("execution_mode") == execution_mode
     ):
+        existing_attachments = (
+            (study.get("brief") or {}).get("attachments")
+            if isinstance(study.get("brief"), dict)
+            else []
+        ) or []
         merged_attachments = None
         if incoming_attachments:
-            existing_attachments = (
-                (study.get("brief") or {}).get("attachments")
-                if isinstance(study.get("brief"), dict)
-                else []
-            )
             merged_by_key = {}
             for attachment in [
                 *(existing_attachments or []),
@@ -18371,12 +18522,38 @@ def ensure_detector_study_route():
                 )
                 merged_by_key[str(key)] = attachment
             merged_attachments = list(merged_by_key.values())
-        intake = study.get("intake") or {}
+        intake = deepcopy(study.get("intake") or {})
+        effective_attachments = (
+            merged_attachments
+            if merged_attachments is not None
+            else existing_attachments
+        )
+        if effective_attachments:
+            prior_requests = (
+                (study.get("brief") or {}).get("user_requests")
+                if isinstance(study.get("brief"), dict)
+                else []
+            ) or []
+            attachment_policy = build_attachment_aware_policy(
+                "\n".join([*prior_requests, goal]),
+                effective_attachments,
+            )
+            intake["attachment_policy"] = attachment_policy
+            inferred = intake.setdefault("inferred", {})
+            inferred["attachment_count"] = attachment_policy.get(
+                "attachment_count",
+                0,
+            )
+            inferred["attachment_names"] = attachment_policy.get(
+                "attachment_names",
+                [],
+            )
         requires_clarification = intake.get("status") == "needs_clarification"
         study = pm.update_detector_study(
             study["study_id"],
             append_user_request=goal,
             attachments=merged_attachments,
+            intake=intake,
             phase=(
                 "INTAKE"
                 if requires_clarification

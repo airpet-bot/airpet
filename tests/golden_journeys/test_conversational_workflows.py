@@ -80,7 +80,7 @@ def golden_page(model_profile):
         page.locator("#ai_advanced_settings").evaluate(
             "(element) => { element.open = true; }"
         )
-        page.locator("#ai_execution_mode").select_option("design_only")
+        page.locator("#ai_execution_mode").select_option("interactive")
         page.locator("#ai_model_select").select_option(model_profile.selector_value)
         page.on("dialog", lambda dialog: dialog.accept())
         yield page

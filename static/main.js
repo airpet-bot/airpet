@@ -34,7 +34,7 @@ import {
     normalizeHistoryDeleteSelection,
 } from './historyDeleteFlow.js';
 import * as UIManager from './uiManager.js';
-import * as AIAssistant from './aiAssistant.js?v=22';
+import * as AIAssistant from './aiAssistant.js?v=23';
 import { buildAiSelectionContext } from './aiSelectionContext.js';
 import { mergeProjectStateWithExclusions } from './projectStateMerge.js';
 import {
@@ -573,7 +573,11 @@ async function initializeApp() {
         ),
         onGeometryUpdate: async (result) => {
             let canonicalResult = null;
-            if (result?.project_state || result?.scene_update) {
+            if (
+                result?.project_state
+                || result?.scene_update
+                || result?.refresh_project_state
+            ) {
                 try {
                     canonicalResult = await APIService.getProjectState();
                 } catch (refreshError) {
@@ -581,7 +585,14 @@ async function initializeApp() {
                 }
             }
 
-            syncUIWithState((canonicalResult && canonicalResult.success) ? canonicalResult : result);
+            const resultToSync = (
+                canonicalResult?.success
+                    ? canonicalResult
+                    : ((result?.project_state || result?.scene_update) ? result : null)
+            );
+            if (resultToSync) {
+                syncUIWithState(resultToSync);
+            }
 
             // --- Handle AI-triggered simulation ---
             if (result.job_id) {

@@ -1,4 +1,5 @@
 from src.detector_study_intake import (
+    build_attachment_aware_policy,
     build_detector_study_intake,
     intake_answer_requirements,
     resolve_detector_study_intake,
@@ -67,6 +68,46 @@ def test_build_validate_does_not_require_simulation_source_details():
         "Do not launch Geant4" in assumption
         for assumption in intake["suggested_brief"]["assumptions"]
     )
+    assert intake["attachment_policy"]["intent"] == "reference_guided_construction"
+    assert intake["attachment_policy"]["fidelity"] == "simulation_relevant_approximation"
+    assert any(
+        "references" in criterion
+        for criterion in intake["attachment_policy"]["completion_checks"]
+    )
+
+
+def test_exact_attachment_reconstruction_requires_a_reference_scale():
+    intake = build_detector_study_intake(
+        "Reconstruct the attached connector exactly.",
+        execution_mode="build_validate",
+        attachments=[{"original_filename": "connector.png"}],
+    )
+
+    assert intake["status"] == "needs_clarification"
+    assert [
+        item["question_id"]
+        for item in intake["blocking_questions"]
+    ] == ["reference_scale"]
+
+    resolved = resolve_detector_study_intake(
+        intake,
+        answers={"reference_scale": "The main tube outer diameter is 38 mm"},
+    )
+    assert intake_answer_requirements(resolved) == [
+        "Use this reference scale: The main tube outer diameter is 38 mm.",
+    ]
+
+
+def test_attachment_policy_adapts_existing_geometry_without_becoming_a_mode():
+    policy = build_attachment_aware_policy(
+        "Import this CAD assembly and assign the highlighted sensor as sensitive.",
+        [{"original_filename": "assembly.step"}],
+    )
+
+    assert policy["active"] is True
+    assert policy["strategy"] == "evidence_guided_reconstruction"
+    assert policy["intent"] == "reference_guided_adaptation"
+    assert policy["attachment_names"] == ["assembly.step"]
 
 
 def test_existing_project_assignments_avoid_redundant_full_study_questions():

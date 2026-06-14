@@ -71,6 +71,30 @@ _THREAD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_ATTACHMENT_BUILD_TERMS = re.compile(
+    r"\b(?:build|construct|create|make|model|reconstruct|replicate|"
+    r"reproduce|convert|generate|draw)\w*\b",
+    re.IGNORECASE,
+)
+
+_ATTACHMENT_ADAPT_TERMS = re.compile(
+    r"\b(?:adapt|adjust|assign|configure|edit|import|modify|replace|"
+    r"rotate|scale|move|resize|sensitive|material)\w*\b",
+    re.IGNORECASE,
+)
+
+_EXACT_RECONSTRUCTION_TERMS = re.compile(
+    r"\b(?:exact|exactly|accurate|accurately|dimensionally faithful|"
+    r"manufacturing[- ]ready|match (?:all )?dimensions)\b",
+    re.IGNORECASE,
+)
+
+_APPROXIMATION_TERMS = re.compile(
+    r"\b(?:approximate|approximately|conceptual|coarse|proxy|rough|"
+    r"not exact|simulation[- ]relevant)\b",
+    re.IGNORECASE,
+)
+
 
 def _timestamp():
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -113,6 +137,75 @@ def _question(question_id, question, reason, answer_hint):
     }
 
 
+def build_attachment_aware_policy(goal, attachments=None):
+    text = str(goal or "").strip()
+    attachment_list = deepcopy(attachments if isinstance(attachments, list) else [])
+    if not attachment_list:
+        return {
+            "active": False,
+            "strategy": "none",
+            "attachment_count": 0,
+            "attachment_names": [],
+        }
+
+    attachment_names = [
+        item.get("original_filename")
+        for item in attachment_list
+        if isinstance(item, dict) and item.get("original_filename")
+    ]
+    if _ATTACHMENT_BUILD_TERMS.search(text):
+        intent = "reference_guided_construction"
+    elif _ATTACHMENT_ADAPT_TERMS.search(text):
+        intent = "reference_guided_adaptation"
+    else:
+        intent = "multimodal_assistance"
+
+    has_dimensions = bool(_DIMENSION_PATTERN.search(text))
+    exact_requested = bool(_EXACT_RECONSTRUCTION_TERMS.search(text))
+    approximation_allowed = bool(_APPROXIMATION_TERMS.search(text))
+    if exact_requested:
+        fidelity = "dimensionally_constrained"
+    elif has_dimensions:
+        fidelity = "specified_dimensions_with_inferred_detail"
+    else:
+        fidelity = "simulation_relevant_approximation"
+
+    return {
+        "active": True,
+        "strategy": "evidence_guided_reconstruction",
+        "intent": intent,
+        "fidelity": fidelity,
+        "attachment_count": len(attachment_list),
+        "attachment_names": attachment_names,
+        "has_explicit_dimensions": has_dimensions,
+        "exact_reconstruction_requested": exact_requested,
+        "approximation_allowed": approximation_allowed,
+        "principles": [
+            "Treat visible attachment features as evidence, not as a complete specification.",
+            "Separate observed facts, user-provided dimensions, and inferred assumptions.",
+            "Establish component topology, hierarchy, axes, symmetry, interfaces, and alignment constraints before decorative detail.",
+            "Use progressive fidelity: create the smallest coherent task-relevant representation, verify it, then refine.",
+            "Do not invent hidden detail that is irrelevant to geometry, physics, scoring, or the user's stated goal.",
+            "Ask only questions whose answers materially change geometry, physics, readout, or scale.",
+        ],
+        "recommended_sequence": [
+            "Inspect the references and current AIRPET project state.",
+            "Record the major components, constraints, dimensions, and uncertainties.",
+            "Build or adapt a connected coarse representation using batched tool calls.",
+            "Inspect focused geometry and request selected visual views after meaningful spatial milestones.",
+            "Compare AIRPET renders against the original references, repair high-confidence discrepancies, and run preflight.",
+        ],
+        "completion_checks": [
+            "All task-relevant major components and relationships are represented.",
+            "No major component is unintentionally disconnected, duplicated, or misaligned.",
+            "Explicit dimensions and constraints are preserved.",
+            "Hidden or uncertain features are recorded as assumptions rather than presented as observed facts.",
+            "AIRPET visual views are consistent with the references at the requested fidelity.",
+            "Geometry passes AIRPET preflight checks.",
+        ],
+    }
+
+
 def build_detector_study_intake(
     goal,
     *,
@@ -151,6 +244,7 @@ def build_detector_study_intake(
         re.IGNORECASE,
     ))
     has_array = bool(_ARRAY_TERMS.search(text))
+    attachment_policy = build_attachment_aware_policy(text, attachment_list)
     ambiguous_spacing = bool(
         has_array
         and _SPACING_TERM.search(text)
@@ -164,6 +258,18 @@ def build_detector_study_intake(
         "Visual verification finds no obvious missing, duplicated, or misaligned components.",
     ]
     defaults = []
+
+    if attachment_policy.get("active"):
+        requirements.append(
+            "Use the attached references as evidence for the requested geometry and simulation intent."
+        )
+        assumptions.append(
+            "Features that are hidden, ambiguous, or not dimensioned may be approximated at simulation-relevant fidelity and must remain explicit assumptions."
+        )
+        success_criteria.extend([
+            "The AIRPET geometry preserves the task-relevant component relationships visible in the references.",
+            "Rendered verification views are compared with the original references before completion.",
+        ])
 
     if materials:
         requirements.append(
@@ -247,7 +353,7 @@ def build_detector_study_intake(
         readout_mode = None
         if normalized_mode == "build_validate":
             assumptions.append(
-                "Do not launch Geant4 until the user explicitly switches to a full study or requests a run."
+                "Do not launch Geant4 unless the user explicitly requests a simulation or run."
             )
 
     blocking_questions = []
@@ -290,6 +396,19 @@ def build_detector_study_intake(
             "Does the stated spacing mean center-to-center pitch or the edge-to-edge gap?",
             "The two interpretations produce different array dimensions and placements.",
             "Answer with 'center-to-center pitch' or 'edge-to-edge gap'.",
+        ))
+
+    if (
+        attachment_policy.get("active")
+        and attachment_policy.get("exact_reconstruction_requested")
+        and not attachment_policy.get("has_explicit_dimensions")
+        and not attachment_policy.get("approximation_allowed")
+    ):
+        blocking_questions.insert(0, _question(
+            "reference_scale",
+            "What known dimension should AIRPET use to scale the attached reference?",
+            "An exact reconstruction cannot be scaled reliably from an uncalibrated image or drawing.",
+            "Give one reference measurement, for example 'the main tube outer diameter is 38 mm'.",
         ))
 
     if (
@@ -340,6 +459,7 @@ def build_detector_study_intake(
         },
         "defaults_applied": defaults,
         "blocking_questions": blocking_questions,
+        "attachment_policy": attachment_policy,
         "suggested_brief": {
             "requirements": _dedupe_strings(requirements),
             "assumptions": _dedupe_strings(assumptions),
@@ -393,6 +513,7 @@ def intake_answer_requirements(intake):
             "active_material": "Use this active material specification",
             "spacing_semantics": "Interpret array spacing as",
             "sensitive_target": "Use this sensitive detector target",
+            "reference_scale": "Use this reference scale",
         }
         prefix = prefixes.get(question_id, "Apply this clarified requirement")
         requirements.append(f"{prefix}: {answer}.")

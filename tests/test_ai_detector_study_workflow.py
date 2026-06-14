@@ -8,6 +8,7 @@ import h5py
 import pytest
 
 from app import (
+    _active_detector_study_context,
     _detector_study_launch_gate,
     _list_persisted_simulation_runs,
     _reconcile_detector_study,
@@ -303,6 +304,54 @@ def test_detector_study_routes_create_and_continue_active_study(pm):
         cleared_response = client.delete("/api/ai/studies/active")
         assert cleared_response.status_code == 200
         assert pm.active_detector_study_id is None
+
+
+def test_interactive_mode_does_not_create_or_reuse_a_managed_study(pm):
+    pm.project_name = "interactive-mode"
+    existing = pm.create_detector_study(
+        goal="A prior managed build.",
+        execution_mode="build_validate",
+    )
+    app.config["TESTING"] = True
+    with (
+        app.test_client() as client,
+        patch("app.get_project_manager_for_session", return_value=pm),
+    ):
+        response = client.post("/api/ai/studies/ensure", json={
+            "goal": "Move the selected part 5 mm along x.",
+            "execution_mode": "interactive",
+            "study_id": existing["study_id"],
+        })
+
+    assert response.status_code == 200
+    assert response.get_json()["study"] is None
+    assert pm.get_detector_study(existing["study_id"]) is not None
+
+
+def test_interactive_context_ignores_an_existing_managed_study(pm):
+    pm.project_name = "interactive-context"
+    study = pm.create_detector_study(
+        goal="Build from the attached detector drawing.",
+        execution_mode="build_validate",
+        intake={
+            "status": "ready",
+            "attachment_policy": {
+                "active": True,
+                "strategy": "evidence_guided_reconstruction",
+            },
+        },
+    )
+
+    assert _active_detector_study_context(
+        pm,
+        execution_mode="interactive",
+    ) == ""
+    managed_context = _active_detector_study_context(
+        pm,
+        execution_mode="build_validate",
+    )
+    assert study["study_id"] in managed_context
+    assert "evidence_guided_reconstruction" in managed_context
 
 
 def test_detector_study_route_blocks_then_resolves_automatic_intake(pm):

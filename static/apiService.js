@@ -53,7 +53,7 @@ async function handleBlobResponse(response, defaultFilename) {
 function normalizeAiTurnLimit(value, fallback = 10) {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed)) return fallback;
-    return Math.min(50, Math.max(1, parsed));
+    return Math.min(500, Math.max(1, parsed));
 }
 
 // --- API Functions ---
@@ -1025,6 +1025,7 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
     }
 
     let abortController = null;
+    let externalAbortHandler = null;
     let recentTools = [];
 
     const cleanup = () => {
@@ -1047,6 +1048,14 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
 
     try {
         abortController = new AbortController();
+        if (options.signal) {
+            externalAbortHandler = () => abortController.abort();
+            if (options.signal.aborted) {
+                abortController.abort();
+            } else {
+                options.signal.addEventListener('abort', externalAbortHandler, { once: true });
+            }
+        }
         
         const response = await fetch(`${API_BASE_URL}/api/ai/chat/stream`, {
             method: 'POST',
@@ -1116,7 +1125,7 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
                         generationPolicy: data.generation_policy,
                     });
                 } else if (data.type === 'tool_result') {
-                    onProgress?.({
+                    await onProgress?.({
                         type: 'tool_result',
                         turn: data.turn,
                         tool: data.tool,
@@ -1202,11 +1211,16 @@ export async function streamAiChatMessage(message, model, turnLimit = 10, onProg
         return finalResult;
     } catch (err) {
         if (err.name === 'AbortError') {
-            throw new Error('Stream was cancelled');
+            const cancelledError = new Error('AI run stopped by user.');
+            cancelledError.type = 'ai_stream_cancelled';
+            throw cancelledError;
         }
         throw err;
     } finally {
         document.removeEventListener('visibilitychange', handleVisibilityChange);
+        if (options.signal && externalAbortHandler) {
+            options.signal.removeEventListener('abort', externalAbortHandler);
+        }
         cleanup();
     }
 }
